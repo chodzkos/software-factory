@@ -33,7 +33,7 @@ Status: pierwszy szkielet z archiwum Claude + bieżącego repo. Nie zastępuje a
 
 ## 5. Zasada procesu z historii projektu
 
-`DONE != VERIFIED`: po merge/CI wykonywać realną weryfikację funkcji/artefaktu, jeśli zmiana tego wymaga.
+`DONE != VERIFIED`: jeśli klasa zmiany wymaga realnego/smoke evidence, dowód musi powstać **przed** oznaczeniem zmiany jako `VERIFIED`/`DONE` i przed merge. Dodatkowa kontrola po merge może być wartościowa, ale nie zastępuje wymaganej weryfikacji przed merge.
 
 ## 6. Źródła do pogłębienia
 
