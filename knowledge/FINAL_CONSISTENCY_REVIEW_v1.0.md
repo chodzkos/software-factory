@@ -36,7 +36,7 @@ Wprowadzono przed v1.0 dwie klasy korekt:
 
 ## Ważna zasada utrzymaniowa
 
-`CHODZKOS_SOFTWARE_STANDARD_v1.0.md` opisuje trwałą politykę.
+`standards/SOFTWARE_DEVELOPMENT_STANDARD.md` opisuje trwałą politykę.
 
 Bieżące niespełnienia standardu przez konkretne repo należy zapisywać w rejestrze non-compliance / findings, a nie dopisywać do trwałego standardu.
 
