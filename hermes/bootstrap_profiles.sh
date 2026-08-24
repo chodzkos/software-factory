@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PROFILE_ROOT="${HOME}/.hermes/profiles"
+STANDARD_SRC="${ROOT_DIR}/standards/SOFTWARE_DEVELOPMENT_STANDARD.md"
 PRIMARY_PROFILE="${PRIMARY_PROFILE:-default}"
 DISPATCHER_PROFILE="${DISPATCHER_PROFILE:-default}"
 GROK_PROVIDER="${GROK_PROVIDER:-xai-oauth}"
@@ -40,6 +41,11 @@ if ! command -v hermes >/dev/null 2>&1; then
   exit 1
 fi
 
+if [[ ! -f "${STANDARD_SRC}" ]]; then
+  echo "ERROR: brak kanonicznego standardu ${STANDARD_SRC}" >&2
+  exit 1
+fi
+
 profile_exists() {
   local name="$1"
   [[ -d "${PROFILE_ROOT}/${name}" ]]
@@ -61,6 +67,31 @@ expect_config() {
     echo "ERROR: ${profile}:${key} expected '${expected}', got '${actual}'" >&2
     exit 1
   fi
+}
+
+install_profile_soul() {
+  local profile="$1"
+  local soul_src="${ROOT_DIR}/hermes/profiles/${profile}/SOUL.md"
+
+  [[ -f "${soul_src}" ]] || return 0
+
+  if [[ "${profile}" != "orchestrator" ]]; then
+    install -m 0644 "${soul_src}" "${PROFILE_ROOT}/${profile}/SOUL.md"
+    return 0
+  fi
+
+  # Orchestrator nie ma narzędzi plikowych, więc kanoniczny Standard jest wstrzykiwany do jego kontekstu runtime.
+  # Kopia poniżej nie staje się drugim source of truth; przy każdym bootstrapie jest odtwarzana z pliku kanonicznego.
+  local tmp
+  tmp="$(mktemp)"
+  {
+    cat "${soul_src}"
+    printf '\n\n---\n\n# Software Development Standard — wstrzyknięty kontekst runtime\n\n'
+    printf 'Kanoniczne źródło: `standards/SOFTWARE_DEVELOPMENT_STANDARD.md`. Poniższa treść jest generowana przez bootstrap.\n\n'
+    cat "${STANDARD_SRC}"
+  } >"${tmp}"
+  install -m 0644 "${tmp}" "${PROFILE_ROOT}/${profile}/SOUL.md"
+  rm -f "${tmp}"
 }
 
 mkdir -p "${PROFILE_ROOT}"
@@ -94,10 +125,7 @@ for profile in "${profiles[@]}"; do
       --description "${descriptions[$profile]}"
   fi
 
-  soul_src="${ROOT_DIR}/hermes/profiles/${profile}/SOUL.md"
-  if [[ -f "${soul_src}" ]]; then
-    install -m 0644 "${soul_src}" "${PROFILE_ROOT}/${profile}/SOUL.md"
-  fi
+  install_profile_soul "${profile}"
 
   # Worker bez nadzoru ma zatrzymać się po powtarzających się pętlach bez postępu.
   hermes -p "${profile}" config set tool_loop_guardrails.hard_stop_enabled true
@@ -119,10 +147,10 @@ done
 # Izolacją tasków kodujących zarządza Kanban przez workspace=worktree:<repo>.
 # Nie ustawiamy worktree=true w profilu codera, żeby nie tworzyć zagnieżdżonych worktree.
 
-# Orchestrator koordynuje zadania i nie ma narzędzi implementacyjnych.
-# Kanban jest jawnie włączony dla sesji CLI; dispatcher i tak dokleja go workerom Kanban.
-hermes -p orchestrator tools enable kanban --platform cli
-hermes -p orchestrator config set agent.disabled_toolsets '["terminal","file","code_execution","web","browser","image_gen"]'
+# Orchestrator koordynuje wyłącznie przez Kanban. Runtime gate Hermesa czyta top-level `toolsets`,
+# dlatego ustawiamy go jawnie zamiast polegać wyłącznie na platformowym `hermes tools enable kanban`.
+hermes -p orchestrator config set toolsets '["hermes-cli","kanban"]'
+hermes -p orchestrator config set agent.disabled_toolsets '["terminal","file","code_execution","web","browser","image_gen","delegation"]'
 
 # Routing-sink ma być kontrolowanym końcem dla kart, których decomposer nie umie przypisać.
 # Po dispatchu Hermes doda mu lifecycle Kanban, ale nie dostanie narzędzi implementacyjnych.
@@ -154,6 +182,16 @@ expect_config orchestrator tool_loop_guardrails.hard_stop_enabled "true"
 expect_config routing-sink tool_loop_guardrails.hard_stop_enabled "true"
 expect_config "${DISPATCHER_PROFILE}" kanban.orchestrator_profile "orchestrator"
 expect_config "${DISPATCHER_PROFILE}" kanban.default_assignee "routing-sink"
+
+if ! grep -Fq '# Software Development Standard — wstrzyknięty kontekst runtime' "${PROFILE_ROOT}/orchestrator/SOUL.md"; then
+  echo "ERROR: orchestrator nie otrzymał wstrzykniętego Standardu" >&2
+  exit 1
+fi
+
+if ! grep -Fq '# Software Development Standard' "${PROFILE_ROOT}/orchestrator/SOUL.md"; then
+  echo "ERROR: w runtime SOUL orchestratora brakuje treści Standardu" >&2
+  exit 1
+fi
 
 echo
 hermes profile list
