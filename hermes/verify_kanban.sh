@@ -33,6 +33,11 @@ grep -Fq 'DECISION: CHANGES_REQUIRED' "${CONTRACT}"
 grep -Fq 'DECISION: SKIPPED_OX_UNAVAILABLE' "${CONTRACT}"
 grep -Fq 'REVIEW_PENDING' "${CONTRACT}"
 grep -Fq '`severity`: HIGH' "${CONTRACT}"
+grep -Fq 'dodatkowy nieobsługiwany marker `DECISION:`' "${CONTRACT}"
+
+printf '[check] mandatory deployment step\n'
+grep -Fq 'DISPATCHER_PROFILE=default bash hermes/configure_kanban.sh' "${CONTRACT}"
+grep -Fq 'Software Factory nie jest gotowy do uruchamiania tasków Kanban' "${CONTRACT}"
 
 printf '[check] python syntax\n'
 python3 -m py_compile "${PARSER}" "${TESTS}"
