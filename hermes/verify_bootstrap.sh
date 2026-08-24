@@ -33,14 +33,14 @@ grep -Fq 'cat "${STANDARD_SRC}"' "${BOOTSTRAP}"
 grep -Fq '# Software Development Standard — wstrzyknięty kontekst runtime' "${BOOTSTRAP}"
 
 echo "[check] orchestrator Kanban runtime gate"
-grep -Fq 'config set toolsets '\''["hermes-cli","kanban"]'\''' "${BOOTSTRAP}"
+grep -Fq "config set toolsets '[\"hermes-cli\",\"kanban\"]'" "${BOOTSTRAP}"
 if grep -Fq 'tools enable kanban' "${BOOTSTRAP}"; then
   echo "ERROR: bootstrap nie może polegać na platformowym tools enable kanban" >&2
   exit 1
 fi
 
 echo "[check] orchestrator has no implementation/delegation toolsets"
-grep -Fq 'orchestrator config set agent.disabled_toolsets '\''["terminal","file","code_execution","web","browser","image_gen","delegation"]'\''' "${BOOTSTRAP}"
+grep -Fq "orchestrator config set agent.disabled_toolsets '[\"terminal\",\"file\",\"code_execution\",\"web\",\"browser\",\"image_gen\",\"delegation\"]'" "${BOOTSTRAP}"
 
 echo "[check] dispatcher-scoped kanban routing"
 grep -Fq 'config set kanban.orchestrator_profile orchestrator' "${BOOTSTRAP}"
