@@ -14,6 +14,7 @@ Status: pierwszy szkielet z archiwum Claude + bieżącego repo. Nie zastępuje a
 - ruff + mypy strict + pytest.
 - Wewnętrzne zależności gui-kit i chodzkos-detection przypięte do pełnych SHA w `[tool.uv.sources]`.
 - Bezpieczeństwo zależności jest aktywną częścią projektu (security floors, audyty, override tylko po empirycznej weryfikacji).
+- Otwarte odstępstwa release/supply-chain są śledzone w `knowledge/KNOWN_NON_COMPLIANCE.md` jako **NC-001**; Memory Pack nie oznacza projektu jako w pełni zgodnego, dopóki finding pozostaje OPEN.
 
 ## 3. Ważne doświadczenia historyczne
 
