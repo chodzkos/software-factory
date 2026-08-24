@@ -27,9 +27,33 @@ class ReviewDecisionTests(unittest.TestCase):
         text = "severity: HIGH\nDECISION: APPROVE\n"
         self.assertEqual(parse_review(text).status, "REVIEW_PENDING")
 
-    def test_markdown_high_cannot_be_approved(self) -> None:
-        text = "- severity: HIGH\nDECISION: APPROVE\n"
-        self.assertEqual(parse_review(text).status, "REVIEW_PENDING")
+    def test_markdown_high_formats_cannot_be_approved(self) -> None:
+        samples = (
+            "- severity: HIGH",
+            "- `severity`: HIGH",
+            "- **severity:** HIGH",
+            "- severity: `HIGH`",
+            "1. **severity:** `CRITICAL`",
+            "> `severity`: HIGH",
+            "| severity | HIGH | impact |",
+        )
+        for finding in samples:
+            with self.subTest(finding=finding):
+                text = f"{finding}\nDECISION: APPROVE\n"
+                self.assertEqual(parse_review(text).status, "REVIEW_PENDING")
+
+    def test_non_finding_high_prose_does_not_block_approve(self) -> None:
+        samples = (
+            "no HIGH/CRITICAL findings",
+            "HIGH/CRITICAL: none",
+            "HIGH-level overview",
+            "CRITICAL PATH",
+            "There are no HIGH or CRITICAL issues.",
+        )
+        for prose in samples:
+            with self.subTest(prose=prose):
+                text = f"{prose}\nDECISION: APPROVE\n"
+                self.assertEqual(parse_review(text).status, "APPROVE")
 
     def test_ox_skip_is_optional_only(self) -> None:
         text = "DECISION: SKIPPED_OX_UNAVAILABLE\n"
