@@ -11,9 +11,11 @@ from pathlib import Path
 _DECISION_RE = re.compile(
     r"(?m)^DECISION:\s*(APPROVE|CHANGES_REQUIRED|SKIPPED_OX_UNAVAILABLE)\s*$"
 )
-_BLOCKING_RE = re.compile(
-    r"(?im)^\s*(?:[-*+]\s*)?(?:severity\s*[:=-]\s*)?(CRITICAL|HIGH)\b"
+_SEVERITY_FIELD_RE = re.compile(r"(?i)^severity\s*[:=-]\s*(CRITICAL|HIGH)\b")
+_SEVERITY_TABLE_RE = re.compile(
+    r"(?i)^\|\s*severity\s*\|\s*(CRITICAL|HIGH)\s*\|"
 )
+_LIST_PREFIX_RE = re.compile(r"^(?:[-+*]|\d+[.)])\s+")
 
 
 @dataclass(frozen=True)
@@ -22,6 +24,25 @@ class ReviewDecision:
 
     status: str
     reason: str
+
+
+def _normalize_finding_line(line: str) -> str:
+    """Usuń wyłącznie dekoracje Markdown istotne dla pól findingu."""
+    normalized = line.strip()
+    if normalized.startswith(">"):
+        normalized = normalized[1:].lstrip()
+    normalized = _LIST_PREFIX_RE.sub("", normalized, count=1)
+    normalized = normalized.replace("`", "").replace("**", "").replace("__", "")
+    return normalized.strip()
+
+
+def _has_blocking_finding(text: str) -> bool:
+    """Wykryj jawne pole severity HIGH/CRITICAL bez zgadywania z prozy."""
+    for raw_line in text.splitlines():
+        line = _normalize_finding_line(raw_line)
+        if _SEVERITY_FIELD_RE.match(line) or _SEVERITY_TABLE_RE.match(line):
+            return True
+    return False
 
 
 def parse_review(text: str, *, allow_ox_skip: bool = False) -> ReviewDecision:
@@ -39,7 +60,7 @@ def parse_review(text: str, *, allow_ox_skip: bool = False) -> ReviewDecision:
             return ReviewDecision(decision, "optional_ox_unavailable")
         return ReviewDecision("REVIEW_PENDING", "ox_skip_not_allowed")
 
-    if decision == "APPROVE" and _BLOCKING_RE.search(text):
+    if decision == "APPROVE" and _has_blocking_finding(text):
         return ReviewDecision("REVIEW_PENDING", "approve_with_blocking_finding")
 
     return ReviewDecision(decision, "parsed")
