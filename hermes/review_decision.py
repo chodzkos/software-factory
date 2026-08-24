@@ -11,7 +11,9 @@ from pathlib import Path
 _DECISION_RE = re.compile(
     r"(?m)^DECISION:\s*(APPROVE|CHANGES_REQUIRED|SKIPPED_OX_UNAVAILABLE)\s*$"
 )
-_BLOCKING_RE = re.compile(r"(?im)^\s*(?:severity\s*[:=-]\s*)?(CRITICAL|HIGH)\b")
+_BLOCKING_RE = re.compile(
+    r"(?im)^\s*(?:[-*+]\s*)?(?:severity\s*[:=-]\s*)?(CRITICAL|HIGH)\b"
+)
 
 
 @dataclass(frozen=True)
