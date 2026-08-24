@@ -35,7 +35,7 @@ if [[ -n "${OX_MODEL}" ]]; then
 fi
 
 declare -A descriptions=(
-  [orchestrator]="Decomposes goals into Kanban tasks, routes work, enforces gates; does not implement code."
+  [orchestrator]="Coordinates Kanban routing, ownership and gates; delegates decomposition and implementation to specialist profiles."
   [architect]="Produces requirements, architecture and project plans; resolves boundaries and dependencies."
   [repository-analyst]="Analyzes repository structure, contracts, dependencies, tests and risks before planning changes."
   [task-decomposer]="Turns accepted plans into small Kanban-ready tasks with explicit ownership and acceptance criteria."
