@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BOOTSTRAP="${ROOT_DIR}/hermes/bootstrap_profiles.sh"
 STANDARD="${ROOT_DIR}/standards/SOFTWARE_DEVELOPMENT_STANDARD.md"
+ORCHESTRATOR_SOUL="${ROOT_DIR}/hermes/profiles/orchestrator/SOUL.md"
 
 echo "[check] bash syntax"
 bash -n "${BOOTSTRAP}"
@@ -40,6 +41,17 @@ grep -Fq 'for profile in task-decomposer quick-reviewer docs; do' "${BOOTSTRAP}"
 grep -Fq 'for profile in repository-analyst auditor-ox; do' "${BOOTSTRAP}"
 grep -Fq 'hermes -p repository-analyst config set model.provider "${primary_provider}"' "${BOOTSTRAP}"
 grep -Fq 'profiles+=(auditor-ox)' "${BOOTSTRAP}"
+
+echo "[check] hidden model fallbacks disabled"
+grep -Fq 'for profile in "${profiles[@]}"; do' "${BOOTSTRAP}"
+grep -Fq "hermes -p \"\${profile}\" config set fallback_providers '[]'" "${BOOTSTRAP}"
+
+echo "[check] orchestrator routes to model-policy specialists"
+grep -Fq '`repository-analyst`' "${ORCHESTRATOR_SOUL}"
+grep -Fq '`task-decomposer`' "${ORCHESTRATOR_SOUL}"
+grep -Fq '`docs`' "${ORCHESTRATOR_SOUL}"
+grep -Fq '`auditor-ox`' "${ORCHESTRATOR_SOUL}"
+grep -Fq 'jego brak nie może blokować podstawowego gate GPT+Grok' "${ORCHESTRATOR_SOUL}"
 
 echo "[check] orchestrator receives canonical standard at runtime"
 grep -Fq 'STANDARD_SRC="${ROOT_DIR}/standards/SOFTWARE_DEVELOPMENT_STANDARD.md"' "${BOOTSTRAP}"
