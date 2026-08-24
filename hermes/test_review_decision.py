@@ -23,6 +23,17 @@ class ReviewDecisionTests(unittest.TestCase):
         text = "DECISION: APPROVE\nDECISION: CHANGES_REQUIRED\n"
         self.assertEqual(parse_review(text).status, "REVIEW_PENDING")
 
+    def test_supported_plus_unsupported_decision_fails_closed(self) -> None:
+        text = "DECISION: APPROVE\nDECISION: CHANGES_REQUESTED\n"
+        result = parse_review(text)
+        self.assertEqual(result.status, "REVIEW_PENDING")
+        self.assertEqual(result.reason, "missing_or_multiple_decisions")
+
+    def test_single_unsupported_decision_fails_closed(self) -> None:
+        result = parse_review("DECISION: CHANGES_REQUESTED\n")
+        self.assertEqual(result.status, "REVIEW_PENDING")
+        self.assertEqual(result.reason, "unparseable_decision")
+
     def test_high_cannot_be_approved(self) -> None:
         text = "severity: HIGH\nDECISION: APPROVE\n"
         self.assertEqual(parse_review(text).status, "REVIEW_PENDING")
