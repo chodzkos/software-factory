@@ -55,12 +55,14 @@ Skrypt jest idempotentny względem tworzenia profili: istniejący profil jest wy
 - Kanban worker dostaje lifecycle i narzędzia `kanban_*` automatycznie po dispatchu.
 - Taski kodujące używają `workspace=worktree:<repo>` jako jedynej warstwy izolacji worktree.
 - Profil `coder` nie ma globalnego `worktree: true`, żeby nie tworzyć worktree wewnątrz worktree Kanban.
-- `kanban.default_assignee` nie jest ustawiany na orchestratora; nieprzypisane taski mają wymagać jawnego routingu.
+- `kanban.default_assignee` jest jawnie czyszczony do pustej wartości; nieprzypisane taski mają wymagać jawnego routingu.
 - `kanban.orchestrator_profile` jest zapisywany w `DISPATCHER_PROFILE`, nie w przypadkowo aktywnym profilu CLI.
 
 ## Orchestrator
 
 Orchestrator ma jawnie włączony toolset `kanban` dla CLI, ale globalnie wyłączone toolsety implementacyjne: terminal, file, code execution, web/browser i image generation. Dispatcher-spawned Kanban worker również dostaje `kanban` przez lifecycle Hermesa.
+
+Orchestrator ma tworzyć nowe karty wyłącznie z jawnym `assignee`. Pusty `default_assignee` jest celowy: brak routingu ma pozostać widoczny zamiast automatycznie wracać do orchestratora i wzmacniać pętlę koordynacyjną.
 
 ## Gemini quick-reviewer
 
