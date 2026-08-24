@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BOOTSTRAP="${ROOT_DIR}/hermes/bootstrap_profiles.sh"
 STANDARD="${ROOT_DIR}/standards/SOFTWARE_DEVELOPMENT_STANDARD.md"
+ORCHESTRATOR_SOUL="${ROOT_DIR}/hermes/profiles/orchestrator/SOUL.md"
 
 echo "[check] bash syntax"
 bash -n "${BOOTSTRAP}"
@@ -29,6 +30,29 @@ fi
 echo "[check] directory-based profile detection"
 grep -Fq '[[ -d "${PROFILE_ROOT}/${name}" ]]' "${BOOTSTRAP}"
 
+echo "[check] model policy defaults"
+grep -Fq 'GEMINI_PROVIDER="${GEMINI_PROVIDER:-gemini}"' "${BOOTSTRAP}"
+grep -Fq 'GEMINI_MODEL="${GEMINI_MODEL:-gemini-3.5-flash-lite}"' "${BOOTSTRAP}"
+grep -Fq 'OX_PROVIDER="${OX_PROVIDER:-openrouter}"' "${BOOTSTRAP}"
+grep -Fq 'OX_MODEL="${OX_MODEL-stealth/ox-alpha}"' "${BOOTSTRAP}"
+
+echo "[check] specialized role routing"
+grep -Fq 'for profile in task-decomposer quick-reviewer docs; do' "${BOOTSTRAP}"
+grep -Fq 'for profile in repository-analyst auditor-ox; do' "${BOOTSTRAP}"
+grep -Fq 'hermes -p repository-analyst config set model.provider "${primary_provider}"' "${BOOTSTRAP}"
+grep -Fq 'profiles+=(auditor-ox)' "${BOOTSTRAP}"
+
+echo "[check] hidden model fallbacks disabled"
+grep -Fq 'for profile in "${profiles[@]}"; do' "${BOOTSTRAP}"
+grep -Fq "hermes -p \"\${profile}\" config set fallback_providers '[]'" "${BOOTSTRAP}"
+
+echo "[check] orchestrator routes to model-policy specialists"
+grep -Fq '`repository-analyst`' "${ORCHESTRATOR_SOUL}"
+grep -Fq '`task-decomposer`' "${ORCHESTRATOR_SOUL}"
+grep -Fq '`docs`' "${ORCHESTRATOR_SOUL}"
+grep -Fq '`auditor-ox`' "${ORCHESTRATOR_SOUL}"
+grep -Fq 'jego brak nie może blokować podstawowego gate GPT+Grok' "${ORCHESTRATOR_SOUL}"
+
 echo "[check] orchestrator receives canonical standard at runtime"
 grep -Fq 'STANDARD_SRC="${ROOT_DIR}/standards/SOFTWARE_DEVELOPMENT_STANDARD.md"' "${BOOTSTRAP}"
 grep -Fq 'cat "${STANDARD_SRC}"' "${BOOTSTRAP}"
@@ -46,9 +70,12 @@ expected_disabled='["terminal","file","code_execution","web","browser","image_ge
 grep -Fq "orchestrator config set agent.disabled_toolsets '${expected_disabled}'" "${BOOTSTRAP}"
 grep -Fq "routing-sink config set agent.disabled_toolsets '${expected_disabled}'" "${BOOTSTRAP}"
 
-echo "[check] quick-reviewer preserves manual routing"
-grep -Fq 'elif [[ "${created_profiles[quick-reviewer]:-0}" == "1" ]]' "${BOOTSTRAP}"
-grep -Fq '[preserve] GEMINI_MODEL jest pusty; istniejący routing quick-reviewer pozostaje bez zmian.' "${BOOTSTRAP}"
+echo "[check] post-bootstrap model assertions"
+grep -Fq 'expect_config task-decomposer model.default "${GEMINI_MODEL}"' "${BOOTSTRAP}"
+grep -Fq 'expect_config quick-reviewer model.default "${GEMINI_MODEL}"' "${BOOTSTRAP}"
+grep -Fq 'expect_config docs model.default "${GEMINI_MODEL}"' "${BOOTSTRAP}"
+grep -Fq 'expect_config repository-analyst model.default "${OX_MODEL}"' "${BOOTSTRAP}"
+grep -Fq 'expect_config auditor-ox model.default "${OX_MODEL}"' "${BOOTSTRAP}"
 
 echo "[check] post-bootstrap worktree assertions"
 grep -Fq 'expect_config coder worktree "false"' "${BOOTSTRAP}"
@@ -62,7 +89,7 @@ echo "[check] routing sink exists"
 test -f "${ROOT_DIR}/hermes/profiles/routing-sink/SOUL.md"
 
 echo "[check] required profile SOUL files"
-for profile in orchestrator architect coder quick-reviewer critic auditor-gpt auditor-grok release-manager routing-sink; do
+for profile in orchestrator architect repository-analyst task-decomposer coder quick-reviewer critic auditor-gpt auditor-grok auditor-ox docs release-manager routing-sink; do
   test -f "${ROOT_DIR}/hermes/profiles/${profile}/SOUL.md" || {
     echo "ERROR: brak hermes/profiles/${profile}/SOUL.md" >&2
     exit 1
