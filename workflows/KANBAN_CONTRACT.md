@@ -19,11 +19,13 @@ Ten dokument doprecyzowuje `standards/SOFTWARE_DEVELOPMENT_STANDARD.md` dla Soft
 | `ready` | wszystkie wymagane zależności są spełnione i task może być dispatchowany |
 | `running` | worker wykonuje dokładnie ten task |
 | `blocked` | wymagane wejście/decyzja/provider/evidence uniemożliwia dalszy postęp |
-| `review` | implementacja jest zakończona, ale wymagane review/audit/verification nie są jeszcze zamknięte |
-| `done` | task ma wymagane evidence i spełnia warunki DONE/VERIFIED dla swojej klasy |
+| `review` | task lub zmiana oczekuje na wymagane review/audit/verification |
+| `done` | ta konkretna karta została zakończona; nie oznacza automatycznie VERIFIED całej zmiany |
 | `archived` | zamknięty historyczny task po zakończeniu lifecycle |
 
-`done` nie jest synonimem „agent skończył pisać”. `IMPLEMENTED != VERIFIED`.
+Hermes może przenieść pojedynczą kartę wykonawczą do `done`, gdy worker ją kończy. To jest status **karty**, nie automatyczne potwierdzenie całej zmiany. `IMPLEMENTED != VERIFIED`.
+
+Zmiana feature/bugfix może być uznana za VERIFIED/DONE dopiero wtedy, gdy wymagane przez jej task contract karty review/audytu oraz wymagane evidence są zakończone i nie ma nierozwiązanych blockerów. Orchestrator nie może wywnioskować VERIFIED wyłącznie z `done` karty implementera.
 
 ## 3. Task body — wymagane pola
 
@@ -45,6 +47,8 @@ ACCEPTANCE_CRITERIA:
 ```
 
 Dla tasku modyfikującego kod `WORKSPACE` musi być `worktree:<absolute-repo-path>`. Jedna logiczna zmiana = jeden branch/worktree/current owner.
+
+Pole `WORKSPACE` jest kontraktem Software Factory. Przy tworzeniu tasku Kanban musi zostać odwzorowane na rzeczywiste pola Hermesa: `workspace_kind=worktree` oraz `workspace_path` wskazujące izolowany worktree dla tej karty, nie główny checkout repo. Sam tekst `WORKSPACE:` nie tworzy izolacji.
 
 ## 4. Routing
 
@@ -90,11 +94,13 @@ Dla opcjonalnego `auditor-ox` dopuszczalne jest także:
 DECISION: SKIPPED_OX_UNAVAILABLE
 ```
 
-Każdy finding zawiera co najmniej `severity`, `location`, `evidence`, `impact`, `proposed fix`.
+Każdy finding zawiera co najmniej jawne pole `severity`, a także `location`, `evidence`, `impact`, `proposed fix`. Pole severity może być zapisane zwykłym Markdownem, np. `severity: HIGH`, ``- `severity`: HIGH`` albo w tabeli `| severity | HIGH |`.
 
 - wiarygodny HIGH/CRITICAL → `CHANGES_REQUIRED`,
-- brak decyzji, wiele sprzecznych decyzji lub nieparsowalny wynik → `REVIEW_PENDING`, nigdy APPROVE,
+- brak decyzji, wiele decyzji lub nieparsowalny wynik → `REVIEW_PENDING`, nigdy APPROVE,
 - implementer nie może zatwierdzić własnej zmiany jako independent reviewer.
+
+Parser decyzji nie zgaduje severity z dowolnej prozy; gate opiera się na jawnym polu `severity` w strukturze findingu. Reviewer ma obowiązek użyć tego pola dla każdego findingu.
 
 ## 7. Minimalna ścieżka feature/bugfix
 
@@ -110,8 +116,9 @@ Znaki `?` oznaczają etap wymagany tylko przez zakres/ryzyko/task contract.
 
 ## 8. Reguły przejść
 
-- worker może zakończyć własny task wykonawczy, ale nie może sam nadać całej zmianie statusu VERIFIED, jeśli wymagane są niezależne etapy,
+- worker może zakończyć własną kartę wykonawczą jako `done`, ale nie może sam nadać całej zmianie statusu VERIFIED,
+- nadrzędna zmiana pozostaje nieweryfikowana, dopóki wszystkie wymagane review/audit/evidence z task contract nie są zamknięte,
 - `CHANGES_REQUIRED` tworzy jawny follow-up dla implementera i nie pozwala zamknąć nadrzędnej zmiany,
-- `REVIEW_PENDING` zatrzymuje przejście do VERIFIED/DONE,
-- brak wymaganego evidence → `blocked` albo pozostanie w `review`, nie `done`,
+- `REVIEW_PENDING` zatrzymuje przejście całej zmiany do VERIFIED/DONE,
+- brak wymaganego evidence → `blocked` albo pozostanie w `review`, nie VERIFIED,
 - `release-manager` odmawia release przy brakującym required review/evidence lub wiarygodnym nierozwiązanym HIGH/CRITICAL.
