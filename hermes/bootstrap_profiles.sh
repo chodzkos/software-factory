@@ -9,29 +9,43 @@ DISPATCHER_PROFILE="${DISPATCHER_PROFILE:-default}"
 GROK_PROVIDER="${GROK_PROVIDER:-xai-oauth}"
 GROK_MODEL="${GROK_MODEL:-grok-4.6}"
 GEMINI_PROVIDER="${GEMINI_PROVIDER:-gemini}"
-GEMINI_MODEL="${GEMINI_MODEL:-}"
+GEMINI_MODEL="${GEMINI_MODEL:-gemini-3.5-flash-lite}"
+OX_PROVIDER="${OX_PROVIDER:-openrouter}"
+# Ustaw OX_MODEL="", aby świadomie wyłączyć opcjonalne role Ox.
+OX_MODEL="${OX_MODEL-stealth/ox-alpha}"
 ALLOW_NON_GPT_PRIMARY="${ALLOW_NON_GPT_PRIMARY:-0}"
 
 profiles=(
   orchestrator
   architect
+  repository-analyst
+  task-decomposer
   coder
   quick-reviewer
   critic
   auditor-gpt
   auditor-grok
+  docs
   release-manager
   routing-sink
 )
 
+if [[ -n "${OX_MODEL}" ]]; then
+  profiles+=(auditor-ox)
+fi
+
 declare -A descriptions=(
   [orchestrator]="Decomposes goals into Kanban tasks, routes work, enforces gates; does not implement code."
   [architect]="Produces requirements, architecture and project plans; resolves boundaries and dependencies."
+  [repository-analyst]="Analyzes repository structure, contracts, dependencies, tests and risks before planning changes."
+  [task-decomposer]="Turns accepted plans into small Kanban-ready tasks with explicit ownership and acceptance criteria."
   [coder]="Implements one logical change in an isolated workspace and verifies it."
   [quick-reviewer]="Performs cheap first-pass review, CI triage and obvious defect detection."
   [critic]="Independent deep reviewer; challenges design, security, tests and verification evidence."
   [auditor-gpt]="Independent final auditor using the primary GPT model."
   [auditor-grok]="Independent final auditor using Grok; searches for missed blockers and security findings."
+  [auditor-ox]="Optional third independent auditor using Ox Alpha."
+  [docs]="Produces project and user documentation from accepted, verified changes."
   [release-manager]="Evaluates release gate and refuses publication when evidence or required controls are missing."
   [routing-sink]="Fail-closed sink for unroutable Kanban tasks; blocks the task and requests explicit reassignment."
 )
@@ -115,6 +129,12 @@ fi
 
 echo "Primary profile: ${PRIMARY_PROFILE} -> ${primary_provider}/${primary_model}"
 echo "Dispatcher profile: ${DISPATCHER_PROFILE}"
+echo "Gemini policy: ${GEMINI_PROVIDER}/${GEMINI_MODEL}"
+if [[ -n "${OX_MODEL}" ]]; then
+  echo "Ox policy: ${OX_PROVIDER}/${OX_MODEL}"
+else
+  echo "Ox policy: disabled; repository-analyst falls back to ${primary_provider}/${primary_model}"
+fi
 echo
 
 for profile in "${profiles[@]}"; do
@@ -148,6 +168,25 @@ for profile in critic auditor-grok; do
   hermes -p "${profile}" config set model.default "${GROK_MODEL}"
 done
 
+# Częste, tańsze role są deterministycznie przypięte do jawnego modelu Gemini.
+for profile in task-decomposer quick-reviewer docs; do
+  hermes -p "${profile}" config set model.provider "${GEMINI_PROVIDER}"
+  hermes -p "${profile}" config set model.default "${GEMINI_MODEL}"
+done
+
+# Ox Alpha jest opcjonalny. Gdy jest wyłączony, analiza repozytorium pozostaje dostępna przez primary GPT,
+# a trzeci audyt Ox nie jest tworzony ani wymagany do podstawowego gate GPT+Grok.
+if [[ -n "${OX_MODEL}" ]]; then
+  for profile in repository-analyst auditor-ox; do
+    hermes -p "${profile}" config set model.provider "${OX_PROVIDER}"
+    hermes -p "${profile}" config set model.default "${OX_MODEL}"
+  done
+else
+  hermes -p repository-analyst config set model.provider "${primary_provider}"
+  hermes -p repository-analyst config set model.default "${primary_model}"
+  echo "[warning] Ox wyłączony; repository-analyst używa ${primary_provider}/${primary_model}, a auditor-ox nie jest wymagany."
+fi
+
 # Izolacją tasków kodujących zarządza Kanban przez workspace=worktree:<repo>.
 # Jawnie wyłączamy odziedziczone ustawienia worktree z PRIMARY_PROFILE, aby uniknąć nested worktree.
 hermes -p coder config set worktree false
@@ -167,18 +206,6 @@ hermes -p routing-sink config set agent.disabled_toolsets '["terminal","file","c
 hermes -p "${DISPATCHER_PROFILE}" config set kanban.orchestrator_profile orchestrator
 hermes -p "${DISPATCHER_PROFILE}" config set kanban.default_assignee routing-sink
 
-if [[ -n "${GEMINI_MODEL}" ]]; then
-  hermes -p quick-reviewer config set model.provider "${GEMINI_PROVIDER}"
-  hermes -p quick-reviewer config set model.default "${GEMINI_MODEL}"
-  echo "[configured] quick-reviewer -> ${GEMINI_PROVIDER}/${GEMINI_MODEL}"
-elif [[ "${created_profiles[quick-reviewer]:-0}" == "1" ]]; then
-  hermes -p quick-reviewer config set model.provider "${primary_provider}"
-  hermes -p quick-reviewer config set model.default "${primary_model}"
-  echo "[warning] GEMINI_MODEL jest pusty; nowy quick-reviewer używa tymczasowo ${primary_provider}/${primary_model}."
-else
-  echo "[preserve] GEMINI_MODEL jest pusty; istniejący routing quick-reviewer pozostaje bez zmian."
-fi
-
 # Walidacja krytycznych ustawień po bootstrapie.
 expect_config auditor-gpt model.provider "${primary_provider}"
 expect_config auditor-gpt model.default "${primary_model}"
@@ -186,12 +213,27 @@ expect_config critic model.provider "${GROK_PROVIDER}"
 expect_config critic model.default "${GROK_MODEL}"
 expect_config auditor-grok model.provider "${GROK_PROVIDER}"
 expect_config auditor-grok model.default "${GROK_MODEL}"
+expect_config task-decomposer model.provider "${GEMINI_PROVIDER}"
+expect_config task-decomposer model.default "${GEMINI_MODEL}"
+expect_config quick-reviewer model.provider "${GEMINI_PROVIDER}"
+expect_config quick-reviewer model.default "${GEMINI_MODEL}"
+expect_config docs model.provider "${GEMINI_PROVIDER}"
+expect_config docs model.default "${GEMINI_MODEL}"
+if [[ -n "${OX_MODEL}" ]]; then
+  expect_config repository-analyst model.provider "${OX_PROVIDER}"
+  expect_config repository-analyst model.default "${OX_MODEL}"
+  expect_config auditor-ox model.provider "${OX_PROVIDER}"
+  expect_config auditor-ox model.default "${OX_MODEL}"
+else
+  expect_config repository-analyst model.provider "${primary_provider}"
+  expect_config repository-analyst model.default "${primary_model}"
+fi
 expect_config orchestrator tool_loop_guardrails.hard_stop_enabled "true"
 expect_config routing-sink tool_loop_guardrails.hard_stop_enabled "true"
 expect_config coder worktree "false"
 expect_config coder worktree_sync "false"
 expect_config "${DISPATCHER_PROFILE}" kanban.orchestrator_profile "orchestrator"
-expect_config "${DISPATCHER_PROFILE}" kanban.default_assignee "routing-sink"
+expect_config "${DISPATCHER_PROFILE}" kanban.default_assignee routing-sink
 
 if ! grep -Fq '# Software Development Standard — wstrzyknięty kontekst runtime' "${PROFILE_ROOT}/orchestrator/SOUL.md"; then
   echo "ERROR: orchestrator nie otrzymał wstrzykniętego Standardu" >&2
