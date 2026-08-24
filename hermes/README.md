@@ -14,10 +14,11 @@ Ta sekcja zawiera deklaratywną konfigurację profili Hermesa dla Software Facto
 | `auditor-gpt` | końcowy audyt GPT | główny GPT z `PRIMARY_PROFILE` |
 | `auditor-grok` | końcowy audyt Grok | `xai-oauth / grok-4.6` |
 | `release-manager` | release gate | główny GPT z `PRIMARY_PROFILE` |
+| `routing-sink` | fail-closed fallback dla błędnie skierowanych kart | główny GPT z `PRIMARY_PROFILE`, bez narzędzi implementacyjnych |
 
 ## Ważne: profil głównego GPT
 
-Skrypt nie zakłada już, że `default` jest GPT. Na hoście, na którym `default` wskazuje np. Groka, bootstrap przerwie działanie zamiast utworzyć mylący profil `auditor-gpt`.
+Skrypt nie zakłada, że `default` jest GPT. Jeśli wskazany `PRIMARY_PROFILE` nie wygląda na profil GPT, bootstrap przerwie działanie zamiast utworzyć mylący profil `auditor-gpt`.
 
 Najpierw wskaż działający profil GPT:
 
@@ -41,10 +42,11 @@ Na serwerze, po merge PR i synchronizacji `main`:
 cd ~/projects/software-factory
 git switch main
 git pull --ff-only
+bash hermes/verify_bootstrap.sh
 PRIMARY_PROFILE=<profil-gpt> bash hermes/bootstrap_profiles.sh
 ```
 
-Skrypt jest idempotentny względem tworzenia profili: istniejący profil jest wykrywany po katalogu `~/.hermes/profiles/<name>`, więc aktywny glif z `hermes profile list` nie wpływa na wynik. Przy każdym uruchomieniu odświeżane są `SOUL.md` oraz jawnie zarządzane ustawienia/model routing.
+Skrypt jest idempotentny względem tworzenia profili: istniejący profil jest wykrywany po katalogu `~/.hermes/profiles/<name>`, więc sposób oznaczania aktywnego profilu przez `hermes profile list` nie wpływa na wynik. Przy każdym uruchomieniu odświeżane są `SOUL.md` oraz jawnie zarządzane ustawienia/model routing.
 
 ## Założenia
 
@@ -55,14 +57,27 @@ Skrypt jest idempotentny względem tworzenia profili: istniejący profil jest wy
 - Kanban worker dostaje lifecycle i narzędzia `kanban_*` automatycznie po dispatchu.
 - Taski kodujące używają `workspace=worktree:<repo>` jako jedynej warstwy izolacji worktree.
 - Profil `coder` nie ma globalnego `worktree: true`, żeby nie tworzyć worktree wewnątrz worktree Kanban.
-- `kanban.default_assignee` jest jawnie czyszczony do pustej wartości; nieprzypisane taski mają wymagać jawnego routingu.
-- `kanban.orchestrator_profile` jest zapisywany w `DISPATCHER_PROFILE`, nie w przypadkowo aktywnym profilu CLI.
+- `kanban.orchestrator_profile` oraz `kanban.default_assignee` są zapisywane w `DISPATCHER_PROFILE`, nie w przypadkowo aktywnym profilu CLI.
 
 ## Orchestrator
 
 Orchestrator ma jawnie włączony toolset `kanban` dla CLI, ale globalnie wyłączone toolsety implementacyjne: terminal, file, code execution, web/browser i image generation. Dispatcher-spawned Kanban worker również dostaje `kanban` przez lifecycle Hermesa.
 
-Orchestrator ma tworzyć nowe karty wyłącznie z jawnym `assignee`. Pusty `default_assignee` jest celowy: brak routingu ma pozostać widoczny zamiast automatycznie wracać do orchestratora i wzmacniać pętlę koordynacyjną.
+Orchestrator ma tworzyć nowe karty wyłącznie z jawnym `assignee`.
+
+## Fail-closed routing
+
+Hermes traktuje pusty `kanban.default_assignee` jako fallback do aktywnego profilu, dlatego Software Factory nie używa pustej wartości.
+
+`kanban.default_assignee` wskazuje na `routing-sink`. Ten profil:
+
+- nie implementuje kodu,
+- nie tworzy kolejnych kart,
+- nie ma toolsetów implementacyjnych,
+- po dispatchu korzysta wyłącznie z lifecycle Kanban,
+- blokuje źle skierowaną kartę i wymaga jawnego przypisania do właściwego specjalisty.
+
+Dzięki temu nieznany profil z decomposera nie trafia przypadkowo do `default` ani z powrotem do orchestratora.
 
 ## Gemini quick-reviewer
 
@@ -91,4 +106,9 @@ Skrypt:
 - synchronizuje role GPT z `PRIMARY_PROFILE`,
 - synchronizuje role Grok z `xai-oauth/grok-4.6`,
 - ustawia `tool_loop_guardrails.hard_stop_enabled=true`,
+- ustawia fail-closed `routing-sink`,
 - wykonuje walidację krytycznych ustawień po bootstrapie.
+
+## Verification
+
+`hermes/verify_bootstrap.sh` jest nieinwazyjny: nie modyfikuje `~/.hermes`. Sprawdza składnię Bash i najważniejsze inwarianty bootstrapu przed uruchomieniem go na hoście.
