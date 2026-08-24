@@ -35,6 +35,14 @@ if ! command -v hermes >/dev/null 2>&1; then
   exit 1
 fi
 
+profile_exists() {
+  local name="$1"
+  hermes profile list \
+    | sed -E 's/^[[:space:]]*\*[[:space:]]*//' \
+    | awk '{print $1}' \
+    | grep -Fxq "${name}"
+}
+
 mkdir -p "${PROFILE_ROOT}"
 
 echo "Primary profile model:"
@@ -42,7 +50,7 @@ hermes config get model || true
 
 echo
 for profile in "${profiles[@]}"; do
-  if hermes profile list | awk '{print $1}' | grep -Fxq "${profile}"; then
+  if profile_exists "${profile}"; then
     echo "[exists] ${profile}"
   else
     echo "[create] ${profile}"
@@ -59,7 +67,6 @@ for profile in "${profiles[@]}"; do
   # Unattended workers should stop on repeated no-progress/failure loops.
   hermes -p "${profile}" config set agent.hard_stop_enabled true >/dev/null
   hermes -p "${profile}" config set agent.tool_use_enforcement auto >/dev/null
-
 done
 
 # Grok roles are explicit and deterministic.
@@ -76,6 +83,11 @@ hermes -p coder config set worktree_sync true
 # inside its profile; Kanban worker tools remain injected by Hermes on dispatch.
 hermes -p orchestrator config set agent.disabled_toolsets '["terminal","file","code_execution","web","browser","image_gen"]'
 
+# Route root/decomposition work to the orchestrator and fail toward coordination
+# rather than silently assigning unknown roles to an implementation worker.
+hermes config set kanban.orchestrator_profile orchestrator
+hermes config set kanban.default_assignee orchestrator
+
 if [[ -n "${GEMINI_MODEL}" ]]; then
   hermes -p quick-reviewer config set model.provider "${GEMINI_PROVIDER}"
   hermes -p quick-reviewer config set model.default "${GEMINI_MODEL}"
@@ -91,4 +103,5 @@ echo
 hermes profile list
 
 echo
-echo "Run 'hermes doctor' and then inspect each profile with 'hermes -p <name> config get model'."
+echo "Run 'hermes doctor' and inspect models with 'hermes -p <name> config get model'."
+echo "Then initialize/verify Kanban with 'hermes kanban init' and start one gateway/dispatcher."
