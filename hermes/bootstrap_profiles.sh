@@ -123,9 +123,10 @@ hermes -p orchestrator tools enable kanban --platform cli
 hermes -p orchestrator config set agent.disabled_toolsets '["terminal","file","code_execution","web","browser","image_gen"]'
 
 # Routing Kanban zapisujemy w profilu, z którego uruchamiany jest gateway/dispatcher.
-# Nie ustawiamy default_assignee=orchestrator: nieprzypisane taski mają pozostać widoczne
-# do jawnego routingu zamiast tworzyć samonapędzającą się pętlę koordynacyjną.
+# Pusty default_assignee jest ustawiany jawnie również przy ponownym uruchomieniu,
+# żeby stara wartość nie kierowała nieprzypisanych tasków z powrotem do orchestratora.
 hermes -p "${DISPATCHER_PROFILE}" config set kanban.orchestrator_profile orchestrator
+hermes -p "${DISPATCHER_PROFILE}" config set kanban.default_assignee ""
 
 if [[ -n "${GEMINI_MODEL}" ]]; then
   hermes -p quick-reviewer config set model.provider "${GEMINI_PROVIDER}"
@@ -146,6 +147,7 @@ expect_config auditor-grok model.provider "${GROK_PROVIDER}"
 expect_config auditor-grok model.default "${GROK_MODEL}"
 expect_config orchestrator tool_loop_guardrails.hard_stop_enabled "true"
 expect_config "${DISPATCHER_PROFILE}" kanban.orchestrator_profile "orchestrator"
+expect_config "${DISPATCHER_PROFILE}" kanban.default_assignee ""
 
 echo
 hermes profile list
