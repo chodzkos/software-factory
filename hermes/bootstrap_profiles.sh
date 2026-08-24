@@ -3,11 +3,13 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PROFILE_ROOT="${HOME}/.hermes/profiles"
+PRIMARY_PROFILE="${PRIMARY_PROFILE:-default}"
+DISPATCHER_PROFILE="${DISPATCHER_PROFILE:-default}"
 GROK_PROVIDER="${GROK_PROVIDER:-xai-oauth}"
 GROK_MODEL="${GROK_MODEL:-grok-4.6}"
 GEMINI_PROVIDER="${GEMINI_PROVIDER:-gemini}"
 GEMINI_MODEL="${GEMINI_MODEL:-}"
-DISPATCHER_PROFILE="${DISPATCHER_PROFILE:-default}"
+ALLOW_NON_GPT_PRIMARY="${ALLOW_NON_GPT_PRIMARY:-0}"
 
 profiles=(
   orchestrator
@@ -41,12 +43,18 @@ profile_exists() {
   [[ -d "${PROFILE_ROOT}/${name}" ]]
 }
 
+get_config() {
+  local profile="$1"
+  local key="$2"
+  hermes -p "${profile}" config get "${key}" 2>/dev/null | tail -n 1 | tr -d '\r'
+}
+
 expect_config() {
   local profile="$1"
   local key="$2"
   local expected="$3"
   local actual
-  actual="$(hermes -p "${profile}" config get "${key}" 2>/dev/null | tail -n 1 | tr -d '\r')"
+  actual="$(get_config "${profile}" "${key}")"
   if [[ "${actual}" != "${expected}" ]]; then
     echo "ERROR: ${profile}:${key} expected '${expected}', got '${actual}'" >&2
     exit 1
@@ -55,17 +63,32 @@ expect_config() {
 
 mkdir -p "${PROFILE_ROOT}"
 
-echo "Model profilu źródłowego '${DISPATCHER_PROFILE}':"
-hermes -p "${DISPATCHER_PROFILE}" config get model || true
+primary_provider="$(get_config "${PRIMARY_PROFILE}" model.provider)"
+primary_model="$(get_config "${PRIMARY_PROFILE}" model.default)"
 
+if [[ -z "${primary_model}" ]]; then
+  echo "ERROR: PRIMARY_PROFILE='${PRIMARY_PROFILE}' nie ma ustawionego model.default" >&2
+  exit 1
+fi
+
+if [[ "${ALLOW_NON_GPT_PRIMARY}" != "1" && ! "${primary_model}" =~ [Gg][Pp][Tt] ]]; then
+  echo "ERROR: PRIMARY_PROFILE='${PRIMARY_PROFILE}' używa modelu '${primary_model}', który nie wygląda na GPT." >&2
+  echo "       Najpierw skonfiguruj profil z głównym modelem GPT albo ustaw PRIMARY_PROFILE=<profil-gpt>." >&2
+  echo "       Tylko świadomy wyjątek: ALLOW_NON_GPT_PRIMARY=1." >&2
+  exit 1
+fi
+
+echo "Primary profile: ${PRIMARY_PROFILE} -> ${primary_provider}/${primary_model}"
+echo "Dispatcher profile: ${DISPATCHER_PROFILE}"
 echo
+
 for profile in "${profiles[@]}"; do
   if profile_exists "${profile}"; then
     echo "[exists] ${profile}"
   else
     echo "[create] ${profile}"
     hermes profile create "${profile}" \
-      --clone-from "${DISPATCHER_PROFILE}" \
+      --clone-from "${PRIMARY_PROFILE}" \
       --description "${descriptions[$profile]}"
   fi
 
@@ -79,6 +102,12 @@ for profile in "${profiles[@]}"; do
   hermes -p "${profile}" config set agent.tool_use_enforcement auto
 done
 
+# Role korzystające z głównego GPT są deterministycznie synchronizowane z PRIMARY_PROFILE.
+for profile in orchestrator architect coder auditor-gpt release-manager; do
+  hermes -p "${profile}" config set model.provider "${primary_provider}"
+  hermes -p "${profile}" config set model.default "${primary_model}"
+done
+
 # Role Groka są jawnie przypięte do providera i modelu.
 for profile in critic auditor-grok; do
   hermes -p "${profile}" config set model.provider "${GROK_PROVIDER}"
@@ -89,8 +118,8 @@ done
 # Nie ustawiamy worktree=true w profilu codera, żeby nie tworzyć zagnieżdżonych worktree.
 
 # Orchestrator koordynuje zadania i nie ma narzędzi implementacyjnych.
-# Kanban pozostaje dostępny zarówno po dispatchu, jak i w sesji interaktywnej.
-hermes -p orchestrator tools enable kanban
+# Kanban jest jawnie włączony dla sesji CLI; dispatcher i tak dokleja go workerom Kanban.
+hermes -p orchestrator tools enable kanban --platform cli
 hermes -p orchestrator config set agent.disabled_toolsets '["terminal","file","code_execution","web","browser","image_gen"]'
 
 # Routing Kanban zapisujemy w profilu, z którego uruchamiany jest gateway/dispatcher.
@@ -103,13 +132,14 @@ if [[ -n "${GEMINI_MODEL}" ]]; then
   hermes -p quick-reviewer config set model.default "${GEMINI_MODEL}"
   echo "[configured] quick-reviewer -> ${GEMINI_PROVIDER}/${GEMINI_MODEL}"
 else
-  echo "[warning] GEMINI_MODEL jest pusty; quick-reviewer nadal dziedziczy model profilu źródłowego."
-  echo "          Skonfiguruj go później przez:"
-  echo "          hermes -p quick-reviewer config set model.provider ${GEMINI_PROVIDER}"
-  echo "          hermes -p quick-reviewer config set model.default <MODEL_ID>"
+  hermes -p quick-reviewer config set model.provider "${primary_provider}"
+  hermes -p quick-reviewer config set model.default "${primary_model}"
+  echo "[warning] GEMINI_MODEL jest pusty; quick-reviewer używa tymczasowo ${primary_provider}/${primary_model}."
 fi
 
 # Walidacja krytycznych ustawień po bootstrapie.
+expect_config auditor-gpt model.provider "${primary_provider}"
+expect_config auditor-gpt model.default "${primary_model}"
 expect_config critic model.provider "${GROK_PROVIDER}"
 expect_config critic model.default "${GROK_MODEL}"
 expect_config auditor-grok model.provider "${GROK_PROVIDER}"
