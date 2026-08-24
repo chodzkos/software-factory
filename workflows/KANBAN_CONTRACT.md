@@ -97,7 +97,7 @@ DECISION: SKIPPED_OX_UNAVAILABLE
 Każdy finding zawiera co najmniej jawne pole `severity`, a także `location`, `evidence`, `impact`, `proposed fix`. Pole severity może być zapisane zwykłym Markdownem, np. `severity: HIGH`, ``- `severity`: HIGH`` albo w tabeli `| severity | HIGH |`.
 
 - wiarygodny HIGH/CRITICAL → `CHANGES_REQUIRED`,
-- brak decyzji, wiele decyzji lub nieparsowalny wynik → `REVIEW_PENDING`, nigdy APPROVE,
+- brak decyzji, wiele decyzji, dodatkowy nieobsługiwany marker `DECISION:` lub nieparsowalny wynik → `REVIEW_PENDING`, nigdy APPROVE,
 - implementer nie może zatwierdzić własnej zmiany jako independent reviewer.
 
 Parser decyzji nie zgaduje severity z dowolnej prozy; gate opiera się na jawnym polu `severity` w strukturze findingu. Reviewer ma obowiązek użyć tego pola dla każdego findingu.
@@ -122,3 +122,33 @@ Znaki `?` oznaczają etap wymagany tylko przez zakres/ryzyko/task contract.
 - `REVIEW_PENDING` zatrzymuje przejście całej zmiany do VERIFIED/DONE,
 - brak wymaganego evidence → `blocked` albo pozostanie w `review`, nie VERIFIED,
 - `release-manager` odmawia release przy brakującym required review/evidence lub wiarygodnym nierozwiązanym HIGH/CRITICAL.
+
+## 9. Obowiązkowy krok wdrożenia Kanbana
+
+Po merge zmian kontraktu Kanban i po zwykłym bootstrapie profili konfiguracja runtime Kanbana **musi** zostać jawnie zastosowana do profilu dispatchera:
+
+```bash
+DISPATCHER_PROFILE=default bash hermes/configure_kanban.sh
+```
+
+Ten krok jest wymagany przed utworzeniem pierwszego tasku Software Factory. Sam `bootstrap_profiles.sh` nie zastępuje konfiguracji Kanbana i nie wyłącza wbudowanego decomposera Hermesa.
+
+Po wykonaniu należy potwierdzić co najmniej:
+
+```bash
+hermes -p default config get kanban.auto_decompose
+hermes -p default config get kanban.auto_subscribe_on_create
+hermes -p default config get kanban.orchestrator_profile
+hermes -p default config get kanban.default_assignee
+```
+
+Oczekiwane wartości:
+
+```text
+false
+true
+orchestrator
+routing-sink
+```
+
+Dopóki ten krok nie zakończy się poprawnie, Software Factory nie jest gotowy do uruchamiania tasków Kanban.
