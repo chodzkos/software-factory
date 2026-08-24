@@ -8,9 +8,8 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-_DECISION_RE = re.compile(
-    r"(?m)^DECISION:\s*(APPROVE|CHANGES_REQUIRED|SKIPPED_OX_UNAVAILABLE)\s*$"
-)
+_DECISION_MARKER_RE = re.compile(r"(?m)^DECISION:\s*(.*?)\s*$")
+_ALLOWED_DECISIONS = {"APPROVE", "CHANGES_REQUIRED", "SKIPPED_OX_UNAVAILABLE"}
 _SEVERITY_FIELD_RE = re.compile(r"(?i)^severity\s*[:=-]\s*(CRITICAL|HIGH)\b")
 _SEVERITY_TABLE_RE = re.compile(
     r"(?i)^\|\s*severity\s*\|\s*(CRITICAL|HIGH)\s*\|"
@@ -47,13 +46,14 @@ def _has_blocking_finding(text: str) -> bool:
 
 def parse_review(text: str, *, allow_ox_skip: bool = False) -> ReviewDecision:
     """Parsuj wynik review fail-closed; nie zgaduj brakującej decyzji."""
-    decisions = _DECISION_RE.findall(text)
-    unique = set(decisions)
+    markers = _DECISION_MARKER_RE.findall(text)
 
-    if len(decisions) != 1 or len(unique) != 1:
+    if len(markers) != 1:
         return ReviewDecision("REVIEW_PENDING", "missing_or_multiple_decisions")
 
-    decision = decisions[0]
+    decision = markers[0].strip()
+    if decision not in _ALLOWED_DECISIONS:
+        return ReviewDecision("REVIEW_PENDING", "unparseable_decision")
 
     if decision == "SKIPPED_OX_UNAVAILABLE":
         if allow_ox_skip:
