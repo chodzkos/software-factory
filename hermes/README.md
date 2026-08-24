@@ -56,12 +56,12 @@ Skrypt jest idempotentny względem tworzenia profili: istniejący profil jest wy
 - Hindsight/pamięć jest już skonfigurowana na hoście i nie jest instalowana przez ten skrypt.
 - Kanban worker dostaje lifecycle i narzędzia `kanban_*` automatycznie po dispatchu.
 - Taski kodujące używają `workspace=worktree:<repo>` jako jedynej warstwy izolacji worktree.
-- Profil `coder` nie ma globalnego `worktree: true`, żeby nie tworzyć worktree wewnątrz worktree Kanban.
+- Bootstrap jawnie ustawia `coder worktree=false` i `worktree_sync=false`, aby nie odziedziczyć tych flag z `PRIMARY_PROFILE`.
 - `kanban.orchestrator_profile` oraz `kanban.default_assignee` są zapisywane w `DISPATCHER_PROFILE`, nie w przypadkowo aktywnym profilu CLI.
 
 ## Orchestrator
 
-Orchestrator jest coordination-only. Nie dostaje terminala, narzędzi plikowych, code execution, web/browser, image generation ani delegation.
+Orchestrator jest coordination-only. Nie dostaje terminala, narzędzi plikowych, code execution, web/browser, image generation, delegation, `computer_use` ani `cronjob`.
 
 Żeby mimo tego zawsze znał nadrzędny Software Development Standard, bootstrap buduje jego runtime `~/.hermes/profiles/orchestrator/SOUL.md` z dwóch części:
 
@@ -70,7 +70,7 @@ Orchestrator jest coordination-only. Nie dostaje terminala, narzędzi plikowych,
 
 To jest generowany kontekst runtime, nie drugie źródło prawdy. Przy każdym bootstrapie jest odtwarzany z pliku kanonicznego.
 
-Kanban jest włączany przez top-level `toolsets=["hermes-cli","kanban"]`, ponieważ właśnie ten klucz jest sprawdzany przez runtime gate narzędzi Kanban. `agent.disabled_toolsets` następnie usuwa z profilu orchestratora toolsety implementacyjne.
+Kanban jest włączany przez top-level `toolsets=["hermes-cli","kanban"]`, ponieważ właśnie ten klucz jest sprawdzany przez runtime gate narzędzi Kanban. `agent.disabled_toolsets` następnie usuwa z profilu orchestratora narzędzia implementacyjne i dodatkowe powierzchnie sterujące.
 
 Orchestrator ma tworzyć nowe karty wyłącznie z jawnym `assignee`.
 
@@ -83,6 +83,7 @@ Hermes traktuje pusty `kanban.default_assignee` jako fallback do aktywnego profi
 - nie implementuje kodu,
 - nie tworzy kolejnych kart,
 - nie ma toolsetów implementacyjnych,
+- nie ma `computer_use` ani `cronjob`,
 - po dispatchu korzysta wyłącznie z lifecycle Kanban,
 - blokuje źle skierowaną kartę i wymaga jawnego przypisania do właściwego specjalisty.
 
@@ -98,12 +99,16 @@ GEMINI_MODEL=<MODEL_ID> \
 bash hermes/bootstrap_profiles.sh
 ```
 
-lub ustawić model później:
+Jeśli `quick-reviewer` już istnieje i `GEMINI_MODEL` jest pusty, bootstrap zachowuje jego obecny routing modelu zamiast nadpisywać go z powrotem na primary GPT. Dzięki temu późniejsza ręczna konfiguracja Gemini nie zostanie utracona przy kolejnym bootstrapie.
+
+Model można więc ustawić również później:
 
 ```bash
 hermes -p quick-reviewer config set model.provider gemini
 hermes -p quick-reviewer config set model.default <MODEL_ID>
 ```
+
+Dla nowo tworzonego `quick-reviewer` bez `GEMINI_MODEL` bootstrap użyje tymczasowo primary GPT.
 
 ## Bezpieczne ponowne uruchomienie
 
@@ -111,15 +116,17 @@ Skrypt:
 
 - nie usuwa profili,
 - nie dotyka `auth.json`,
-- nie tworzy nested worktree,
+- wymusza `coder worktree=false` i `worktree_sync=false`,
 - synchronizuje role GPT z `PRIMARY_PROFILE`,
 - synchronizuje role Grok z `xai-oauth/grok-4.6`,
+- zachowuje istniejący manualny routing `quick-reviewer`, gdy `GEMINI_MODEL` jest pusty,
 - ustawia `tool_loop_guardrails.hard_stop_enabled=true`,
 - ustawia fail-closed `routing-sink`,
 - wstrzykuje kanoniczny Standard do runtime kontekstu orchestratora,
 - jawnie ustawia Kanban w top-level `toolsets` orchestratora,
+- ogranicza dodatkowe capability `computer_use` i `cronjob` dla orchestratora i routing-sink,
 - wykonuje walidację krytycznych ustawień po bootstrapie.
 
 ## Verification
 
-`hermes/verify_bootstrap.sh` jest nieinwazyjny: nie modyfikuje `~/.hermes`. Sprawdza składnię Bash i najważniejsze inwarianty bootstrapu przed uruchomieniem go na hoście.
+`hermes/verify_bootstrap.sh` jest nieinwazyjny: nie modyfikuje `~/.hermes`. Sprawdza składnię Bash i najważniejsze inwarianty bootstrapu przed uruchomieniem go na hoście. Negatywne grepy sprawdzają rzeczywiste linie poleceń, nie komentarze, aby uniknąć fałszywych alarmów.
