@@ -61,7 +61,16 @@ Skrypt jest idempotentny względem tworzenia profili: istniejący profil jest wy
 
 ## Orchestrator
 
-Orchestrator ma jawnie włączony toolset `kanban` dla CLI, ale globalnie wyłączone toolsety implementacyjne: terminal, file, code execution, web/browser i image generation. Dispatcher-spawned Kanban worker również dostaje `kanban` przez lifecycle Hermesa.
+Orchestrator jest coordination-only. Nie dostaje terminala, narzędzi plikowych, code execution, web/browser, image generation ani delegation.
+
+Żeby mimo tego zawsze znał nadrzędny Software Development Standard, bootstrap buduje jego runtime `~/.hermes/profiles/orchestrator/SOUL.md` z dwóch części:
+
+1. rolowego `hermes/profiles/orchestrator/SOUL.md`,
+2. aktualnej treści kanonicznego `standards/SOFTWARE_DEVELOPMENT_STANDARD.md`.
+
+To jest generowany kontekst runtime, nie drugie źródło prawdy. Przy każdym bootstrapie jest odtwarzany z pliku kanonicznego.
+
+Kanban jest włączany przez top-level `toolsets=["hermes-cli","kanban"]`, ponieważ właśnie ten klucz jest sprawdzany przez runtime gate narzędzi Kanban. `agent.disabled_toolsets` następnie usuwa z profilu orchestratora toolsety implementacyjne.
 
 Orchestrator ma tworzyć nowe karty wyłącznie z jawnym `assignee`.
 
@@ -107,6 +116,8 @@ Skrypt:
 - synchronizuje role Grok z `xai-oauth/grok-4.6`,
 - ustawia `tool_loop_guardrails.hard_stop_enabled=true`,
 - ustawia fail-closed `routing-sink`,
+- wstrzykuje kanoniczny Standard do runtime kontekstu orchestratora,
+- jawnie ustawia Kanban w top-level `toolsets` orchestratora,
 - wykonuje walidację krytycznych ustawień po bootstrapie.
 
 ## Verification
