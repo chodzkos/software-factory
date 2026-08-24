@@ -7,6 +7,7 @@ GROK_PROVIDER="${GROK_PROVIDER:-xai-oauth}"
 GROK_MODEL="${GROK_MODEL:-grok-4.6}"
 GEMINI_PROVIDER="${GEMINI_PROVIDER:-gemini}"
 GEMINI_MODEL="${GEMINI_MODEL:-}"
+DISPATCHER_PROFILE="${DISPATCHER_PROFILE:-default}"
 
 profiles=(
   orchestrator
@@ -37,16 +38,25 @@ fi
 
 profile_exists() {
   local name="$1"
-  hermes profile list \
-    | sed -E 's/^[[:space:]]*\*[[:space:]]*//' \
-    | awk '{print $1}' \
-    | grep -Fxq "${name}"
+  [[ -d "${PROFILE_ROOT}/${name}" ]]
+}
+
+expect_config() {
+  local profile="$1"
+  local key="$2"
+  local expected="$3"
+  local actual
+  actual="$(hermes -p "${profile}" config get "${key}" 2>/dev/null | tail -n 1 | tr -d '\r')"
+  if [[ "${actual}" != "${expected}" ]]; then
+    echo "ERROR: ${profile}:${key} expected '${expected}', got '${actual}'" >&2
+    exit 1
+  fi
 }
 
 mkdir -p "${PROFILE_ROOT}"
 
-echo "Primary profile model:"
-hermes config get model || true
+echo "Model profilu źródłowego '${DISPATCHER_PROFILE}':"
+hermes -p "${DISPATCHER_PROFILE}" config get model || true
 
 echo
 for profile in "${profiles[@]}"; do
@@ -55,7 +65,7 @@ for profile in "${profiles[@]}"; do
   else
     echo "[create] ${profile}"
     hermes profile create "${profile}" \
-      --clone-from default \
+      --clone-from "${DISPATCHER_PROFILE}" \
       --description "${descriptions[$profile]}"
   fi
 
@@ -64,44 +74,53 @@ for profile in "${profiles[@]}"; do
     install -m 0644 "${soul_src}" "${PROFILE_ROOT}/${profile}/SOUL.md"
   fi
 
-  # Unattended workers should stop on repeated no-progress/failure loops.
-  hermes -p "${profile}" config set agent.hard_stop_enabled true >/dev/null
-  hermes -p "${profile}" config set agent.tool_use_enforcement auto >/dev/null
+  # Worker bez nadzoru ma zatrzymać się po powtarzających się pętlach bez postępu.
+  hermes -p "${profile}" config set tool_loop_guardrails.hard_stop_enabled true
+  hermes -p "${profile}" config set agent.tool_use_enforcement auto
 done
 
-# Grok roles are explicit and deterministic.
+# Role Groka są jawnie przypięte do providera i modelu.
 for profile in critic auditor-grok; do
   hermes -p "${profile}" config set model.provider "${GROK_PROVIDER}"
   hermes -p "${profile}" config set model.default "${GROK_MODEL}"
 done
 
-# Keep implementation workers isolated when used interactively as well.
-hermes -p coder config set worktree true
-hermes -p coder config set worktree_sync true
+# Izolacją tasków kodujących zarządza Kanban przez workspace=worktree:<repo>.
+# Nie ustawiamy worktree=true w profilu codera, żeby nie tworzyć zagnieżdżonych worktree.
 
-# The orchestrator is coordination-only. These toolsets are globally disabled
-# inside its profile; Kanban worker tools remain injected by Hermes on dispatch.
+# Orchestrator koordynuje zadania i nie ma narzędzi implementacyjnych.
+# Kanban pozostaje dostępny zarówno po dispatchu, jak i w sesji interaktywnej.
+hermes -p orchestrator tools enable kanban
 hermes -p orchestrator config set agent.disabled_toolsets '["terminal","file","code_execution","web","browser","image_gen"]'
 
-# Route root/decomposition work to the orchestrator and fail toward coordination
-# rather than silently assigning unknown roles to an implementation worker.
-hermes config set kanban.orchestrator_profile orchestrator
-hermes config set kanban.default_assignee orchestrator
+# Routing Kanban zapisujemy w profilu, z którego uruchamiany jest gateway/dispatcher.
+# Nie ustawiamy default_assignee=orchestrator: nieprzypisane taski mają pozostać widoczne
+# do jawnego routingu zamiast tworzyć samonapędzającą się pętlę koordynacyjną.
+hermes -p "${DISPATCHER_PROFILE}" config set kanban.orchestrator_profile orchestrator
 
 if [[ -n "${GEMINI_MODEL}" ]]; then
   hermes -p quick-reviewer config set model.provider "${GEMINI_PROVIDER}"
   hermes -p quick-reviewer config set model.default "${GEMINI_MODEL}"
   echo "[configured] quick-reviewer -> ${GEMINI_PROVIDER}/${GEMINI_MODEL}"
 else
-  echo "[warning] GEMINI_MODEL is empty; quick-reviewer still inherits default model."
-  echo "          Set it later with:"
-  echo "          quick-reviewer config set model.provider ${GEMINI_PROVIDER}"
-  echo "          quick-reviewer config set model.default <MODEL_ID>"
+  echo "[warning] GEMINI_MODEL jest pusty; quick-reviewer nadal dziedziczy model profilu źródłowego."
+  echo "          Skonfiguruj go później przez:"
+  echo "          hermes -p quick-reviewer config set model.provider ${GEMINI_PROVIDER}"
+  echo "          hermes -p quick-reviewer config set model.default <MODEL_ID>"
 fi
+
+# Walidacja krytycznych ustawień po bootstrapie.
+expect_config critic model.provider "${GROK_PROVIDER}"
+expect_config critic model.default "${GROK_MODEL}"
+expect_config auditor-grok model.provider "${GROK_PROVIDER}"
+expect_config auditor-grok model.default "${GROK_MODEL}"
+expect_config orchestrator tool_loop_guardrails.hard_stop_enabled "true"
+expect_config "${DISPATCHER_PROFILE}" kanban.orchestrator_profile "orchestrator"
 
 echo
 hermes profile list
 
 echo
-echo "Run 'hermes doctor' and inspect models with 'hermes -p <name> config get model'."
-echo "Then initialize/verify Kanban with 'hermes kanban init' and start one gateway/dispatcher."
+echo "Bootstrap profili zakończony."
+echo "Uruchom 'hermes doctor' i sprawdź modele przez 'hermes -p <name> config get model'."
+echo "Następnie zainicjalizuj/zweryfikuj Kanban przez 'hermes kanban init' i uruchom dokładnie jeden gateway/dispatcher."
