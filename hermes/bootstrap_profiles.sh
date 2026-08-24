@@ -50,8 +50,6 @@ declare -A descriptions=(
   [routing-sink]="Fail-closed sink for unroutable Kanban tasks; blocks the task and requests explicit reassignment."
 )
 
-declare -A created_profiles=()
-
 if ! command -v hermes >/dev/null 2>&1; then
   echo "ERROR: hermes not found in PATH" >&2
   exit 1
@@ -139,10 +137,8 @@ echo
 
 for profile in "${profiles[@]}"; do
   if profile_exists "${profile}"; then
-    created_profiles["${profile}"]=0
     echo "[exists] ${profile}"
   else
-    created_profiles["${profile}"]=1
     echo "[create] ${profile}"
     hermes profile create "${profile}" \
       --clone-from "${PRIMARY_PROFILE}" \
@@ -186,6 +182,12 @@ else
   hermes -p repository-analyst config set model.default "${primary_model}"
   echo "[warning] Ox wyłączony; repository-analyst używa ${primary_provider}/${primary_model}, a auditor-ox nie jest wymagany."
 fi
+
+# Profile factory nie dziedziczą ukrytych fallbacków modelu z PRIMARY_PROFILE.
+# Awaria providera ma być widoczna i obsłużona jawnie przez workflow/task contract, aby zachować audytowalność i niezależność modeli.
+for profile in "${profiles[@]}"; do
+  hermes -p "${profile}" config set fallback_providers '[]'
+done
 
 # Izolacją tasków kodujących zarządza Kanban przez workspace=worktree:<repo>.
 # Jawnie wyłączamy odziedziczone ustawienia worktree z PRIMARY_PROFILE, aby uniknąć nested worktree.
