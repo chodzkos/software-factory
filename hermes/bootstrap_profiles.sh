@@ -20,6 +20,7 @@ profiles=(
   auditor-gpt
   auditor-grok
   release-manager
+  routing-sink
 )
 
 declare -A descriptions=(
@@ -31,6 +32,7 @@ declare -A descriptions=(
   [auditor-gpt]="Independent final auditor using the primary GPT model."
   [auditor-grok]="Independent final auditor using Grok; searches for missed blockers and security findings."
   [release-manager]="Evaluates release gate and refuses publication when evidence or required controls are missing."
+  [routing-sink]="Fail-closed sink for unroutable Kanban tasks; blocks the task and requests explicit reassignment."
 )
 
 if ! command -v hermes >/dev/null 2>&1; then
@@ -103,7 +105,7 @@ for profile in "${profiles[@]}"; do
 done
 
 # Role korzystające z głównego GPT są deterministycznie synchronizowane z PRIMARY_PROFILE.
-for profile in orchestrator architect coder auditor-gpt release-manager; do
+for profile in orchestrator architect coder auditor-gpt release-manager routing-sink; do
   hermes -p "${profile}" config set model.provider "${primary_provider}"
   hermes -p "${profile}" config set model.default "${primary_model}"
 done
@@ -122,11 +124,14 @@ done
 hermes -p orchestrator tools enable kanban --platform cli
 hermes -p orchestrator config set agent.disabled_toolsets '["terminal","file","code_execution","web","browser","image_gen"]'
 
+# Routing-sink ma być kontrolowanym końcem dla kart, których decomposer nie umie przypisać.
+# Po dispatchu Hermes doda mu lifecycle Kanban, ale nie dostanie narzędzi implementacyjnych.
+hermes -p routing-sink config set agent.disabled_toolsets '["terminal","file","code_execution","web","browser","image_gen","delegation"]'
+
 # Routing Kanban zapisujemy w profilu, z którego uruchamiany jest gateway/dispatcher.
-# Pusty default_assignee jest ustawiany jawnie również przy ponownym uruchomieniu,
-# żeby stara wartość nie kierowała nieprzypisanych tasków z powrotem do orchestratora.
+# Nie używamy pustego default_assignee: Hermes traktuje pustą wartość jako fallback do aktywnego profilu.
 hermes -p "${DISPATCHER_PROFILE}" config set kanban.orchestrator_profile orchestrator
-hermes -p "${DISPATCHER_PROFILE}" config set kanban.default_assignee ""
+hermes -p "${DISPATCHER_PROFILE}" config set kanban.default_assignee routing-sink
 
 if [[ -n "${GEMINI_MODEL}" ]]; then
   hermes -p quick-reviewer config set model.provider "${GEMINI_PROVIDER}"
@@ -146,8 +151,9 @@ expect_config critic model.default "${GROK_MODEL}"
 expect_config auditor-grok model.provider "${GROK_PROVIDER}"
 expect_config auditor-grok model.default "${GROK_MODEL}"
 expect_config orchestrator tool_loop_guardrails.hard_stop_enabled "true"
+expect_config routing-sink tool_loop_guardrails.hard_stop_enabled "true"
 expect_config "${DISPATCHER_PROFILE}" kanban.orchestrator_profile "orchestrator"
-expect_config "${DISPATCHER_PROFILE}" kanban.default_assignee ""
+expect_config "${DISPATCHER_PROFILE}" kanban.default_assignee "routing-sink"
 
 echo
 hermes profile list
