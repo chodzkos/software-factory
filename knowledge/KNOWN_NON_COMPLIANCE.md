@@ -2,7 +2,7 @@
 
 Data przeglądu: 2026-08-24
 
-Ten plik rejestruje bieżące odstępstwa repozytoriów od `CHODZKOS_SOFTWARE_STANDARD_v1.0.md`.
+Ten plik rejestruje bieżące odstępstwa repozytoriów od `standards/SOFTWARE_DEVELOPMENT_STANDARD.md`.
 Nie jest częścią trwałej polityki standardu i może być aktualizowany niezależnie.
 
 ## NC-001 — pdf2md release workflow
