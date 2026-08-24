@@ -18,9 +18,11 @@ if grep -Fq 'agent.hard_stop_enabled' "${BOOTSTRAP}"; then
   exit 1
 fi
 
-echo "[check] no persistent coder worktree"
-if grep -Eq 'coder.*config set worktree|config set worktree true' "${BOOTSTRAP}"; then
-  echo "ERROR: coder nie może mieć globalnego worktree=true przy Kanban worktree" >&2
+echo "[check] coder worktree forced off"
+grep -Fq 'hermes -p coder config set worktree false' "${BOOTSTRAP}"
+grep -Fq 'hermes -p coder config set worktree_sync false' "${BOOTSTRAP}"
+if grep -Eq '^[[:space:]]*hermes[[:space:]].*-p[[:space:]]+coder[[:space:]].*config[[:space:]]+set[[:space:]]+worktree(_sync)?[[:space:]]+true([[:space:]]|$)' "${BOOTSTRAP}"; then
+  echo "ERROR: coder nie może mieć worktree/worktree_sync=true przy Kanban worktree" >&2
   exit 1
 fi
 
@@ -34,13 +36,23 @@ grep -Fq '# Software Development Standard — wstrzyknięty kontekst runtime' "$
 
 echo "[check] orchestrator Kanban runtime gate"
 grep -Fq "config set toolsets '[\"hermes-cli\",\"kanban\"]'" "${BOOTSTRAP}"
-if grep -Fq 'tools enable kanban' "${BOOTSTRAP}"; then
+if grep -Eq '^[[:space:]]*hermes[[:space:]].*tools[[:space:]]+enable[[:space:]]+kanban([[:space:]]|$)' "${BOOTSTRAP}"; then
   echo "ERROR: bootstrap nie może polegać na platformowym tools enable kanban" >&2
   exit 1
 fi
 
-echo "[check] orchestrator has no implementation/delegation toolsets"
-grep -Fq "orchestrator config set agent.disabled_toolsets '[\"terminal\",\"file\",\"code_execution\",\"web\",\"browser\",\"image_gen\",\"delegation\"]'" "${BOOTSTRAP}"
+echo "[check] coordination-only capability denylist"
+expected_disabled='["terminal","file","code_execution","web","browser","image_gen","delegation","computer_use","cronjob"]'
+grep -Fq "orchestrator config set agent.disabled_toolsets '${expected_disabled}'" "${BOOTSTRAP}"
+grep -Fq "routing-sink config set agent.disabled_toolsets '${expected_disabled}'" "${BOOTSTRAP}"
+
+echo "[check] quick-reviewer preserves manual routing"
+grep -Fq 'elif [[ "${created_profiles[quick-reviewer]:-0}" == "1" ]]' "${BOOTSTRAP}"
+grep -Fq '[preserve] GEMINI_MODEL jest pusty; istniejący routing quick-reviewer pozostaje bez zmian.' "${BOOTSTRAP}"
+
+echo "[check] post-bootstrap worktree assertions"
+grep -Fq 'expect_config coder worktree "false"' "${BOOTSTRAP}"
+grep -Fq 'expect_config coder worktree_sync "false"' "${BOOTSTRAP}"
 
 echo "[check] dispatcher-scoped kanban routing"
 grep -Fq 'config set kanban.orchestrator_profile orchestrator' "${BOOTSTRAP}"
