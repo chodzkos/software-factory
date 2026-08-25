@@ -3,6 +3,8 @@ import unittest
 from kanban_runtime_contract import (
     RuntimeExpectation,
     format_drift,
+    normalize_snapshot,
+    resolved_implementation_worktree,
     validate_review_handoff,
     validate_runtime,
     validate_task_graph,
@@ -10,7 +12,7 @@ from kanban_runtime_contract import (
 
 
 class RuntimeContractTests(unittest.TestCase):
-    def test_matching_runtime_passes(self) -> None:
+    def test_cli_create_snapshot_passes(self) -> None:
         actual = {
             "id": "t_impl",
             "assignee": "coder",
@@ -18,8 +20,6 @@ class RuntimeContractTests(unittest.TestCase):
             "workspace_path": "/repo",
             "branch_name": "pilot/full-flow-doc",
             "max_retries": 1,
-            "max_runtime": 600,
-            "parents": [],
         }
         expected = RuntimeExpectation(
             assignee="coder",
@@ -27,9 +27,32 @@ class RuntimeContractTests(unittest.TestCase):
             workspace_path="/repo",
             branch_name="pilot/full-flow-doc",
             max_retries=1,
-            max_runtime=600,
         )
         self.assertEqual(validate_runtime(actual, expected), [])
+
+    def test_nested_kanban_show_parents_are_normalized(self) -> None:
+        payload = {
+            "task": {
+                "id": "t_review",
+                "assignee": "critic",
+                "workspace_kind": "dir",
+                "workspace_path": "/repo/.worktrees/t_impl",
+            },
+            "parents": ["t_impl"],
+        }
+        normalized = normalize_snapshot(payload)
+        self.assertEqual(normalized["parents"], ["t_impl"])
+
+    def test_assignee_drift_is_rejected(self) -> None:
+        actual = {
+            "assignee": "default",
+            "workspace_kind": "scratch",
+            "workspace_path": None,
+            "branch_name": None,
+            "max_retries": 1,
+        }
+        expected = RuntimeExpectation("coder", "scratch", None, None, 1)
+        self.assertTrue(any(e.startswith("assignee:") for e in validate_runtime(actual, expected)))
 
     def test_max_retries_drift_is_rejected(self) -> None:
         actual = {
@@ -37,20 +60,10 @@ class RuntimeContractTests(unittest.TestCase):
             "workspace_kind": "worktree",
             "workspace_path": "/repo",
             "branch_name": "pilot/full-flow-doc",
-            "max_retries": 2,
-            "max_runtime": 600,
-            "parents": [],
+            "max_retries": None,
         }
-        expected = RuntimeExpectation(
-            assignee="coder",
-            workspace_kind="worktree",
-            workspace_path="/repo",
-            branch_name="pilot/full-flow-doc",
-            max_retries=1,
-            max_runtime=600,
-        )
-        errors = validate_runtime(actual, expected)
-        self.assertTrue(any(error.startswith("max_retries:") for error in errors))
+        expected = RuntimeExpectation("coder", "worktree", "/repo", "pilot/full-flow-doc", 1)
+        self.assertTrue(any(e.startswith("max_retries:") for e in validate_runtime(actual, expected)))
 
     def test_branch_drift_is_rejected(self) -> None:
         actual = {
@@ -59,43 +72,49 @@ class RuntimeContractTests(unittest.TestCase):
             "workspace_path": "/repo",
             "branch_name": None,
             "max_retries": 1,
-            "parents": [],
         }
-        expected = RuntimeExpectation(
-            assignee="coder",
-            workspace_kind="worktree",
-            workspace_path="/repo",
-            branch_name="pilot/full-flow-doc",
-            max_retries=1,
-        )
-        errors = validate_runtime(actual, expected)
-        self.assertTrue(any(error.startswith("branch_name:") for error in errors))
+        expected = RuntimeExpectation("coder", "worktree", "/repo", "pilot/full-flow-doc", 1)
+        self.assertTrue(any(e.startswith("branch_name:") for e in validate_runtime(actual, expected)))
 
-    def test_missing_parent_is_rejected(self) -> None:
-        actual = {
-            "assignee": "critic",
-            "workspace_kind": "dir",
-            "workspace_path": "/repo/.worktrees/t_impl",
-            "branch_name": None,
-            "max_retries": 1,
-            "parents": [],
+    def test_extra_parent_is_rejected_from_nested_show(self) -> None:
+        payload = {
+            "task": {
+                "assignee": "critic",
+                "workspace_kind": "dir",
+                "workspace_path": "/repo/.worktrees/t_impl",
+                "max_retries": 1,
+            },
+            "parents": ["t_impl", "t_extra"],
         }
         expected = RuntimeExpectation(
-            assignee="critic",
-            workspace_kind="dir",
-            workspace_path="/repo/.worktrees/t_impl",
-            branch_name=None,
-            max_retries=1,
-            parents=("t_impl",),
+            "critic", "dir", "/repo/.worktrees/t_impl", None, 1, ("t_impl",)
         )
-        errors = validate_runtime(actual, expected)
-        self.assertTrue(any(error.startswith("parents:") for error in errors))
+        self.assertTrue(any(e.startswith("parents:") for e in validate_runtime(payload, expected)))
+
+    def test_post_claim_workspace_path_is_resolved_worktree(self) -> None:
+        implementation = {
+            "id": "t_impl",
+            "workspace_kind": "worktree",
+            "workspace_path": "/repo/.worktrees/t_impl",
+        }
+        self.assertEqual(
+            resolved_implementation_worktree(implementation),
+            "/repo/.worktrees/t_impl",
+        )
+
+    def test_repo_anchor_is_not_resolved_worktree(self) -> None:
+        implementation = {
+            "id": "t_impl",
+            "workspace_kind": "worktree",
+            "workspace_path": "/repo",
+        }
+        self.assertIsNone(resolved_implementation_worktree(implementation))
 
     def test_reviewer_new_worktree_is_rejected(self) -> None:
         implementation = {
             "id": "t_impl",
             "workspace_kind": "worktree",
-            "resolved_workspace_path": "/repo/.worktrees/t_impl",
+            "workspace_path": "/repo/.worktrees/t_impl",
         }
         review = {
             "id": "t_review",
@@ -109,14 +128,14 @@ class RuntimeContractTests(unittest.TestCase):
             implementer_profile="coder",
             reviewer_profile="critic",
         )
-        self.assertTrue(any(error.startswith("review_workspace_kind:") for error in errors))
-        self.assertTrue(any(error.startswith("review_workspace_path:") for error in errors))
+        self.assertTrue(any(e.startswith("review_workspace_kind:") for e in errors))
+        self.assertTrue(any(e.startswith("review_workspace_path:") for e in errors))
 
     def test_exact_reviewer_dir_handoff_passes(self) -> None:
         implementation = {
             "id": "t_impl",
             "workspace_kind": "worktree",
-            "resolved_workspace_path": "/repo/.worktrees/t_impl",
+            "workspace_path": "/repo/.worktrees/t_impl",
         }
         review = {
             "id": "t_review",
@@ -138,7 +157,7 @@ class RuntimeContractTests(unittest.TestCase):
         implementation = {
             "id": "t_impl",
             "workspace_kind": "worktree",
-            "resolved_workspace_path": "/repo/.worktrees/t_impl",
+            "workspace_path": "/repo/.worktrees/t_impl",
         }
         review = {
             "workspace_kind": "dir",
@@ -154,7 +173,7 @@ class RuntimeContractTests(unittest.TestCase):
         self.assertIn("implementer_and_reviewer_must_differ", errors)
 
     def test_missing_resolved_worktree_fails_closed(self) -> None:
-        implementation = {"id": "t_impl", "workspace_kind": "worktree"}
+        implementation = {"id": "t_impl", "workspace_kind": "worktree", "workspace_path": "/repo"}
         review = {
             "workspace_kind": "dir",
             "workspace_path": "/repo/.worktrees/t_impl",
@@ -169,61 +188,59 @@ class RuntimeContractTests(unittest.TestCase):
         self.assertIn("implementation_resolved_worktree_missing", errors)
 
     def test_pilot_6_regression_is_rejected(self) -> None:
-        implementation = {
+        implementation_create = {
             "id": "t_36a829a9",
             "assignee": "coder",
             "workspace_kind": "worktree",
             "workspace_path": "/home/marcin/projects/software-factory",
-            "resolved_workspace_path": "/home/marcin/projects/software-factory/.worktrees/t_36a829a9",
             "branch_name": None,
-            "max_retries": 2,
-            "max_runtime": 600,
-            "parents": [],
+            "max_retries": None,
         }
         implementation_expected = RuntimeExpectation(
-            assignee="coder",
-            workspace_kind="worktree",
-            workspace_path="/home/marcin/projects/software-factory",
-            branch_name="pilot/full-flow-doc",
-            max_retries=1,
-            max_runtime=600,
+            "coder",
+            "worktree",
+            "/home/marcin/projects/software-factory",
+            "pilot/full-flow-doc",
+            1,
         )
-        implementation_errors = validate_runtime(
-            implementation, implementation_expected
-        )
-        self.assertTrue(any(error.startswith("branch_name:") for error in implementation_errors))
-        self.assertTrue(any(error.startswith("max_retries:") for error in implementation_errors))
+        implementation_errors = validate_runtime(implementation_create, implementation_expected)
+        self.assertTrue(any(e.startswith("branch_name:") for e in implementation_errors))
+        self.assertTrue(any(e.startswith("max_retries:") for e in implementation_errors))
 
-        review = {
-            "id": "t_d3ebea65",
-            "assignee": "critic",
+        implementation_post_claim = {
+            "id": "t_36a829a9",
             "workspace_kind": "worktree",
-            "workspace_path": "/home/marcin/projects/software-factory",
-            "branch_name": None,
-            "max_retries": 2,
-            "max_runtime": 600,
+            "workspace_path": "/home/marcin/projects/software-factory/.worktrees/t_36a829a9",
+        }
+        review = {
+            "task": {
+                "id": "t_d3ebea65",
+                "assignee": "critic",
+                "workspace_kind": "worktree",
+                "workspace_path": "/home/marcin/projects/software-factory",
+                "max_retries": None,
+            },
             "parents": ["t_36a829a9"],
         }
         review_expected = RuntimeExpectation(
-            assignee="critic",
-            workspace_kind="dir",
-            workspace_path="/home/marcin/projects/software-factory/.worktrees/t_36a829a9",
-            branch_name=None,
-            max_retries=1,
-            max_runtime=600,
-            parents=("t_36a829a9",),
+            "critic",
+            "dir",
+            "/home/marcin/projects/software-factory/.worktrees/t_36a829a9",
+            None,
+            1,
+            ("t_36a829a9",),
         )
         errors = validate_task_graph(
             review,
             review_expected,
-            implementation=implementation,
+            implementation=implementation_post_claim,
             implementer_profile="coder",
             reviewer_profile="critic",
         )
-        self.assertTrue(any(error.startswith("workspace_kind:") for error in errors))
-        self.assertTrue(any(error.startswith("workspace_path:") for error in errors))
-        self.assertTrue(any(error.startswith("max_retries:") for error in errors))
-        self.assertTrue(any(error.startswith("review_workspace_kind:") for error in errors))
+        self.assertTrue(any(e.startswith("workspace_kind:") for e in errors))
+        self.assertTrue(any(e.startswith("workspace_path:") for e in errors))
+        self.assertTrue(any(e.startswith("max_retries:") for e in errors))
+        self.assertTrue(any(e.startswith("review_workspace_kind:") for e in errors))
 
     def test_format_drift_is_fail_closed(self) -> None:
         self.assertEqual(format_drift([]), "RUNTIME_CONTRACT_OK")
