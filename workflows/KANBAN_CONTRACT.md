@@ -48,7 +48,41 @@ ACCEPTANCE_CRITERIA:
 
 Dla tasku modyfikującego kod `WORKSPACE` musi być `worktree:<absolute-repo-path>`. Jedna logiczna zmiana = jeden branch/worktree/current owner.
 
-Pole `WORKSPACE` jest kontraktem Software Factory. Przy tworzeniu tasku Kanban musi zostać odwzorowane na rzeczywiste pola Hermesa: `workspace_kind=worktree` oraz `workspace_path` wskazujące izolowany worktree dla tej karty, nie główny checkout repo. Sam tekst `WORKSPACE:` nie tworzy izolacji.
+Pole `WORKSPACE` jest kontraktem Software Factory. Przy tworzeniu tasku Kanban musi zostać odwzorowane na rzeczywiste pola Hermesa: `workspace_kind=worktree` oraz `workspace_path` wskazujące repo bazowe dla worktree tej karty. Po claimie źródłem prawdy o faktycznym izolowanym worktree jest resolved workspace zwracany przez Hermesa. Sam tekst `WORKSPACE:` nie tworzy izolacji.
+
+### 3.1. Fail-closed runtime gate
+
+Pola zapisane wyłącznie w `body` nie są dowodem konfiguracji runtime. Przed dispatch orchestrator porównuje oczekiwany kontrakt z **faktycznymi polami taska** zwróconymi przez Kanban.
+
+Każdy task tworzony przez orchestratora powinien wejść najpierw do kwarantanny `blocked` (`initial_status=blocked`). Dopiero po odczycie taska i zgodności runtime fields orchestrator może wykonać `unblock`/`promote`. Drift pozostaje zablokowany i jest kierowany do `routing-sink` lub wymaga jawnej korekty operatora.
+
+Walidowane są co najmniej:
+
+- `assignee`,
+- `workspace_kind`,
+- `workspace_path`,
+- `branch_name`,
+- `max_retries`,
+- `max_runtime`,
+- `parents`.
+
+Referencyjna logika walidacji znajduje się w `hermes/kanban_runtime_contract.py`. Każda niezgodność oznacza `RUNTIME_CONTRACT_DRIFT` i **nie może** zostać zinterpretowana jako zgodność na podstawie poprawnego tekstu w `body` lub summary workera.
+
+Jeżeli wymagane pole runtime nie może zostać ustawione lub odczytane przez aktualne narzędzie Hermesa, orchestrator blokuje kartę zamiast zastępować to pole opisem Markdown.
+
+### 3.2. Handoff implementer → independent reviewer
+
+Dla zmiany wykonywanej w worktree reviewer musi czytać dokładnie artefakt implementera.
+
+- task implementera używa `workspace_kind=worktree`,
+- reviewer **nie jest tworzony z wyprzedzeniem**, jeśli jego workspace zależy od resolved worktree implementera,
+- po terminalnym zakończeniu implementera orchestrator ponownie odczytuje jego live task i pobiera resolved worktree,
+- reviewer jest tworzony jako `workspace_kind=dir` z `workspace_path` równym dokładnie resolved worktree implementera,
+- reviewer ma parent wskazujący task implementera,
+- implementer i independent reviewer muszą być różnymi profilami,
+- tworzenie reviewer taska jako `worktree:<repo-root>` jest zabronione, ponieważ Hermes utworzy wtedy drugi, niezależny worktree.
+
+Brak resolved worktree, inny path, inny workspace kind, brak parenta lub ten sam profil implementera i reviewera powoduje fail-closed i zatrzymanie review.
 
 ## 4. Routing
 
@@ -116,11 +150,13 @@ Znaki `?` oznaczają etap wymagany tylko przez zakres/ryzyko/task contract.
 
 ## 8. Reguły przejść
 
+- orchestrator nie dispatchuje taska z `RUNTIME_CONTRACT_DRIFT`; task pozostaje `blocked`,
 - worker może zakończyć własną kartę wykonawczą jako `done`, ale nie może sam nadać całej zmianie statusu VERIFIED,
 - nadrzędna zmiana pozostaje nieweryfikowana, dopóki wszystkie wymagane review/audit/evidence z task contract nie są zamknięte,
 - `CHANGES_REQUIRED` tworzy jawny follow-up dla implementera i nie pozwala zamknąć nadrzędnej zmiany,
 - `REVIEW_PENDING` zatrzymuje przejście całej zmiany do VERIFIED/DONE,
 - brak wymaganego evidence → `blocked` albo pozostanie w `review`, nie VERIFIED,
+- reviewer worktree handoff nie może być zastąpiony drugim worktree ani samym parent summary,
 - `release-manager` odmawia release przy brakującym required review/evidence lub wiarygodnym nierozwiązanym HIGH/CRITICAL.
 
 ## 9. Obowiązkowy krok wdrożenia Kanbana
