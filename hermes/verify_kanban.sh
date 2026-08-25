@@ -51,26 +51,30 @@ grep -Fq 'implementation.workspace_path' "${CONTRACT}"
 grep -Fq '/.worktrees/t_X' "${CONTRACT}"
 grep -Fq 'normalize_snapshot' "${RUNTIME_VALIDATOR}"
 grep -Fq 'resolved_implementation_worktree' "${RUNTIME_VALIDATOR}"
+grep -Fq 'build_cli_parser' "${RUNTIME_VALIDATOR}"
 grep -Fq 'runtime-controller' "${ORCHESTRATOR_SOUL}"
 grep -Fq 'Nie masz terminala' "${ORCHESTRATOR_SOUL}"
 grep -Fq 'workspace=dir:<exact-post-claim-workspace_path>' "${ORCHESTRATOR_SOUL}"
-grep -Fq 'wyłącznie do uruchamiania repozytoryjnego wrappera' "${RUNTIME_SOUL}"
+grep -Fq '~/.hermes/profiles/runtime-controller/kanban_runtime_cli.sh' "${RUNTIME_SOUL}"
+grep -Fq 'validate-runtime' "${RUNTIME_SOUL}"
+grep -Fq 'validate-handoff' "${RUNTIME_SOUL}"
 
 printf '[check] scoped runtime wrapper\n'
 grep -Fq 'case "${op}" in' "${RUNTIME_WRAPPER}"
 grep -Fq 'exec hermes kanban create "$@"' "${RUNTIME_WRAPPER}"
 grep -Fq 'exec hermes kanban show "${task_id}" --json' "${RUNTIME_WRAPPER}"
 grep -Fq 'exec hermes kanban block --kind needs_input' "${RUNTIME_WRAPPER}"
-grep -Fq 'exec hermes kanban complete' "${RUNTIME_WRAPPER}"
-if grep -Fq 'eval ' "${RUNTIME_WRAPPER}"; then
-  echo 'ERROR: runtime wrapper must not use eval' >&2
-  exit 1
-fi
+grep -Fq 'exec hermes kanban complete "${task_id}" --result' "${RUNTIME_WRAPPER}"
+grep -Fq 'exec python3 "${VALIDATOR}" runtime "$@"' "${RUNTIME_WRAPPER}"
+grep -Fq 'exec python3 "${VALIDATOR}" handoff "$@"' "${RUNTIME_WRAPPER}"
+if grep -Fq 'eval ' "${RUNTIME_WRAPPER}"; then echo 'ERROR: runtime wrapper must not use eval' >&2; exit 1; fi
 
 printf '[check] runtime controller bootstrap policy\n'
 grep -Fq 'PROFILE="runtime-controller"' "${RUNTIME_BOOTSTRAP}"
 grep -Fq "config set toolsets '[\"hermes-cli\",\"kanban\",\"terminal\"]'" "${RUNTIME_BOOTSTRAP}"
 grep -Fq "config set fallback_providers '[]'" "${RUNTIME_BOOTSTRAP}"
+grep -Fq 'install -m 0755 "${WRAPPER_SRC}"' "${RUNTIME_BOOTSTRAP}"
+grep -Fq 'install -m 0644 "${VALIDATOR_SRC}"' "${RUNTIME_BOOTSTRAP}"
 grep -Fq 'config set worktree false' "${RUNTIME_BOOTSTRAP}"
 grep -Fq 'config set worktree_sync false' "${RUNTIME_BOOTSTRAP}"
 
@@ -88,23 +92,13 @@ grep -Fq 'DISPATCHER_PROFILE=default bash hermes/configure_kanban.sh' "${CONTRAC
 grep -Fq 'Software Factory nie jest gotowy do uruchamiania tasków wymagających runtime gate' "${CONTRACT}"
 
 printf '[check] python syntax\n'
-python3 -m py_compile \
-  "${PARSER}" \
-  "${PARSER_TESTS}" \
-  "${RUNTIME_VALIDATOR}" \
-  "${RUNTIME_TESTS}"
+python3 -m py_compile "${PARSER}" "${PARSER_TESTS}" "${RUNTIME_VALIDATOR}" "${RUNTIME_TESTS}"
 
 printf '[check] parser tests\n'
-(
-  cd "${ROOT_DIR}/hermes"
-  python3 -m unittest -q test_review_decision.py
-)
+(cd "${ROOT_DIR}/hermes" && python3 -m unittest -q test_review_decision.py)
 
 printf '[check] runtime contract tests\n'
-(
-  cd "${ROOT_DIR}/hermes"
-  python3 -m unittest -q test_kanban_runtime_contract.py
-)
+(cd "${ROOT_DIR}/hermes" && python3 -m unittest -q test_kanban_runtime_contract.py)
 
 printf '[check] bootstrap compatibility\n'
 bash "${BOOTSTRAP_VERIFY}"
