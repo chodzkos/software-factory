@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import argparse
+import json
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Any, Mapping, Sequence
@@ -155,3 +157,73 @@ def format_drift(errors: Sequence[str]) -> str:
     if not errors:
         return "RUNTIME_CONTRACT_OK"
     return "RUNTIME_CONTRACT_DRIFT: " + "; ".join(errors)
+
+
+def _json_object(value: str, label: str) -> Mapping[str, Any]:
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"{label}: invalid JSON: {exc}") from exc
+    if not isinstance(parsed, dict):
+        raise SystemExit(f"{label}: expected JSON object")
+    return parsed
+
+
+def _runtime_command(args: argparse.Namespace) -> int:
+    actual = _json_object(args.actual_json, "actual-json")
+    expectation = RuntimeExpectation(
+        assignee=args.assignee,
+        workspace_kind=args.workspace_kind,
+        workspace_path=args.workspace_path,
+        branch_name=args.branch_name,
+        max_retries=args.max_retries,
+        parents=tuple(args.parent),
+    )
+    errors = validate_runtime(actual, expectation)
+    print(format_drift(errors))
+    return 0 if not errors else 2
+
+
+def _handoff_command(args: argparse.Namespace) -> int:
+    implementation = _json_object(args.implementation_json, "implementation-json")
+    review = _json_object(args.review_json, "review-json")
+    errors = validate_review_handoff(
+        implementation,
+        review,
+        implementer_profile=args.implementer_profile,
+        reviewer_profile=args.reviewer_profile,
+    )
+    print(format_drift(errors))
+    return 0 if not errors else 2
+
+
+def build_cli_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Software Factory Kanban runtime contract validator")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    runtime = sub.add_parser("runtime", help="Validate one create/show snapshot")
+    runtime.add_argument("--actual-json", required=True)
+    runtime.add_argument("--assignee", required=True)
+    runtime.add_argument("--workspace-kind", required=True)
+    runtime.add_argument("--workspace-path", default=None)
+    runtime.add_argument("--branch-name", default=None)
+    runtime.add_argument("--max-retries", type=int, default=None)
+    runtime.add_argument("--parent", action="append", default=[])
+    runtime.set_defaults(func=_runtime_command)
+
+    handoff = sub.add_parser("handoff", help="Validate implementer to reviewer worktree handoff")
+    handoff.add_argument("--implementation-json", required=True)
+    handoff.add_argument("--review-json", required=True)
+    handoff.add_argument("--implementer-profile", required=True)
+    handoff.add_argument("--reviewer-profile", required=True)
+    handoff.set_defaults(func=_handoff_command)
+    return parser
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = build_cli_parser().parse_args(argv)
+    return int(args.func(args))
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
