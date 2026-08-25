@@ -79,6 +79,8 @@ test -f "${RUNTIME_SOUL}"
 grep -Fq 'PROFILE="runtime-controller"' "${RUNTIME_BOOTSTRAP}"
 grep -Fq "config set toolsets '[\"hermes-cli\",\"kanban\",\"terminal\"]'" "${RUNTIME_BOOTSTRAP}"
 grep -Fq "config set fallback_providers '[]'" "${RUNTIME_BOOTSTRAP}"
+grep -Fq 'get_config_full() {' "${RUNTIME_BOOTSTRAP}"
+grep -Fq 'toolsets_actual="$(get_config_full toolsets)"' "${RUNTIME_BOOTSTRAP}"
 grep -Fq 'runtime-controller' "${ORCHESTRATOR_SOUL}"
 grep -Fq 'Nie masz terminala' "${ORCHESTRATOR_SOUL}"
 
