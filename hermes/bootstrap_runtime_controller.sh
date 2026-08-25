@@ -39,6 +39,7 @@ hermes -p "${PROFILE}" config set worktree false
 hermes -p "${PROFILE}" config set worktree_sync false
 
 get_config() { hermes -p "${PROFILE}" config get "$1" 2>/dev/null | tail -n 1 | tr -d '\r'; }
+get_config_full() { hermes -p "${PROFILE}" config get "$1" 2>/dev/null | tr -d '\r'; }
 expect() { local key="$1" expected="$2" actual; actual="$(get_config "${key}")"; [[ "${actual}" == "${expected}" ]] || { echo "ERROR: ${PROFILE}:${key} expected '${expected}', got '${actual}'" >&2; exit 1; }; }
 
 expect model.provider "${primary_provider}"
@@ -47,7 +48,7 @@ expect fallback_providers '[]'
 expect worktree 'false'
 expect worktree_sync 'false'
 
-toolsets_actual="$(get_config toolsets)"
+toolsets_actual="$(get_config_full toolsets)"
 for required_toolset in hermes-cli kanban terminal; do
   [[ "${toolsets_actual}" == *"${required_toolset}"* ]] || { echo "ERROR: ${PROFILE}:toolsets missing '${required_toolset}', got '${toolsets_actual}'" >&2; exit 1; }
 done
