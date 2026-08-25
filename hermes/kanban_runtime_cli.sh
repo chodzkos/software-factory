@@ -46,7 +46,11 @@ case "${op}" in
     [[ $# -ge 2 ]] || usage
     task_id="$1"
     shift
-    exec hermes kanban block --kind needs_input "${task_id}" "$@"
+    for reason_part in "$@"; do
+      [[ "${reason_part}" != -* ]] || { echo "ERROR: block reason must not contain flag-shaped operands" >&2; exit 2; }
+    done
+    reason="$*"
+    exec hermes kanban block --kind needs_input "${task_id}" "${reason}"
     ;;
   complete)
     [[ $# -ge 2 ]] || usage
