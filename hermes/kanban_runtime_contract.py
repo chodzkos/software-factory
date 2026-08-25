@@ -94,8 +94,14 @@ def validate_review_handoff(
     implementation = normalize_snapshot(implementation_payload)
     review = normalize_snapshot(review_payload)
     errors: list[str] = []
+
     if implementer_profile == reviewer_profile:
         errors.append("implementer_and_reviewer_must_differ")
+
+    implementation_id = str(implementation.get("id") or "")
+    if not implementation_id:
+        errors.append("implementation_id_missing")
+        return errors
 
     resolved_path = resolved_implementation_worktree(implementation)
     if not resolved_path:
@@ -113,12 +119,10 @@ def validate_review_handoff(
             f"actual={review.get('workspace_path')!r}"
         )
 
-    implementation_id = str(implementation.get("id") or "")
-    if not implementation_id:
-        errors.append("implementation_id_missing")
-    elif _parents(review) != (implementation_id,):
+    review_parents = _parents(review)
+    if review_parents != (implementation_id,):
         errors.append(
-            f"review_parents: expected={(implementation_id,)!r} actual={_parents(review)!r}"
+            f"review_parents: expected={(implementation_id,)!r} actual={review_parents!r}"
         )
     return errors
 
