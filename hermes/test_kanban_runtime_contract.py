@@ -187,6 +187,24 @@ class RuntimeContractTests(unittest.TestCase):
         )
         self.assertIn("implementation_resolved_worktree_missing", errors)
 
+    def test_missing_implementation_id_fails_closed(self) -> None:
+        implementation = {
+            "workspace_kind": "worktree",
+            "workspace_path": "/repo/.worktrees/t_impl",
+        }
+        review = {
+            "workspace_kind": "dir",
+            "workspace_path": "/repo/.worktrees/t_impl",
+            "parents": [],
+        }
+        errors = validate_review_handoff(
+            implementation,
+            review,
+            implementer_profile="coder",
+            reviewer_profile="critic",
+        )
+        self.assertIn("implementation_resolved_worktree_missing", errors)
+
     def test_pilot_6_regression_is_rejected(self) -> None:
         implementation_create = {
             "id": "t_36a829a9",
