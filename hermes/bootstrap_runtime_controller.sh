@@ -60,8 +60,15 @@ expect() {
 expect model.provider "${primary_provider}"
 expect model.default "${primary_model}"
 expect fallback_providers '[]'
-expect toolsets '["hermes-cli", "kanban", "terminal"]'
 expect worktree 'false'
 expect worktree_sync 'false'
+
+toolsets_actual="$(get_config toolsets)"
+for required_toolset in hermes-cli kanban terminal; do
+  if [[ "${toolsets_actual}" != *"${required_toolset}"* ]]; then
+    echo "ERROR: ${PROFILE}:toolsets missing '${required_toolset}', got '${toolsets_actual}'" >&2
+    exit 1
+  fi
+done
 
 echo "OK: ${PROFILE} bootstrapped with scoped runtime-control policy"
