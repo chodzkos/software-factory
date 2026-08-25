@@ -7,6 +7,7 @@ Ta sekcja zawiera deklaratywną konfigurację profili Hermesa dla Software Facto
 | Profil | Rola | Domyślny model |
 |---|---|---|
 | `orchestrator` | koordynacja i routing Kanban | główny GPT z `PRIMARY_PROFILE` |
+| `runtime-controller` | mechaniczne create/readback/runtime gate Kanban | główny GPT z `PRIMARY_PROFILE`, osobny scoped bootstrap |
 | `architect` | wymagania i architektura | główny GPT z `PRIMARY_PROFILE` |
 | `repository-analyst` | analiza repozytorium przed planowaniem | `openrouter / stealth/ox-alpha`; fallback do primary GPT po `OX_MODEL=""` |
 | `task-decomposer` | dekompozycja zaakceptowanego planu na taski | `gemini / gemini-3.5-flash-lite` |
@@ -21,13 +22,31 @@ Ta sekcja zawiera deklaratywną konfigurację profili Hermesa dla Software Facto
 | `routing-sink` | fail-closed fallback dla błędnie skierowanych kart | główny GPT z `PRIMARY_PROFILE`, bez narzędzi implementacyjnych |
 | pamięć | pamięć długoterminowa | Hindsight, poza routingiem profili LLM |
 
-Ta polityka rozdziela zadania według kosztu i niezależności: GPT jest głównym modelem reasoning/coding, Grok odpowiada za niezależną krytykę i audyt, Gemini za częste tańsze zadania, a Ox Alpha za analizę repozytorium i dodatkowy trzeci audyt.
+## Runtime controller
+
+`orchestrator` pozostaje coordination-only i ma wyłączony terminal. Hermes 0.20.4 tool `kanban_create` nie ustawia wszystkich pól runtime wymaganych przez factory contract, dlatego operacje wymagające CLI są delegowane do osobnego profilu `runtime-controller`.
+
+Po synchronizacji repo należy jawnie uruchomić:
+
+```bash
+PRIMARY_PROFILE=primary-gpt bash hermes/bootstrap_runtime_controller.sh
+```
+
+Bootstrap instaluje do `~/.hermes/profiles/runtime-controller/`:
+
+- `SOUL.md`,
+- `kanban_runtime_cli.sh`,
+- `kanban_runtime_contract.py`.
+
+Profil ma `terminal`, ale jego SOUL ogranicza użycie do zainstalowanego wrappera. Wrapper nie używa `eval` i whitelistuje tylko `create`, `show`, `block`, `complete`, `validate-runtime`, `validate-handoff`. Orchestrator nie otrzymuje terminala.
+
+Runtime gate używa sticky-blocked control parent `RUNTIME_CONTRACT_PENDING`; właściwy worker task ma ten gate jako parent i nie może przejść do `ready`, dopóki validator nie zwróci `RUNTIME_CONTRACT_OK`.
 
 ## Ważne: profil głównego GPT
 
-Skrypt nie zakłada, że `default` jest GPT. Jeśli wskazany `PRIMARY_PROFILE` nie wygląda na profil GPT, bootstrap przerwie działanie zamiast utworzyć mylący profil `auditor-gpt`.
+Skrypt głównego bootstrapu nie zakłada, że `default` jest GPT. Jeśli wskazany `PRIMARY_PROFILE` nie wygląda na profil GPT, bootstrap przerwie działanie zamiast utworzyć mylący profil `auditor-gpt`.
 
-Na hoście testowym główny GPT jest utrzymywany jako osobny profil, dzięki czemu `default` może pozostać na innym modelu:
+Na hoście testowym główny GPT jest utrzymywany jako osobny profil:
 
 ```bash
 PRIMARY_PROFILE=primary-gpt \
@@ -37,29 +56,14 @@ bash hermes/bootstrap_profiles.sh
 
 ## Gemini
 
-Domyślny routing częstych, tańszych ról jest przypięty do konkretnego modelu:
+Domyślny routing częstych, tańszych ról:
 
 ```text
 provider: gemini
 model: gemini-3.5-flash-lite
 ```
 
-Profile korzystające z Gemini:
-
-- `task-decomposer`
-- `quick-reviewer`
-- `docs`
-
-Można jawnie nadpisać model na czas bootstrapu:
-
-```bash
-GEMINI_MODEL=<MODEL_ID> \
-PRIMARY_PROFILE=primary-gpt \
-DISPATCHER_PROFILE=default \
-bash hermes/bootstrap_profiles.sh
-```
-
-Fallback z Gemini do GPT jest decyzją warstwy routingu/task contract, nie ukrytym automatycznym przełączeniem w profilu. Dzięki temu awaria lub limit Gemini jest widoczny i audytowalny.
+Profile: `task-decomposer`, `quick-reviewer`, `docs`. Fallback z Gemini do GPT jest decyzją workflow, nie ukrytym przełączeniem profilu.
 
 ## Ox Alpha
 
@@ -70,29 +74,7 @@ provider: openrouter
 model: stealth/ox-alpha
 ```
 
-Ox jest traktowany jako **opcjonalny** provider, ponieważ model jest obecnie stealth i jego przyszła dostępność/koszt mogą się zmienić.
-
-Gdy Ox jest dostępny:
-
-- `repository-analyst` używa Ox Alpha,
-- tworzony i konfigurowany jest `auditor-ox` jako dodatkowy trzeci audyt.
-
-Ox można świadomie wyłączyć bez blokowania podstawowej fabryki:
-
-```bash
-OX_MODEL="" \
-PRIMARY_PROFILE=primary-gpt \
-DISPATCHER_PROFILE=default \
-bash hermes/bootstrap_profiles.sh
-```
-
-W takim trybie:
-
-- `repository-analyst` przechodzi na primary GPT,
-- `auditor-ox` nie jest tworzony ani wymagany,
-- podstawowy niezależny gate nadal może opierać się na rozdzieleniu GPT implementer / Grok reviewer-auditor.
-
-Jeśli `auditor-ox` istniał z wcześniejszego wdrożenia, jego obecność nie oznacza automatycznie, że ma być używany po wyłączeniu Ox; decyzję o wymaganym Audit 3 podejmuje warstwa workflow.
+Ox jest opcjonalny. `repository-analyst` używa Ox, a `auditor-ox` jest dodatkowym Audit 3. Przy `OX_MODEL=""` analiza repo przechodzi jawnie na primary GPT, a Audit 3 nie jest wymagany.
 
 ## Instalacja / ponowny bootstrap
 
@@ -106,67 +88,24 @@ bash hermes/verify_bootstrap.sh
 PRIMARY_PROFILE=primary-gpt \
 DISPATCHER_PROFILE=default \
 bash hermes/bootstrap_profiles.sh
+PRIMARY_PROFILE=primary-gpt bash hermes/bootstrap_runtime_controller.sh
+DISPATCHER_PROFILE=default bash hermes/configure_kanban.sh
 ```
-
-Bootstrap jest idempotentny względem tworzenia profili: istniejący profil jest wykrywany po katalogu `~/.hermes/profiles/<name>`. Przy każdym uruchomieniu odświeżane są role SOUL oraz jawnie zarządzane ustawienia/model routing.
 
 ## Założenia
 
-- `PRIMARY_PROFILE` jest działającym profilem z głównym modelem GPT i poprawnym auth.
-- `DISPATCHER_PROFILE` to profil, z którego faktycznie działa gateway/dispatcher; domyślnie `default`.
-- `xai-oauth` jest zalogowany i Grok 4.6 jest dostępny.
-- provider `gemini` jest skonfigurowany i `gemini-3.5-flash-lite` jest dostępny.
-- OpenRouter jest skonfigurowany, jeśli Ox jest włączony.
-- Hindsight jest już skonfigurowany na hoście i bootstrap go nie instaluje ani nie rekonfiguruje.
-- Kanban worker dostaje lifecycle i narzędzia `kanban_*` automatycznie po dispatchu.
-- Taski kodujące używają `workspace=worktree:<repo>` jako jedynej warstwy izolacji worktree.
-- Bootstrap jawnie ustawia `coder worktree=false` i `worktree_sync=false`, aby nie odziedziczyć tych flag z `PRIMARY_PROFILE`.
-- `kanban.orchestrator_profile` oraz `kanban.default_assignee` są zapisywane w `DISPATCHER_PROFILE`.
-
-## Orchestrator
-
-Orchestrator jest coordination-only. Nie dostaje terminala, narzędzi plikowych, code execution, web/browser, image generation, delegation, `computer_use` ani `cronjob`.
-
-Żeby mimo tego zawsze znał nadrzędny Software Development Standard, bootstrap buduje jego runtime `~/.hermes/profiles/orchestrator/SOUL.md` z dwóch części:
-
-1. rolowego `hermes/profiles/orchestrator/SOUL.md`,
-2. aktualnej treści kanonicznego `standards/SOFTWARE_DEVELOPMENT_STANDARD.md`.
-
-To jest generowany kontekst runtime, nie drugie źródło prawdy. Przy każdym bootstrapie jest odtwarzany z pliku kanonicznego.
-
-Kanban jest włączany przez top-level `toolsets=["hermes-cli","kanban"]`. `agent.disabled_toolsets` następnie usuwa z profilu orchestratora narzędzia implementacyjne i dodatkowe powierzchnie sterujące.
+- `PRIMARY_PROFILE` jest działającym profilem GPT.
+- `DISPATCHER_PROFILE` to profil gateway/dispatcher; domyślnie `default`.
+- xAI/Gemini/OpenRouter są skonfigurowane zgodnie z używanymi rolami.
+- Hindsight jest już skonfigurowany i bootstrap go nie rekonfiguruje.
+- Kanban worker dostaje lifecycle automatycznie po dispatchu.
+- Taski kodujące używają `workspace=worktree:<repo>`.
+- Orchestrator pozostaje bez terminala; scoped CLI jest izolowane do `runtime-controller`.
 
 ## Fail-closed routing
 
-`kanban.default_assignee` wskazuje na `routing-sink`, ponieważ pusty fallback może skierować task do aktywnego/default profilu.
-
-`routing-sink`:
-
-- nie implementuje kodu,
-- nie tworzy kolejnych kart zgodnie z SOUL,
-- nie ma toolsetów implementacyjnych,
-- nie ma `computer_use` ani `cronjob`,
-- po dispatchu korzysta z lifecycle Kanban,
-- blokuje źle skierowaną kartę i wymaga jawnego przypisania do właściwej roli.
-
-## Bezpieczne ponowne uruchomienie
-
-Skrypt:
-
-- nie usuwa profili,
-- nie dotyka `auth.json`,
-- wymusza `coder worktree=false` i `worktree_sync=false`,
-- synchronizuje role GPT z `PRIMARY_PROFILE`,
-- synchronizuje role Grok z `xai-oauth/grok-4.6`,
-- synchronizuje `task-decomposer`, `quick-reviewer` i `docs` z Gemini,
-- synchronizuje `repository-analyst` i opcjonalny `auditor-ox` z Ox, jeśli Ox jest włączony,
-- utrzymuje działający fallback analizy repozytorium do GPT po `OX_MODEL=""`,
-- ustawia `tool_loop_guardrails.hard_stop_enabled=true`,
-- ustawia fail-closed `routing-sink`,
-- wstrzykuje kanoniczny Standard do runtime kontekstu orchestratora,
-- jawnie ustawia Kanban w top-level `toolsets` orchestratora,
-- wykonuje walidację krytycznych ustawień po bootstrapie.
+`kanban.default_assignee` wskazuje na `routing-sink`. `routing-sink` nie implementuje kodu i blokuje źle skierowaną kartę. `runtime-controller` jest osobnym helperem technicznym, nie fallbackiem routingu.
 
 ## Verification
 
-`hermes/verify_bootstrap.sh` jest nieinwazyjny: nie modyfikuje `~/.hermes`. Sprawdza składnię Bash oraz inwarianty profili, model policy, worktree, Kanban i SOUL przed uruchomieniem bootstrapu na hoście.
+`hermes/verify_bootstrap.sh` i `hermes/verify_kanban.sh` są nieinwazyjne. Sprawdzają m.in. model policy, orchestrator denylist, runtime-controller bootstrap/wrapper, validator, review parser i kontrakt Kanban.
