@@ -203,7 +203,7 @@ class RuntimeContractTests(unittest.TestCase):
             implementer_profile="coder",
             reviewer_profile="critic",
         )
-        self.assertIn("implementation_resolved_worktree_missing", errors)
+        self.assertIn("implementation_id_missing", errors)
 
     def test_pilot_6_regression_is_rejected(self) -> None:
         implementation_create = {
