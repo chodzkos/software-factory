@@ -1,8 +1,12 @@
+import contextlib
+import io
+import json
 import unittest
 
 from kanban_runtime_contract import (
     RuntimeExpectation,
     format_drift,
+    main,
     normalize_snapshot,
     resolved_implementation_worktree,
     validate_review_handoff,
@@ -259,6 +263,76 @@ class RuntimeContractTests(unittest.TestCase):
         self.assertTrue(any(e.startswith("workspace_path:") for e in errors))
         self.assertTrue(any(e.startswith("max_retries:") for e in errors))
         self.assertTrue(any(e.startswith("review_workspace_kind:") for e in errors))
+
+    def test_runtime_cli_returns_zero_on_match(self) -> None:
+        actual = json.dumps(
+            {
+                "assignee": "coder",
+                "workspace_kind": "worktree",
+                "workspace_path": "/repo",
+                "branch_name": "pilot/full-flow-doc",
+                "max_retries": 1,
+                "parents": ["t_gate"],
+            }
+        )
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            rc = main(
+                [
+                    "runtime",
+                    "--actual-json",
+                    actual,
+                    "--assignee",
+                    "coder",
+                    "--workspace-kind",
+                    "worktree",
+                    "--workspace-path",
+                    "/repo",
+                    "--branch-name",
+                    "pilot/full-flow-doc",
+                    "--max-retries",
+                    "1",
+                    "--parent",
+                    "t_gate",
+                ]
+            )
+        self.assertEqual(rc, 0)
+        self.assertEqual(output.getvalue().strip(), "RUNTIME_CONTRACT_OK")
+
+    def test_runtime_cli_returns_two_on_drift(self) -> None:
+        actual = json.dumps(
+            {
+                "assignee": "coder",
+                "workspace_kind": "worktree",
+                "workspace_path": "/repo",
+                "branch_name": None,
+                "max_retries": None,
+                "parents": ["t_gate"],
+            }
+        )
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            rc = main(
+                [
+                    "runtime",
+                    "--actual-json",
+                    actual,
+                    "--assignee",
+                    "coder",
+                    "--workspace-kind",
+                    "worktree",
+                    "--workspace-path",
+                    "/repo",
+                    "--branch-name",
+                    "pilot/full-flow-doc",
+                    "--max-retries",
+                    "1",
+                    "--parent",
+                    "t_gate",
+                ]
+            )
+        self.assertEqual(rc, 2)
+        self.assertTrue(output.getvalue().startswith("RUNTIME_CONTRACT_DRIFT:"))
 
     def test_format_drift_is_fail_closed(self) -> None:
         self.assertEqual(format_drift([]), "RUNTIME_CONTRACT_OK")
