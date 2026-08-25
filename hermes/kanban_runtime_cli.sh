@@ -47,7 +47,8 @@ case "${op}" in
     [[ $# -ge 2 ]] || usage
     task_id="$1"
     shift
-    exec hermes kanban complete "${task_id}" "$@"
+    summary="$*"
+    exec hermes kanban complete "${task_id}" --result "${summary}" --summary "${summary}"
     ;;
   *)
     usage
