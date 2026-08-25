@@ -5,9 +5,12 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BOOTSTRAP="${ROOT_DIR}/hermes/bootstrap_profiles.sh"
 STANDARD="${ROOT_DIR}/standards/SOFTWARE_DEVELOPMENT_STANDARD.md"
 ORCHESTRATOR_SOUL="${ROOT_DIR}/hermes/profiles/orchestrator/SOUL.md"
+RUNTIME_BOOTSTRAP="${ROOT_DIR}/hermes/bootstrap_runtime_controller.sh"
+RUNTIME_SOUL="${ROOT_DIR}/hermes/profiles/runtime-controller/SOUL.md"
 
 echo "[check] bash syntax"
 bash -n "${BOOTSTRAP}"
+bash -n "${RUNTIME_BOOTSTRAP}"
 
 echo "[check] canonical standard exists"
 test -f "${STANDARD}"
@@ -71,6 +74,14 @@ expected_disabled='["terminal","file","code_execution","web","browser","image_ge
 grep -Fq "orchestrator config set agent.disabled_toolsets '${expected_disabled}'" "${BOOTSTRAP}"
 grep -Fq "routing-sink config set agent.disabled_toolsets '${expected_disabled}'" "${BOOTSTRAP}"
 
+echo "[check] runtime controller is separate and scoped"
+test -f "${RUNTIME_SOUL}"
+grep -Fq 'PROFILE="runtime-controller"' "${RUNTIME_BOOTSTRAP}"
+grep -Fq "config set toolsets '[\"hermes-cli\",\"kanban\",\"terminal\"]'" "${RUNTIME_BOOTSTRAP}"
+grep -Fq "config set fallback_providers '[]'" "${RUNTIME_BOOTSTRAP}"
+grep -Fq 'runtime-controller' "${ORCHESTRATOR_SOUL}"
+grep -Fq 'Nie masz terminala' "${ORCHESTRATOR_SOUL}"
+
 echo "[check] post-bootstrap model assertions"
 grep -Fq 'expect_config task-decomposer model.default "${GEMINI_MODEL}"' "${BOOTSTRAP}"
 grep -Fq 'expect_config quick-reviewer model.default "${GEMINI_MODEL}"' "${BOOTSTRAP}"
@@ -91,15 +102,12 @@ test -f "${ROOT_DIR}/hermes/profiles/routing-sink/SOUL.md"
 
 echo "[check] required profile SOUL files"
 for profile in orchestrator architect repository-analyst task-decomposer coder quick-reviewer critic auditor-gpt auditor-grok auditor-ox docs release-manager routing-sink; do
-  test -f "${ROOT_DIR}/hermes/profiles/${profile}/SOUL.md" || {
-    echo "ERROR: brak hermes/profiles/${profile}/SOUL.md" >&2
-    exit 1
-  }
+  test -f "${ROOT_DIR}/hermes/profiles/${profile}/SOUL.md" || { echo "ERROR: brak hermes/profiles/${profile}/SOUL.md" >&2; exit 1; }
 done
 
 if command -v shellcheck >/dev/null 2>&1; then
   echo "[check] shellcheck"
-  shellcheck "${BOOTSTRAP}" "$0"
+  shellcheck "${BOOTSTRAP}" "${RUNTIME_BOOTSTRAP}" "$0"
 else
   echo "[info] shellcheck nie jest zainstalowany; pomijam"
 fi
