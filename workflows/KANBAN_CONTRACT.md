@@ -48,41 +48,65 @@ ACCEPTANCE_CRITERIA:
 
 Dla tasku modyfikującego kod `WORKSPACE` musi być `worktree:<absolute-repo-path>`. Jedna logiczna zmiana = jeden branch/worktree/current owner.
 
-Pole `WORKSPACE` jest kontraktem Software Factory. Przy tworzeniu tasku Kanban musi zostać odwzorowane na rzeczywiste pola Hermesa: `workspace_kind=worktree` oraz `workspace_path` wskazujące repo bazowe dla worktree tej karty. Po claimie źródłem prawdy o faktycznym izolowanym worktree jest resolved workspace zwracany przez Hermesa. Sam tekst `WORKSPACE:` nie tworzy izolacji.
+Pole `WORKSPACE` jest kontraktem Software Factory. Przy tworzeniu tasku Kanban `workspace_kind=worktree` oraz create-time `workspace_path` wskazują repo bazowe, z którego Hermes utworzy izolowany worktree. Po claimie Hermes zapisuje materializowany worktree bezpośrednio w `workspace_path`; ten post-claim path jest źródłem prawdy dla późniejszego review. Sam tekst `WORKSPACE:` nie tworzy izolacji.
 
 ### 3.1. Fail-closed runtime gate
 
-Pola zapisane wyłącznie w `body` nie są dowodem konfiguracji runtime. Przed dispatch orchestrator porównuje oczekiwany kontrakt z **faktycznymi polami taska** zwróconymi przez Kanban.
+Pola zapisane wyłącznie w `body` nie są dowodem konfiguracji runtime. Przed dopuszczeniem taska do `ready` orchestrator porównuje oczekiwany kontrakt z **faktycznymi polami taska**.
 
-Każdy task tworzony przez orchestratora powinien wejść najpierw do kwarantanny `blocked` (`initial_status=blocked`). Dopiero po odczycie taska i zgodności runtime fields orchestrator może wykonać `unblock`/`promote`. Drift pozostaje zablokowany i jest kierowany do `routing-sink` lub wymaga jawnej korekty operatora.
+#### Kwarantanna
 
-Walidowane są co najmniej:
+W Hermes 0.20.4 samo `initial_status=blocked` **nie jest sticky quarantine**: create zapisuje status `blocked`, ale nie emituje sticky `blocked` event, więc dispatcher może auto-promote taki task po spełnieniu zależności. Dlatego Software Factory nie używa samego create-time `blocked` jako pre-dispatch gate.
+
+Dla taska wymagającego runtime validation orchestrator stosuje kontrolny parent gate:
+
+1. tworzy osobną kartę kontrolną przypisaną do `routing-sink`,
+2. natychmiast zapisuje na niej sticky `kanban block --kind needs_input` z powodem `RUNTIME_CONTRACT_PENDING`,
+3. dopiero potem tworzy właściwy task z parentem wskazującym tę kartę kontrolną,
+4. właściwy task pozostaje zależny od niedokończonego parenta i nie może zostać promowany do `ready`,
+5. orchestrator waliduje actual runtime fields właściwego taska,
+6. drift => gate parent pozostaje blocked, task nie jest dispatchowany, zapisywane jest `RUNTIME_CONTRACT_DRIFT`,
+7. zgodność => orchestrator kończy wyłącznie techniczną kartę kontrolną, co pozwala zależnemu taskowi przejść dalej.
+
+Karta kontrolna nie jest kartą implementacyjną ani review i nie stanowi evidence wykonania zmiany. Jej jedyną rolą jest atomowe z perspektywy zależnego taska zatrzymanie dispatchu do czasu walidacji.
+
+#### Powierzchnie read/write Hermesa 0.20.4
+
+Software Factory nie zakłada jednego syntetycznego snapshotu. Używa dwóch rzeczywistych powierzchni:
+
+- `hermes kanban create ... --json` jako create receipt dla pól dostępnych w CLI JSON, w szczególności `assignee`, `workspace_kind`, create-time `workspace_path`, `branch_name`, `max_retries`,
+- `kanban_show` / `hermes kanban show` do ponownego odczytu taska oraz parent dependency; `parents` mogą być zwrócone obok obiektu `task`, więc `hermes/kanban_runtime_contract.py` normalizuje ten kształt.
+
+Tool `kanban_create` nie ustawia wszystkich pól wymaganych przez factory contract. Jeżeli task wymaga jawnego `branch_name` albo `max_retries`, orchestrator musi użyć jawnej powierzchni Hermes CLI `hermes kanban create --branch ... --max-retries ... --json`, a następnie sprawdzić wartości z create receipt. Nie wolno deklarować tych wartości wyłącznie w Markdown body.
+
+Mechaniczny gate waliduje co najmniej:
 
 - `assignee`,
 - `workspace_kind`,
-- `workspace_path`,
-- `branch_name`,
-- `max_retries`,
-- `max_runtime`,
-- `parents`.
+- create-time `workspace_path`,
+- `branch_name`, jeżeli jest wymagany,
+- `max_retries`, jeżeli jest wymagany,
+- `parents` przez znormalizowany odczyt taska.
 
-Referencyjna logika walidacji znajduje się w `hermes/kanban_runtime_contract.py`. Każda niezgodność oznacza `RUNTIME_CONTRACT_DRIFT` i **nie może** zostać zinterpretowana jako zgodność na podstawie poprawnego tekstu w `body` lub summary workera.
+`max_runtime` musi być jawnie ustawiony przy create, ale Hermes 0.20.4 nie wystawia go w stabilnym JSON readback używanym przez ten validator. Software Factory **nie twierdzi**, że `max_runtime` jest obecnie mechanicznie potwierdzony przez ten gate. To jawne ograniczenie pozostaje fail-visible do czasu dodania stabilnego readbacku w Hermesie.
 
-Jeżeli wymagane pole runtime nie może zostać ustawione lub odczytane przez aktualne narzędzie Hermesa, orchestrator blokuje kartę zamiast zastępować to pole opisem Markdown.
+Referencyjna logika normalizacji i walidacji znajduje się w `hermes/kanban_runtime_contract.py`. Każda niezgodność oznacza `RUNTIME_CONTRACT_DRIFT` i nie może zostać przykryta poprawnym tekstem w body lub summary workera.
 
 ### 3.2. Handoff implementer → independent reviewer
 
 Dla zmiany wykonywanej w worktree reviewer musi czytać dokładnie artefakt implementera.
 
 - task implementera używa `workspace_kind=worktree`,
-- reviewer **nie jest tworzony z wyprzedzeniem**, jeśli jego workspace zależy od resolved worktree implementera,
-- po terminalnym zakończeniu implementera orchestrator ponownie odczytuje jego live task i pobiera resolved worktree,
-- reviewer jest tworzony jako `workspace_kind=dir` z `workspace_path` równym dokładnie resolved worktree implementera,
+- reviewer **nie jest tworzony z wyprzedzeniem**, jeśli jego workspace zależy od worktree implementera,
+- po terminalnym zakończeniu implementera orchestrator ponownie odczytuje jego live task,
+- w Hermes 0.20.4 resolved worktree po claimie jest zapisany w `implementation.workspace_path`,
+- resolved path jest akceptowany tylko wtedy, gdy jest absolutny i dla taska `t_X` wskazuje `/.worktrees/t_X`; repo root nie jest resolved worktree,
+- reviewer jest tworzony jako `workspace_kind=dir` z `workspace_path` równym dokładnie temu post-claim `implementation.workspace_path`,
 - reviewer ma parent wskazujący task implementera,
 - implementer i independent reviewer muszą być różnymi profilami,
 - tworzenie reviewer taska jako `worktree:<repo-root>` jest zabronione, ponieważ Hermes utworzy wtedy drugi, niezależny worktree.
 
-Brak resolved worktree, inny path, inny workspace kind, brak parenta lub ten sam profil implementera i reviewera powoduje fail-closed i zatrzymanie review.
+Brak post-claim worktree path, inny path, inny workspace kind, brak parenta lub ten sam profil implementera i reviewera powoduje fail-closed i zatrzymanie review.
 
 ## 4. Routing
 
@@ -150,7 +174,7 @@ Znaki `?` oznaczają etap wymagany tylko przez zakres/ryzyko/task contract.
 
 ## 8. Reguły przejść
 
-- orchestrator nie dispatchuje taska z `RUNTIME_CONTRACT_DRIFT`; task pozostaje `blocked`,
+- orchestrator nie dispatchuje taska z `RUNTIME_CONTRACT_DRIFT`; jego gate parent pozostaje blocked,
 - worker może zakończyć własną kartę wykonawczą jako `done`, ale nie może sam nadać całej zmianie statusu VERIFIED,
 - nadrzędna zmiana pozostaje nieweryfikowana, dopóki wszystkie wymagane review/audit/evidence z task contract nie są zamknięte,
 - `CHANGES_REQUIRED` tworzy jawny follow-up dla implementera i nie pozwala zamknąć nadrzędnej zmiany,
