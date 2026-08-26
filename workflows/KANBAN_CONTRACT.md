@@ -131,7 +131,7 @@ Dla zmiany wykonywanej w worktree reviewer musi czytać dokładnie artefakt impl
 - `metadata.workspace_path` w runie jest dodatkowym corroboration: jeśli istnieje, musi zgadzać się z live `task.workspace_path`; jego brak nie blokuje poprawnego natywnego handoffu,
 - dispatcher uruchamia reviewera na tej samej karcie i w tym samym worktree; nie wolno tworzyć drugiego worktree ani osobnej karty tylko po to, aby przekazać workspace.
 
-Przed dispatch review można mechanicznie użyć `runtime-controller validate-handoff` na live JSON tej samej karty. Validator wymaga co najmniej:
+Przed dispatch review należy obowiązkowo zlecić `runtime-controller validate-handoff` na live JSON tej samej karty. Brak pozytywnego `RUNTIME_CONTRACT_OK` oznacza fail-closed i reviewer nie może zostać dispatchowany. Validator wymaga co najmniej:
 
 - resolved `workspace_kind=worktree` i `workspace_path=.../.worktrees/<task-id>`,
 - `assignee` równego oczekiwanemu reviewerowi,
@@ -217,7 +217,7 @@ Znaki `?` oznaczają etap wymagany tylko przez zakres/ryzyko/task contract.
 - implementer wymagający independent review nie kończy tej karty jako VERIFIED; używa natywnego `review_requested`, po którym ta sama karta przechodzi do `review` i innego assignee,
 - karta może przejść do `done` dopiero po zakończeniu wymaganego review lifecycle albo gdy task contract nie wymaga review,
 - nadrzędna zmiana pozostaje nieweryfikowana, dopóki wszystkie wymagane review/audit/evidence z task contract nie są zamknięte,
-- `CHANGES_REQUIRED` domyślnie używa natywnego same-card `request_changes`, aby ta sama karta wróciła do implementera i zachowała ten sam worktree/history; nową kartę tworzy się tylko dla rzeczywiście nowej, odrębnej pracy,
+- przy `CHANGES_REQUIRED` aktywny independent reviewer przed zakończeniem swojego review runu wywołuje natywne same-card `kanban_request_changes`; ta sama karta wraca wtedy do implementera i zachowuje ten sam worktree/history; orchestrator nie emuluje tego post-hoc nową kartą, a nową kartę tworzy się tylko dla rzeczywiście nowej, odrębnej pracy,
 - `REVIEW_PENDING` zatrzymuje przejście całej zmiany do VERIFIED/DONE,
 - brak wymaganego evidence → `blocked` albo pozostanie w `review`, nie VERIFIED,
 - native reviewer worktree handoff nie może być zastąpiony drugim worktree, osobną kartą emulującą handoff ani samym parent summary,
