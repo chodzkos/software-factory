@@ -33,8 +33,8 @@ hermes -p "${PROFILE}" config set model.default "${primary_model}"
 hermes -p "${PROFILE}" config set fallback_providers '[]'
 hermes -p "${PROFILE}" config set tool_loop_guardrails.hard_stop_enabled true
 hermes -p "${PROFILE}" config set agent.tool_use_enforcement auto
-hermes -p "${PROFILE}" config set toolsets '["hermes-cli","kanban","terminal"]'
-hermes -p "${PROFILE}" config set agent.disabled_toolsets '["file","code_execution","web","browser","image_gen","delegation","computer_use","cronjob"]'
+hermes -p "${PROFILE}" config set toolsets '["hermes-cli","terminal"]'
+hermes -p "${PROFILE}" config set agent.disabled_toolsets '["kanban","file","code_execution","web","browser","image_gen","delegation","computer_use","cronjob"]'
 hermes -p "${PROFILE}" config set worktree false
 hermes -p "${PROFILE}" config set worktree_sync false
 
@@ -49,9 +49,13 @@ expect worktree 'false'
 expect worktree_sync 'false'
 
 toolsets_actual="$(get_config_full toolsets)"
-for required_toolset in hermes-cli kanban terminal; do
+for required_toolset in hermes-cli terminal; do
   [[ "${toolsets_actual}" == *"${required_toolset}"* ]] || { echo "ERROR: ${PROFILE}:toolsets missing '${required_toolset}', got '${toolsets_actual}'" >&2; exit 1; }
 done
+if [[ "${toolsets_actual}" == *"kanban"* ]]; then
+  echo "ERROR: ${PROFILE}:toolsets must not expose direct kanban tools, got '${toolsets_actual}'" >&2
+  exit 1
+fi
 
 test -x "${PROFILE_DIR}/kanban_runtime_cli.sh"
 test -f "${PROFILE_DIR}/kanban_runtime_contract.py"
