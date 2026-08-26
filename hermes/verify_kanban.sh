@@ -13,6 +13,8 @@ RUNTIME_WRAPPER_TEST="${ROOT_DIR}/hermes/test_kanban_runtime_wrapper.sh"
 RUNTIME_BOOTSTRAP="${ROOT_DIR}/hermes/bootstrap_runtime_controller.sh"
 RUNTIME_SOUL="${ROOT_DIR}/hermes/profiles/runtime-controller/SOUL.md"
 ORCHESTRATOR_SOUL="${ROOT_DIR}/hermes/profiles/orchestrator/SOUL.md"
+CRITIC_SOUL="${ROOT_DIR}/hermes/profiles/critic/SOUL.md"
+QUICK_REVIEWER_SOUL="${ROOT_DIR}/hermes/profiles/quick-reviewer/SOUL.md"
 BOOTSTRAP_VERIFY="${ROOT_DIR}/hermes/verify_bootstrap.sh"
 
 printf '[check] bash syntax\n'
@@ -102,6 +104,8 @@ grep -Fq 'DECISION: SKIPPED_OX_UNAVAILABLE' "${CONTRACT}"
 grep -Fq 'REVIEW_PENDING' "${CONTRACT}"
 grep -Fq '`severity`: HIGH' "${CONTRACT}"
 grep -Fq 'dodatkowy nieobsługiwany marker `DECISION:`' "${CONTRACT}"
+grep -Fq 'Przy `DECISION: CHANGES_REQUIRED` podczas aktywnego same-card review runu wywołaj natywne `kanban_request_changes`' "${CRITIC_SOUL}"
+grep -Fq 'Przy `DECISION: CHANGES_REQUIRED` podczas aktywnego same-card review runu wywołaj natywne `kanban_request_changes`' "${QUICK_REVIEWER_SOUL}"
 
 printf '[check] mandatory deployment step\n'
 grep -Fq 'PRIMARY_PROFILE=primary-gpt bash hermes/bootstrap_runtime_controller.sh' "${CONTRACT}"
