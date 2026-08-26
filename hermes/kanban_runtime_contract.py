@@ -43,7 +43,9 @@ def _records(payload: Mapping[str, Any], key: str) -> tuple[Mapping[str, Any], .
     raw = payload.get(key, ())
     if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes)):
         return ()
-    return tuple(value for value in raw if isinstance(value, Mapping))
+    if any(not isinstance(value, Mapping) for value in raw):
+        return ()
+    return tuple(raw)
 
 
 def _latest_review_requested_event(payload: Mapping[str, Any]) -> Mapping[str, Any] | None:

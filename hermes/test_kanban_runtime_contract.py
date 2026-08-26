@@ -238,6 +238,36 @@ class RuntimeContractTests(unittest.TestCase):
         self.assertIn("review_requested_event_missing_or_mismatched", errors)
         self.assertIn("current_implementer_review_run_missing_or_mismatched", errors)
 
+    def test_malformed_trailing_run_cannot_expose_stale_good_run(self) -> None:
+        payload = same_card_review_snapshot()
+        payload["runs"].append(None)
+
+        errors = validate_review_handoff(
+            payload,
+            implementer_profile="coder",
+            reviewer_profile="critic",
+        )
+
+        self.assertIn(
+            "current_implementer_review_run_missing_or_mismatched",
+            errors,
+        )
+
+    def test_malformed_trailing_event_cannot_expose_stale_good_event(self) -> None:
+        payload = same_card_review_snapshot()
+        payload["events"].append(None)
+
+        errors = validate_review_handoff(
+            payload,
+            implementer_profile="coder",
+            reviewer_profile="critic",
+        )
+
+        self.assertIn(
+            "review_requested_event_missing_or_mismatched",
+            errors,
+        )
+
     def test_body_summary_spoof_does_not_replace_structured_history(self) -> None:
         payload = same_card_review_snapshot()
         payload["events"] = []
