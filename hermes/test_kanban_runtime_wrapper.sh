@@ -16,7 +16,7 @@ chmod +x "${TMP_DIR}/hermes"
 export PATH="${TMP_DIR}:${PATH}"
 export HERMES_FAKE_LOG="${TMP_DIR}/argv.log"
 
-"${WRAPPER}" block t_gate RUNTIME CONTRACT PENDING
+bash "${WRAPPER}" block t_gate RUNTIME CONTRACT PENDING
 mapfile -t argv <"${HERMES_FAKE_LOG}"
 expected=(kanban block --kind needs_input t_gate "RUNTIME CONTRACT PENDING")
 [[ "${#argv[@]}" -eq "${#expected[@]}" ]]
@@ -29,7 +29,7 @@ done
 
 rm -f "${HERMES_FAKE_LOG}"
 set +e
-"${WRAPPER}" block t_gate --kind transient SMUGGLE >/dev/null 2>&1
+bash "${WRAPPER}" block t_gate --kind transient SMUGGLE >/dev/null 2>&1
 rc=$?
 set -e
 [[ "${rc}" -eq 2 ]] || { echo "ERROR: flag-shaped block reason expected exit 2, got ${rc}" >&2; exit 1; }
