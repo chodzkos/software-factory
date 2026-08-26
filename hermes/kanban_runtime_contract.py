@@ -39,6 +39,13 @@ def _parents(actual: Mapping[str, Any]) -> tuple[str, ...]:
     return tuple(str(value) for value in raw)
 
 
+def _records(payload: Mapping[str, Any], key: str) -> tuple[Mapping[str, Any], ...]:
+    raw = payload.get(key, ())
+    if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes)):
+        return ()
+    return tuple(value for value in raw if isinstance(value, Mapping))
+
+
 def validate_runtime(payload: Mapping[str, Any], expectation: RuntimeExpectation) -> list[str]:
     """Porównaj oczekiwane pola z realnym snapshotem Hermesa fail-closed."""
 
@@ -85,47 +92,65 @@ def resolved_implementation_worktree(payload: Mapping[str, Any]) -> str | None:
 
 
 def validate_review_handoff(
-    implementation_payload: Mapping[str, Any],
-    review_payload: Mapping[str, Any],
+    payload: Mapping[str, Any],
     *,
     implementer_profile: str,
     reviewer_profile: str,
 ) -> list[str]:
-    """Reviewer musi czytać dokładnie post-claim worktree implementera."""
+    """Waliduj natywny Hermes same-card handoff do independent reviewera."""
 
-    implementation = normalize_snapshot(implementation_payload)
-    review = normalize_snapshot(review_payload)
+    task = normalize_snapshot(payload)
     errors: list[str] = []
 
     if implementer_profile == reviewer_profile:
         errors.append("implementer_and_reviewer_must_differ")
 
-    implementation_id = str(implementation.get("id") or "")
-    if not implementation_id:
+    task_id = str(task.get("id") or "")
+    if not task_id:
         errors.append("implementation_id_missing")
         return errors
 
-    resolved_path = resolved_implementation_worktree(implementation)
+    resolved_path = resolved_implementation_worktree(payload)
     if not resolved_path:
         errors.append("implementation_resolved_worktree_missing")
         return errors
 
-    if review.get("workspace_kind") != "dir":
+    if task.get("assignee") != reviewer_profile:
         errors.append(
-            "review_workspace_kind: expected='dir' "
-            f"actual={review.get('workspace_kind')!r}"
+            f"review_assignee: expected={reviewer_profile!r} actual={task.get('assignee')!r}"
         )
-    if review.get("workspace_path") != resolved_path:
-        errors.append(
-            f"review_workspace_path: expected={resolved_path!r} "
-            f"actual={review.get('workspace_path')!r}"
-        )
+    if task.get("status") != "review":
+        errors.append(f"review_status: expected='review' actual={task.get('status')!r}")
 
-    review_parents = _parents(review)
-    if review_parents != (implementation_id,):
-        errors.append(
-            f"review_parents: expected={(implementation_id,)!r} actual={review_parents!r}"
-        )
+    matching_event = False
+    for event in _records(payload, "events"):
+        if event.get("kind") != "review_requested":
+            continue
+        event_payload = event.get("payload")
+        if not isinstance(event_payload, Mapping):
+            continue
+        if (
+            event_payload.get("implementer") == implementer_profile
+            and event_payload.get("reviewer") == reviewer_profile
+        ):
+            matching_event = True
+            break
+    if not matching_event:
+        errors.append("review_requested_event_missing_or_mismatched")
+
+    matching_run = False
+    for run in _records(payload, "runs"):
+        if run.get("profile") != implementer_profile or run.get("outcome") != "review_requested":
+            continue
+        metadata = run.get("metadata")
+        if not isinstance(metadata, Mapping):
+            continue
+        if metadata.get("workspace_path") == resolved_path:
+            matching_run = True
+            break
+    if not matching_run:
+        errors.append("implementer_review_run_missing_or_workspace_mismatched")
+
     return errors
 
 
@@ -133,18 +158,16 @@ def validate_task_graph(
     actual: Mapping[str, Any],
     expectation: RuntimeExpectation,
     *,
-    implementation: Mapping[str, Any] | None = None,
     implementer_profile: str | None = None,
     reviewer_profile: str | None = None,
 ) -> list[str]:
     errors = validate_runtime(actual, expectation)
-    if implementation is not None:
+    if implementer_profile is not None or reviewer_profile is not None:
         if not implementer_profile or not reviewer_profile:
             errors.append("review_profiles_required")
         else:
             errors.extend(
                 validate_review_handoff(
-                    implementation,
                     actual,
                     implementer_profile=implementer_profile,
                     reviewer_profile=reviewer_profile,
@@ -185,11 +208,9 @@ def _runtime_command(args: argparse.Namespace) -> int:
 
 
 def _handoff_command(args: argparse.Namespace) -> int:
-    implementation = _json_object(args.implementation_json, "implementation-json")
-    review = _json_object(args.review_json, "review-json")
+    actual = _json_object(args.actual_json, "actual-json")
     errors = validate_review_handoff(
-        implementation,
-        review,
+        actual,
         implementer_profile=args.implementer_profile,
         reviewer_profile=args.reviewer_profile,
     )
@@ -211,9 +232,8 @@ def build_cli_parser() -> argparse.ArgumentParser:
     runtime.add_argument("--parent", action="append", default=[])
     runtime.set_defaults(func=_runtime_command)
 
-    handoff = sub.add_parser("handoff", help="Validate implementer to reviewer worktree handoff")
-    handoff.add_argument("--implementation-json", required=True)
-    handoff.add_argument("--review-json", required=True)
+    handoff = sub.add_parser("handoff", help="Validate native same-card implementer to reviewer handoff")
+    handoff.add_argument("--actual-json", required=True)
     handoff.add_argument("--implementer-profile", required=True)
     handoff.add_argument("--reviewer-profile", required=True)
     handoff.set_defaults(func=_handoff_command)
