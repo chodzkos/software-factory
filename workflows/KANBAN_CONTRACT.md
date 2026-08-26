@@ -24,9 +24,9 @@ Ten dokument doprecyzowuje `standards/SOFTWARE_DEVELOPMENT_STANDARD.md` dla Soft
 | `done` | ta konkretna karta została zakończona; nie oznacza automatycznie VERIFIED całej zmiany |
 | `archived` | zamknięty historyczny task po zakończeniu lifecycle |
 
-Hermes może przenieść pojedynczą kartę wykonawczą do `done`, gdy worker ją kończy. To jest status **karty**, nie automatyczne potwierdzenie całej zmiany. `IMPLEMENTED != VERIFIED`.
+Hermes może przenieść pojedynczą kartę wykonawczą do `done`, gdy worker ją kończy bez wymaganego handoffu albo po zakończeniu jej natywnego review lifecycle. To jest status **karty**, nie automatyczne potwierdzenie całej zmiany. `IMPLEMENTED != VERIFIED`.
 
-Zmiana feature/bugfix może być uznana za VERIFIED/DONE dopiero wtedy, gdy wymagane przez jej task contract karty review/audytu oraz wymagane evidence są zakończone i nie ma nierozwiązanych blockerów. Orchestrator nie może wywnioskować VERIFIED wyłącznie z `done` karty implementera.
+Zmiana feature/bugfix może być uznana za VERIFIED/DONE dopiero wtedy, gdy wszystkie wymagane przez jej task contract review/audyty oraz wymagane evidence są zakończone i nie ma nierozwiązanych blockerów. Orchestrator nie może wywnioskować VERIFIED wyłącznie z zakończenia runu implementera.
 
 ## 3. Task body — wymagane pola
 
@@ -117,19 +117,29 @@ Referencyjna logika normalizacji i walidacji znajduje się w `hermes/kanban_runt
 
 ### 3.2. Handoff implementer → independent reviewer
 
-Dla zmiany wykonywanej w worktree reviewer musi czytać dokładnie artefakt implementera.
+Dla zmiany wykonywanej w worktree reviewer musi czytać dokładnie artefakt implementera. Software Factory używa natywnego **same-card review flow** Hermesa 0.20.4, zweryfikowanego live w Pilocie 7B.
 
-- task implementera używa `workspace_kind=worktree`,
-- reviewer **nie jest tworzony z wyprzedzeniem**, jeśli jego workspace zależy od worktree implementera,
-- po terminalnym zakończeniu implementera odczytywany jest jego live task,
-- w Hermes 0.20.4 resolved worktree po claimie jest zapisany w `implementation.workspace_path`,
+- task implementera jest tworzony jako `workspace_kind=worktree` z create-time `workspace_path` wskazującym repo bazowe,
+- po claimie Hermes materializuje worktree i zapisuje jego path bezpośrednio w `task.workspace_path`,
 - resolved path jest akceptowany tylko wtedy, gdy jest absolutny i dla taska `t_X` wskazuje `/.worktrees/t_X`; repo root nie jest resolved worktree,
-- reviewer jest tworzony przez `runtime-controller` jako `workspace_kind=dir` z `workspace_path` równym dokładnie temu post-claim `implementation.workspace_path`,
-- reviewer ma parent wskazujący task implementera,
-- implementer i independent reviewer muszą być różnymi profilami,
-- tworzenie reviewer taska jako `worktree:<repo-root>` jest zabronione, ponieważ Hermes utworzy wtedy drugi, niezależny worktree.
+- implementer kończy swój run przez natywne `review_requested`, nie przez utworzenie osobnej reviewer card,
+- ta sama karta przechodzi do `status=review`, a `assignee` zmienia się na wymagany profil independent reviewera,
+- `workspace_kind` pozostaje `worktree`, a `workspace_path` pozostaje dokładnie tym samym resolved worktree implementera,
+- historia implementacji pozostaje w `runs`: implementer run ma `outcome=review_requested`, a jego metadata `workspace_path` musi zgadzać się z live `task.workspace_path`,
+- event `review_requested` musi wskazywać oczekiwane różne profile `implementer` i `reviewer`,
+- dispatcher uruchamia reviewera na tej samej karcie i w tym samym worktree; nie wolno tworzyć drugiego worktree ani osobnej karty tylko po to, aby przekazać workspace.
 
-Brak post-claim worktree path, inny path, inny workspace kind, brak parenta lub ten sam profil implementera i reviewera powoduje fail-closed i zatrzymanie review.
+Przed dispatch review można mechanicznie użyć `runtime-controller validate-handoff` na live JSON tej samej karty. Validator wymaga co najmniej:
+
+- resolved `workspace_kind=worktree` i `workspace_path=.../.worktrees/<task-id>`,
+- `assignee` równego oczekiwanemu reviewerowi,
+- `status=review`,
+- zgodnego eventu `review_requested` z różnymi profilami implementera i reviewera,
+- implementer runu z `outcome=review_requested` i metadata `workspace_path` równym live resolved worktree.
+
+Brak któregokolwiek z tych dowodów powoduje fail-closed i zatrzymanie dispatch review. Body, summary ani parent result nie zastępują live task/event/run evidence.
+
+Osobny reviewer task pozostaje dopuszczalny wyłącznie wtedy, gdy workflow rzeczywiście wymaga odrębnej jednostki pracy niezależnej od natywnego handoffu tej karty. Nie może służyć jako emulacja same-card worktree review.
 
 ## 4. Routing
 
@@ -200,12 +210,13 @@ Znaki `?` oznaczają etap wymagany tylko przez zakres/ryzyko/task contract.
 
 - orchestrator nie dispatchuje taska z `RUNTIME_CONTRACT_DRIFT`; jego gate parent pozostaje blocked,
 - brak `runtime-controller` przy tasku wymagającym branch/retry oznacza blocked, nie degradację do LLM-only create,
-- worker może zakończyć własną kartę wykonawczą jako `done`, ale nie może sam nadać całej zmianie statusu VERIFIED,
+- implementer wymagający independent review nie kończy tej karty jako VERIFIED; używa natywnego `review_requested`, po którym ta sama karta przechodzi do `review` i innego assignee,
+- karta może przejść do `done` dopiero po zakończeniu wymaganego review lifecycle albo gdy task contract nie wymaga review,
 - nadrzędna zmiana pozostaje nieweryfikowana, dopóki wszystkie wymagane review/audit/evidence z task contract nie są zamknięte,
 - `CHANGES_REQUIRED` tworzy jawny follow-up dla implementera i nie pozwala zamknąć nadrzędnej zmiany,
 - `REVIEW_PENDING` zatrzymuje przejście całej zmiany do VERIFIED/DONE,
 - brak wymaganego evidence → `blocked` albo pozostanie w `review`, nie VERIFIED,
-- reviewer worktree handoff nie może być zastąpiony drugim worktree ani samym parent summary,
+- native reviewer worktree handoff nie może być zastąpiony drugim worktree, osobną kartą emulującą handoff ani samym parent summary,
 - `release-manager` odmawia release przy brakującym required review/evidence lub wiarygodnym nierozwiązanym HIGH/CRITICAL.
 
 ## 9. Obowiązkowy krok wdrożenia Kanbana
