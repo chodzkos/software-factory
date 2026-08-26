@@ -348,6 +348,94 @@ class RuntimeContractTests(unittest.TestCase):
             [],
         )
 
+    def test_two_cycle_native_review_uses_latest_transition(self) -> None:
+        payload = {
+            "task": {
+                "id": "t_impl",
+                "assignee": "quick-reviewer",
+                "status": "review",
+                "workspace_kind": "worktree",
+                "workspace_path": "/repo/.worktrees/t_impl",
+            },
+            "events": [
+                {
+                    "kind": "review_requested",
+                    "payload": {
+                        "implementer": "coder",
+                        "reviewer": "critic",
+                    },
+                    "run_id": 10,
+                },
+                {
+                    "kind": "changes_requested",
+                    "payload": {
+                        "implementer": "coder",
+                        "reviewer": "critic",
+                    },
+                    "run_id": 11,
+                },
+                {
+                    "kind": "review_requested",
+                    "payload": {
+                        "implementer": "coder",
+                        "reviewer": "quick-reviewer",
+                    },
+                    "run_id": 12,
+                },
+            ],
+            "runs": [
+                {
+                    "id": 10,
+                    "profile": "coder",
+                    "outcome": "review_requested",
+                    "metadata": {
+                        "workspace_path": "/repo/.worktrees/t_impl"
+                    },
+                },
+                {
+                    "id": 11,
+                    "profile": "critic",
+                    "outcome": "changes_requested",
+                    "metadata": None,
+                },
+                {
+                    "id": 12,
+                    "profile": "coder",
+                    "outcome": "review_requested",
+                    "metadata": {
+                        "workspace_path": "/repo/.worktrees/t_impl"
+                    },
+                },
+            ],
+        }
+
+        self.assertEqual(
+            validate_review_handoff(
+                payload,
+                implementer_profile="coder",
+                reviewer_profile="quick-reviewer",
+            ),
+            [],
+        )
+
+        stale_errors = validate_review_handoff(
+            payload,
+            implementer_profile="coder",
+            reviewer_profile="critic",
+        )
+
+        self.assertTrue(
+            any(
+                error.startswith("review_assignee:")
+                for error in stale_errors
+            )
+        )
+
+        self.assertIn(
+            "review_requested_event_missing_or_mismatched",
+            stale_errors,
+        )
+
     def test_runtime_cli_returns_zero_on_match(self) -> None:
         actual = json.dumps(
             {
