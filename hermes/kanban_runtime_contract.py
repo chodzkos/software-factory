@@ -43,7 +43,22 @@ def _records(payload: Mapping[str, Any], key: str) -> tuple[Mapping[str, Any], .
     raw = payload.get(key, ())
     if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes)):
         return ()
-    return tuple(value for value in raw if isinstance(value, Mapping))
+    if any(not isinstance(value, Mapping) for value in raw):
+        return ()
+    return tuple(raw)
+
+
+def _latest_review_requested_event(payload: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    events = _records(payload, "events")
+    for event in reversed(events):
+        if event.get("kind") == "review_requested":
+            return event
+    return None
+
+
+def _latest_run(payload: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    runs = _records(payload, "runs")
+    return runs[-1] if runs else None
 
 
 def validate_runtime(payload: Mapping[str, Any], expectation: RuntimeExpectation) -> list[str]:
@@ -97,7 +112,7 @@ def validate_review_handoff(
     implementer_profile: str,
     reviewer_profile: str,
 ) -> list[str]:
-    """Waliduj natywny Hermes same-card handoff do independent reviewera."""
+    """Waliduj bieżący natywny Hermes same-card handoff do independent reviewera."""
 
     task = normalize_snapshot(payload)
     errors: list[str] = []
@@ -122,34 +137,33 @@ def validate_review_handoff(
     if task.get("status") != "review":
         errors.append(f"review_status: expected='review' actual={task.get('status')!r}")
 
-    matching_event = False
-    for event in _records(payload, "events"):
-        if event.get("kind") != "review_requested":
-            continue
-        event_payload = event.get("payload")
-        if not isinstance(event_payload, Mapping):
-            continue
-        if (
-            event_payload.get("implementer") == implementer_profile
-            and event_payload.get("reviewer") == reviewer_profile
-        ):
-            matching_event = True
-            break
-    if not matching_event:
+    latest_event = _latest_review_requested_event(payload)
+    event_run_id: Any = None
+    if latest_event is None:
         errors.append("review_requested_event_missing_or_mismatched")
+    else:
+        event_payload = latest_event.get("payload")
+        if not isinstance(event_payload, Mapping) or (
+            event_payload.get("implementer") != implementer_profile
+            or event_payload.get("reviewer") != reviewer_profile
+        ):
+            errors.append("review_requested_event_missing_or_mismatched")
+        event_run_id = latest_event.get("run_id")
 
-    matching_run = False
-    for run in _records(payload, "runs"):
-        if run.get("profile") != implementer_profile or run.get("outcome") != "review_requested":
-            continue
-        metadata = run.get("metadata")
-        if not isinstance(metadata, Mapping):
-            continue
-        if metadata.get("workspace_path") == resolved_path:
-            matching_run = True
-            break
-    if not matching_run:
-        errors.append("implementer_review_run_missing_or_workspace_mismatched")
+    latest_run = _latest_run(payload)
+    if latest_run is None or (
+        latest_run.get("profile") != implementer_profile
+        or latest_run.get("outcome") != "review_requested"
+    ):
+        errors.append("current_implementer_review_run_missing_or_mismatched")
+    else:
+        if event_run_id is not None and latest_run.get("id") != event_run_id:
+            errors.append("review_requested_event_run_mismatch")
+        metadata = latest_run.get("metadata")
+        if isinstance(metadata, Mapping):
+            metadata_path = metadata.get("workspace_path")
+            if metadata_path is not None and metadata_path != resolved_path:
+                errors.append("implementer_review_run_workspace_mismatched")
 
     return errors
 

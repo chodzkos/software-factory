@@ -66,7 +66,7 @@ Dlatego dla kart wymagających tych pól orchestrator deleguje mechaniczne utwor
 - nie implementuje kodu i nie wykonuje independent review,
 - ma osobny minimalny profil runtime,
 - używa terminala wyłącznie do repozytoryjnego wrappera `hermes/kanban_runtime_cli.sh` i walidatora `hermes/kanban_runtime_contract.py`,
-- wrapper whitelistuje tylko operacje `create`, `show`, `block`, `complete` i przekazuje argumenty bez `eval`,
+- wrapper whitelistuje tylko operacje `create`, `show`, `block`, `complete`, `validate-runtime`, `validate-handoff` i przekazuje argumenty bez `eval`,
 - nie wykonuje Git, curl, package managerów ani dowolnych poleceń projektu.
 
 Profil instaluje osobny, obowiązkowy bootstrap:
@@ -125,17 +125,21 @@ Dla zmiany wykonywanej w worktree reviewer musi czytać dokładnie artefakt impl
 - implementer kończy swój run przez natywne `review_requested`, nie przez utworzenie osobnej reviewer card,
 - ta sama karta przechodzi do `status=review`, a `assignee` zmienia się na wymagany profil independent reviewera,
 - `workspace_kind` pozostaje `worktree`, a `workspace_path` pozostaje dokładnie tym samym resolved worktree implementera,
-- historia implementacji pozostaje w `runs`: implementer run ma `outcome=review_requested`, a jego metadata `workspace_path` musi zgadzać się z live `task.workspace_path`,
-- event `review_requested` musi wskazywać oczekiwane różne profile `implementer` i `reviewer`,
+- historia implementacji pozostaje w `runs`: bieżący/najnowszy implementer run ma `outcome=review_requested`,
+- najnowszy event `review_requested` musi wskazywać oczekiwane różne profile `implementer` i `reviewer`,
+- jeśli event zawiera `run_id`, musi on wskazywać dokładnie bieżący run implementera,
+- `metadata.workspace_path` w runie jest dodatkowym corroboration: jeśli istnieje, musi zgadzać się z live `task.workspace_path`; jego brak nie blokuje poprawnego natywnego handoffu,
 - dispatcher uruchamia reviewera na tej samej karcie i w tym samym worktree; nie wolno tworzyć drugiego worktree ani osobnej karty tylko po to, aby przekazać workspace.
 
-Przed dispatch review można mechanicznie użyć `runtime-controller validate-handoff` na live JSON tej samej karty. Validator wymaga co najmniej:
+Przed dispatch review należy obowiązkowo zlecić `runtime-controller validate-handoff` na live JSON tej samej karty. Brak pozytywnego `RUNTIME_CONTRACT_OK` oznacza fail-closed i reviewer nie może zostać dispatchowany. Validator wymaga co najmniej:
 
 - resolved `workspace_kind=worktree` i `workspace_path=.../.worktrees/<task-id>`,
 - `assignee` równego oczekiwanemu reviewerowi,
 - `status=review`,
-- zgodnego eventu `review_requested` z różnymi profilami implementera i reviewera,
-- implementer runu z `outcome=review_requested` i metadata `workspace_path` równym live resolved worktree.
+- najnowszego zgodnego eventu `review_requested` z różnymi profilami implementera i reviewera,
+- bieżącego/najnowszego implementer runu z `outcome=review_requested`,
+- spójności `event.run_id` z tym runem, gdy `run_id` jest dostępny,
+- zgodności `metadata.workspace_path` z live resolved worktree tylko wtedy, gdy metadata to pole zawiera.
 
 Brak któregokolwiek z tych dowodów powoduje fail-closed i zatrzymanie dispatch review. Body, summary ani parent result nie zastępują live task/event/run evidence.
 
@@ -213,7 +217,7 @@ Znaki `?` oznaczają etap wymagany tylko przez zakres/ryzyko/task contract.
 - implementer wymagający independent review nie kończy tej karty jako VERIFIED; używa natywnego `review_requested`, po którym ta sama karta przechodzi do `review` i innego assignee,
 - karta może przejść do `done` dopiero po zakończeniu wymaganego review lifecycle albo gdy task contract nie wymaga review,
 - nadrzędna zmiana pozostaje nieweryfikowana, dopóki wszystkie wymagane review/audit/evidence z task contract nie są zamknięte,
-- `CHANGES_REQUIRED` tworzy jawny follow-up dla implementera i nie pozwala zamknąć nadrzędnej zmiany,
+- przy `CHANGES_REQUIRED` aktywny independent reviewer przed zakończeniem swojego review runu wywołuje natywne same-card `kanban_request_changes`; ta sama karta wraca wtedy do implementera i zachowuje ten sam worktree/history; orchestrator nie emuluje tego post-hoc nową kartą, a nową kartę tworzy się tylko dla rzeczywiście nowej, odrębnej pracy,
 - `REVIEW_PENDING` zatrzymuje przejście całej zmiany do VERIFIED/DONE,
 - brak wymaganego evidence → `blocked` albo pozostanie w `review`, nie VERIFIED,
 - native reviewer worktree handoff nie może być zastąpiony drugim worktree, osobną kartą emulującą handoff ani samym parent summary,
