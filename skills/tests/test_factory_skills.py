@@ -76,7 +76,7 @@ class FactorySkillTests(unittest.TestCase):
 
     def test_conflicting_upstream_is_reference_only_with_adapters(self):
         refs = self.manifest["upstream_references"]
-        self.assertEqual(set(refs), {"tdd-workflow", "ai-code-review"})
+        self.assertEqual(set(refs), {"tdd-workflow", "ai-code-review", "repo-map"})
         for name, adapter in {
             "tdd-workflow": "factory-tdd-workflow",
             "ai-code-review": "factory-ai-code-review",
@@ -89,6 +89,11 @@ class FactorySkillTests(unittest.TestCase):
             self.assertEqual(ref["sha256"], UPSTREAM_DIGESTS[name])
             self.assertNotIn(name, self.manifest["skills"])
             self.assertIn(adapter, self.manifest["skills"])
+        repo_map = refs["repo-map"]
+        self.assertFalse(repo_map["installable"])
+        self.assertFalse(repo_map["vetted"])
+        self.assertEqual(repo_map["review_status"], "pending-helper-review")
+        self.assertNotIn("repo-map", self.manifest["skills"])
 
     def test_profile_references_are_declared(self):
         declared = set(self.manifest["skills"])

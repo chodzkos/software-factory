@@ -1,4 +1,4 @@
-# Software Factory Skills v0.7
+# Software Factory Skills v0.8 review stage
 
 This directory is the task-level skill layer for Software Factory.
 
@@ -11,9 +11,23 @@ Authority order:
 
 Skills do not orchestrate Kanban, create parallel review tasks, weaken runtime gates, or replace independent review. They are subordinate procedures used inside an already assigned task/profile.
 
-## v0.7 scope
+## v0.8 review scope
 
-This release keeps the factory-owned skill foundation and adds the first pinned upstream batch using a vendored-only supply-chain model.
+The v0.7 pinned-upstream model remains active for installable skills. This review stage adds `repo-map` as the first pinned **multi-file upstream reference** so its executable helper can be independently reviewed before any runtime activation.
+
+`repo-map` is intentionally:
+
+- absent from `manifest.skills`,
+- `installable=false`,
+- `vetted=false`,
+- `review_status=pending-helper-review`,
+- granted to no profile.
+
+The vendored reference pins the exact upstream repository, full immutable commit SHA, exact file allowlist, and SHA-256 for both `SKILL.md` and `scripts/repo_map.py`.
+
+Testing the exact upstream helper found a real defect: when `.git` or `node_modules` is itself the current `os.walk` directory, its files are still mapped even though the skill description claims those directories are skipped. This defect is documented and pinned by tests; it is not treated as fixed. Runtime activation requires a later reviewed Factory fix/wrapper.
+
+## Existing v0.7 runtime scope
 
 Installable upstream content is never fetched at runtime. It must be committed under `skills/upstream/`, tied to an allowlisted repository and an exact 40-character upstream commit, carry an exact upstream path and SHA-256 digest, and be marked `vetted=true` in `manifest.yaml`.
 
@@ -21,24 +35,23 @@ Batch 1 installs `bug-diagnosis` directly as vetted upstream content for the cod
 
 ## Layout
 
-- `manifest.yaml` — machine-readable inventory, profile grants, vendored-upstream provenance, exact commit/digest pins, and non-installable upstream references. JSON-compatible YAML keeps validation Python-stdlib-only.
+- `manifest.yaml` — machine-readable inventory, profile grants, vendored-upstream provenance, exact commit/digest pins, and non-installable upstream references.
 - `profiles.yaml` — minimum profile→skill policy.
 - `custom/` — factory-owned skills and Factory-safe adapters.
-- `upstream/` — pinned upstream source material plus `VETTING.md`. Reference-only files may live here without being installer-visible.
-- `tests/` — manifest/profile/routing and supply-chain regression tests.
+- `upstream/` — pinned upstream source material plus vetting/review records. Reference-only files may live here without being installer-visible.
+- `tests/` — manifest/profile/routing and supply-chain/helper regression tests.
 - `../hermes/install_factory_skills.sh` — fail-closed profile-aware installer for manifest-declared custom and vetted vendored skills.
-- `../hermes/verify_factory_skills.sh` — repository and installed-state verification, including vendored digest checks.
+- `../hermes/verify_factory_skills.sh` — repository and installed-state verification.
 
 ## Vendored upstream policy
 
 - Runtime installation performs no network acquisition (`network_install=false`).
 - Upstream repositories must be explicitly allowlisted.
 - Upstream identity uses an immutable full commit SHA, never a moving branch/tag such as `main` or `latest`.
-- Installable upstream directories must be real non-symlink directories containing only regular `SKILL.md`.
+- Installable upstream directories must satisfy their reviewed source-shape contract.
 - SHA-256 is verified before the first install write.
-- For `upstream-vendored`, the installer copies only the validated `SKILL.md` bytes.
-- Installed upstream `SKILL.md` symlinks, extra files, missing files, and digest drift fail closed.
-- Upstream text that conflicts with higher Factory authority stays reference-only until a Factory-owned adapter exists.
+- Installed upstream symlinks, extra files, missing files, and digest drift fail closed.
+- Upstream text or helpers that conflict with higher Factory authority or fail security review stay reference-only until a Factory-owned adapter/wrapper exists.
 
 ## Design rules
 
