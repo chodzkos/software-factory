@@ -50,6 +50,15 @@ for name in names:
         expected=f"skills/custom/{name}"
         if spec.get("path") != expected:
             raise SystemExit(f"ERROR: custom skill path mismatch for {name}: {spec.get('path')!r}")
+        src=root/spec["path"]
+        skill_file=src/"SKILL.md"
+        if src.is_symlink() or skill_file.is_symlink():
+            raise SystemExit(f"ERROR: symlink custom skill source refused: {name}")
+        if not src.is_dir() or not skill_file.is_file():
+            raise SystemExit(f"ERROR: missing custom skill: {skill_file}")
+        entries=sorted(p.name for p in src.iterdir())
+        if entries != ["SKILL.md"]:
+            raise SystemExit(f"ERROR: custom skill directory must contain only SKILL.md for {name}: {entries}")
     elif source == "upstream-vendored":
         if not policy.get("enabled") or policy.get("mode") != "vendored-only" or policy.get("network_install") is not False:
             raise SystemExit("ERROR: upstream policy is not vendored-only fail-closed")
@@ -115,11 +124,9 @@ for i in "${!skills[@]}"; do
   source="${sources[$i]}"
   target="$DEST/$skill"
   [[ -f "$src/SKILL.md" ]] || { echo "ERROR: missing source skill: $src/SKILL.md" >&2; exit 1; }
-  if [[ "$source" == "upstream-vendored" ]]; then
-    [[ ! -L "$src" && ! -L "$src/SKILL.md" ]] || { echo "ERROR: refusing symlink upstream source: $skill" >&2; exit 1; }
-    mapfile -t source_entries < <(find "$src" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort)
-    [[ ${#source_entries[@]} -eq 1 && "${source_entries[0]}" == "SKILL.md" ]] || { echo "ERROR: upstream source must contain only SKILL.md: $skill" >&2; exit 1; }
-  fi
+  [[ ! -L "$src" && ! -L "$src/SKILL.md" ]] || { echo "ERROR: refusing symlink skill source: $skill" >&2; exit 1; }
+  mapfile -t source_entries < <(find "$src" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort)
+  [[ ${#source_entries[@]} -eq 1 && "${source_entries[0]}" == "SKILL.md" ]] || { echo "ERROR: skill source must contain only SKILL.md: $skill" >&2; exit 1; }
   if [[ -L "$target" || -L "$target/SKILL.md" ]]; then
     echo "ERROR: refusing symlink installed target: $target" >&2
     exit 1
@@ -152,7 +159,6 @@ mkdir -p "$DEST"
 for i in "${!skills[@]}"; do
   skill="${skills[$i]}"
   src="$ROOT_DIR/${relpaths[$i]}"
-  source="${sources[$i]}"
   target="$DEST/$skill"
 
   if [[ -d "$target" ]]; then
@@ -162,11 +168,7 @@ for i in "${!skills[@]}"; do
 
   tmp="$(mktemp -d "$DEST/.factory-skill.tmp.XXXXXX")"
   trap 'rm -rf -- "$tmp"' EXIT
-  if [[ "$source" == "upstream-vendored" ]]; then
-    cp -- "$src/SKILL.md" "$tmp/SKILL.md"
-  else
-    cp -a "$src"/. "$tmp"/
-  fi
+  cp -- "$src/SKILL.md" "$tmp/SKILL.md"
   mv -- "$tmp" "$target"
   trap - EXIT
   echo "INSTALLED: $skill"

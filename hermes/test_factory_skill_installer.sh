@@ -38,6 +38,21 @@ dry_dest="$TMP_ROOT/dry target"
 HERMES_SKILLS_DIR="$dry_dest" bash "$INSTALLER" --profile coder --dry-run >/dev/null
 [[ ! -e "$dry_dest" ]] || { echo "ERROR: dry-run created destination" >&2; exit 1; }
 
+printf '[installer-test] custom source symlink is refused\n'
+custom_symlink_root="$TMP_ROOT/custom-symlink-root"
+make_probe_root "$custom_symlink_root"
+outside_custom="$TMP_ROOT/outside-custom"
+cp -a "$custom_symlink_root/skills/custom/factory-tdd-workflow" "$outside_custom"
+rm -rf "$custom_symlink_root/skills/custom/factory-tdd-workflow"
+ln -s "$outside_custom" "$custom_symlink_root/skills/custom/factory-tdd-workflow"
+expect_fail "symlink custom source" env HERMES_SKILLS_DIR="$TMP_ROOT/custom-symlink-dest" bash "$custom_symlink_root/hermes/install_factory_skills.sh" --profile coder --dry-run
+
+printf '[installer-test] custom extra files are refused\n'
+custom_extra_root="$TMP_ROOT/custom-extra-root"
+make_probe_root "$custom_extra_root"
+printf '#!/bin/sh\n' > "$custom_extra_root/skills/custom/factory-tdd-workflow/pwn.sh"
+expect_fail "extra custom source file" env HERMES_SKILLS_DIR="$TMP_ROOT/custom-extra-dest" bash "$custom_extra_root/hermes/install_factory_skills.sh" --profile coder --dry-run
+
 printf '[installer-test] pinned upstream digest is enforced\n'
 tamper_root="$TMP_ROOT/tamper-root"
 make_probe_root "$tamper_root"
