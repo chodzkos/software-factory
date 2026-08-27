@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "factory_version": "0.6-integrated",
+  "authority": [
+    "standards/SOFTWARE_DEVELOPMENT_STANDARD.md",
+    "workflows/KANBAN_CONTRACT.md",
+    "profile_task_contract",
+    "skill"
+  ],
+  "install_root": "~/.hermes/skills",
+  "skills": {
+    "sha-integrity-check": {"source":"custom","path":"skills/custom/sha-integrity-check","profiles":["repository-analyst","coder","critic","auditor-gpt","auditor-grok","auditor-ox","release-manager"],"sha_sensitive":true},
+    "workspace-integrity": {"source":"custom","path":"skills/custom/workspace-integrity","profiles":["coder"],"sha_sensitive":true},
+    "evidence-ledger": {"source":"custom","path":"skills/custom/evidence-ledger","profiles":["repository-analyst","coder","critic","auditor-gpt","auditor-grok","auditor-ox","release-manager"],"sha_sensitive":true},
+    "ci-failure-recovery": {"source":"custom","path":"skills/custom/ci-failure-recovery","profiles":["coder"],"sha_sensitive":false},
+    "pr-merge-gate": {"source":"custom","path":"skills/custom/pr-merge-gate","profiles":["release-manager"],"sha_sensitive":true},
+    "task-skill-router": {"source":"custom","path":"skills/custom/task-skill-router","profiles":["task-decomposer"],"sha_sensitive":false}
+  },
+  "upstream_policy": {
+    "enabled": false,
+    "required_fields_when_enabled": ["repository","commit","path","sha256","vetted"]
+  }
+}

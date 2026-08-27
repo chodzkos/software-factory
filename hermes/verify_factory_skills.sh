@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DEST="${HERMES_SKILLS_DIR:-$HOME/.hermes/skills}"
+INSTALLED_ONLY="${FACTORY_SKILLS_INSTALLED_ONLY:-0}"
+
+if [[ "$INSTALLED_ONLY" == "1" ]]; then
+  [[ $# -eq 2 && "$1" == "--profile" ]] || { echo "usage: FACTORY_SKILLS_INSTALLED_ONLY=1 bash hermes/verify_factory_skills.sh --profile NAME" >&2; exit 2; }
+else
+  printf '[check] installer/verifier syntax\n'
+  bash -n "$ROOT_DIR/hermes/install_factory_skills.sh"
+  bash -n "$ROOT_DIR/hermes/verify_factory_skills.sh"
+  bash -n "$ROOT_DIR/hermes/test_factory_skill_installer.sh"
+
+  printf '[check] manifest/profile/routing tests\n'
+  (cd "$ROOT_DIR/skills/tests" && python3 -m unittest -v test_factory_skills.py)
+
+  printf '[check] installer adversarial tests\n'
+  bash "$ROOT_DIR/hermes/test_factory_skill_installer.sh"
+
+  printf '[check] dry-run all custom skills\n'
+  tmp_dest="$(mktemp -d)"
+  trap 'rm -rf -- "$tmp_dest"' EXIT
+  HERMES_SKILLS_DIR="$tmp_dest" bash "$ROOT_DIR/hermes/install_factory_skills.sh" --all --dry-run
+fi
+
+if [[ $# -gt 0 ]]; then
+  [[ $# -eq 2 && "$1" == "--profile" ]] || { echo "usage: bash hermes/verify_factory_skills.sh [--profile NAME]" >&2; exit 2; }
+  profile="$2"
+  selection="$(python3 - "$ROOT_DIR/skills/profiles.yaml" "$profile" <<'PY'
+import json,sys
+p=json.load(open(sys.argv[1]))["profiles"]
+name=sys.argv[2]
+if name not in p:
+    raise SystemExit(f"ERROR: unknown profile: {name}")
+for skill in p[name]["required"] + p[name]["optional"]:
+    print(skill)
+PY
+)"
+  installed=()
+  if [[ -n "$selection" ]]; then
+    mapfile -t installed <<<"$selection"
+  fi
+  printf '[check] installed profile skills for %s\n' "$profile"
+  for skill in "${installed[@]}"; do
+    src="$ROOT_DIR/skills/custom/$skill"
+    target="$DEST/$skill"
+    [[ -L "$target" ]] && { echo "ERROR: installed skill is symlink: $skill" >&2; exit 1; }
+    [[ -f "$target/SKILL.md" ]] || { echo "ERROR: missing installed skill: $skill" >&2; exit 1; }
+    diff -qr "$src" "$target" >/dev/null || { echo "ERROR: installed skill drift: $skill" >&2; exit 1; }
+    echo "OK: $skill"
+  done
+fi
+
+if [[ "$INSTALLED_ONLY" == "1" ]]; then
+  echo 'FACTORY_SKILLS_INSTALLED_OK'
+else
+  echo 'FACTORY_SKILLS_VERIFY_OK'
+fi
