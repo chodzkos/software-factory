@@ -25,7 +25,7 @@ done
 [[ $all -eq 1 || -n "$profile" ]] || usage
 [[ $all -eq 0 || -z "$profile" ]] || usage
 
-mapfile -t skills < <(python3 - "$MANIFEST" "$PROFILES" "$profile" "$all" <<'PY'
+selection="$(python3 - "$MANIFEST" "$PROFILES" "$profile" "$all" <<'PY'
 import json, sys
 manifest=json.load(open(sys.argv[1]))
 profiles=json.load(open(sys.argv[2]))
@@ -46,7 +46,11 @@ for name in names:
         raise SystemExit(f"ERROR: non-custom source not supported yet: {name}")
     print(name)
 PY
-)
+)"
+skills=()
+if [[ -n "$selection" ]]; then
+  mapfile -t skills <<<"$selection"
+fi
 
 mkdir -p "$DEST"
 echo "Target: $DEST"
