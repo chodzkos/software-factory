@@ -14,7 +14,7 @@ else
   bash -n "$ROOT_DIR/hermes/test_factory_skill_installer.sh"
 
   printf '[check] manifest/profile/routing tests\n'
-  (cd "$ROOT_DIR/skills/tests" && python3 -m unittest -v test_factory_skills.py test_repo_map_reference.py)
+  (cd "$ROOT_DIR/skills/tests" && python3 -m unittest -v test_factory_skills.py test_repo_map_reference.py test_factory_repo_map.py)
 
   printf '[check] installer adversarial tests\n'
   bash "$ROOT_DIR/hermes/test_factory_skill_installer.sh"
