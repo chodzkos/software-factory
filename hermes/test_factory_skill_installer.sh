@@ -28,6 +28,18 @@ dry_dest="$TMP_ROOT/dry target"
 HERMES_SKILLS_DIR="$dry_dest" bash "$INSTALLER" --profile coder --dry-run >/dev/null
 [[ ! -e "$dry_dest" ]] || { echo "ERROR: dry-run created destination" >&2; exit 1; }
 
+printf '[installer-test] pinned upstream digest is enforced\n'
+tamper_root="$TMP_ROOT/tamper-root"
+mkdir -p "$tamper_root/hermes" "$tamper_root/skills/upstream/ai-code-review"
+cp "$INSTALLER" "$tamper_root/hermes/install_factory_skills.sh"
+cp "$ROOT_DIR/skills/manifest.yaml" "$tamper_root/skills/manifest.yaml"
+cp "$ROOT_DIR/skills/profiles.yaml" "$tamper_root/skills/profiles.yaml"
+cp "$ROOT_DIR/skills/upstream/ai-code-review/SKILL.md" "$tamper_root/skills/upstream/ai-code-review/SKILL.md"
+printf '\ntampered-upstream\n' >> "$tamper_root/skills/upstream/ai-code-review/SKILL.md"
+tamper_dest="$TMP_ROOT/tamper-dest"
+expect_fail "vendored upstream digest mismatch" env HERMES_SKILLS_DIR="$tamper_dest" bash "$tamper_root/hermes/install_factory_skills.sh" --profile quick-reviewer --dry-run
+[[ ! -e "$tamper_dest" ]] || { echo "ERROR: digest mismatch wrote destination" >&2; exit 1; }
+
 printf '[installer-test] identical target accepted\n'
 identical_dest="$TMP_ROOT/identical"
 mkdir -p "$identical_dest/sha-integrity-check"
@@ -59,6 +71,9 @@ if grep -Fq 'FACTORY_SKILLS_VERIFY_OK' <<<"$installed_output"; then
   echo "ERROR: installed-only mode emitted full verification marker" >&2
   exit 1
 fi
+for upstream_skill in bug-diagnosis tdd-workflow; do
+  grep -Fq "OK: $upstream_skill" <<<"$installed_output" || { echo "ERROR: coder verifier skipped upstream skill: $upstream_skill" >&2; exit 1; }
+done
 rm -rf -- "$optional_missing_dest/ci-failure-recovery"
 expect_fail "missing optional installed skill" env FACTORY_SKILLS_INSTALLED_ONLY=1 HERMES_SKILLS_DIR="$optional_missing_dest" bash "$VERIFIER" --profile coder
 
