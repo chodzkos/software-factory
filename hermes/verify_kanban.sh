@@ -104,8 +104,8 @@ grep -Fq 'DECISION: SKIPPED_OX_UNAVAILABLE' "${CONTRACT}"
 grep -Fq 'REVIEW_PENDING' "${CONTRACT}"
 grep -Fq '`severity`: HIGH' "${CONTRACT}"
 grep -Fq 'dodatkowy nieobsługiwany marker `DECISION:`' "${CONTRACT}"
-grep -Fq 'Przy `DECISION: CHANGES_REQUIRED` podczas aktywnego same-card review runu wywołaj natywne `kanban_request_changes`' "${CRITIC_SOUL}"
-grep -Fq 'Przy `DECISION: CHANGES_REQUIRED` podczas aktywnego same-card review runu wywołaj natywne `kanban_request_changes`' "${QUICK_REVIEWER_SOUL}"
+grep -Fq 'Przy `DECISION: CHANGES_REQUIRED` podczas aktywnego same-card review runu wywołaj natywne `kanban_request_changes` przed zakończeniem review; nie kończ review wyłącznie tekstową decyzją i nie twórz nowej karty dla zwykłego reworku.' "${CRITIC_SOUL}"
+grep -Fq 'Przy `DECISION: CHANGES_REQUIRED` podczas aktywnego same-card review runu wywołaj natywne `kanban_request_changes` przed zakończeniem review; nie kończ review wyłącznie tekstową decyzją i nie twórz nowej karty dla zwykłego reworku.' "${QUICK_REVIEWER_SOUL}"
 
 printf '[check] mandatory deployment step\n'
 grep -Fq 'PRIMARY_PROFILE=primary-gpt bash hermes/bootstrap_runtime_controller.sh' "${CONTRACT}"
