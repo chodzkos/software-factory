@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 import json
-import re
 import unittest
 from pathlib import Path
 
@@ -94,6 +93,11 @@ class FactorySkillTests(unittest.TestCase):
         lowered = text.lower()
         self.assertIn("never invent missing evidence", lowered)
         self.assertIn("missing mandatory evidence stays missing", lowered)
+
+    def test_verifier_checks_required_and_optional_installed_skills(self):
+        text = (ROOT / "hermes" / "verify_factory_skills.sh").read_text()
+        self.assertIn('p[name]["required"] + p[name]["optional"]', text)
+        self.assertIn("installed profile skills", text)
 
     def test_routing_scenarios_fit_profile_policy(self):
         profile_map = self.profiles["profiles"]
