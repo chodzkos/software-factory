@@ -3,22 +3,27 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DEST="${HERMES_SKILLS_DIR:-$HOME/.hermes/skills}"
+INSTALLED_ONLY="${FACTORY_SKILLS_INSTALLED_ONLY:-0}"
 
-printf '[check] installer/verifier syntax\n'
-bash -n "$ROOT_DIR/hermes/install_factory_skills.sh"
-bash -n "$ROOT_DIR/hermes/verify_factory_skills.sh"
-bash -n "$ROOT_DIR/hermes/test_factory_skill_installer.sh"
+if [[ "$INSTALLED_ONLY" == "1" ]]; then
+  [[ $# -eq 2 && "$1" == "--profile" ]] || { echo "usage: FACTORY_SKILLS_INSTALLED_ONLY=1 bash hermes/verify_factory_skills.sh --profile NAME" >&2; exit 2; }
+else
+  printf '[check] installer/verifier syntax\n'
+  bash -n "$ROOT_DIR/hermes/install_factory_skills.sh"
+  bash -n "$ROOT_DIR/hermes/verify_factory_skills.sh"
+  bash -n "$ROOT_DIR/hermes/test_factory_skill_installer.sh"
 
-printf '[check] manifest/profile/routing tests\n'
-(cd "$ROOT_DIR/skills/tests" && python3 -m unittest -v test_factory_skills.py)
+  printf '[check] manifest/profile/routing tests\n'
+  (cd "$ROOT_DIR/skills/tests" && python3 -m unittest -v test_factory_skills.py)
 
-printf '[check] installer adversarial tests\n'
-bash "$ROOT_DIR/hermes/test_factory_skill_installer.sh"
+  printf '[check] installer adversarial tests\n'
+  bash "$ROOT_DIR/hermes/test_factory_skill_installer.sh"
 
-printf '[check] dry-run all custom skills\n'
-tmp_dest="$(mktemp -d)"
-trap 'rm -rf -- "$tmp_dest"' EXIT
-HERMES_SKILLS_DIR="$tmp_dest" bash "$ROOT_DIR/hermes/install_factory_skills.sh" --all --dry-run
+  printf '[check] dry-run all custom skills\n'
+  tmp_dest="$(mktemp -d)"
+  trap 'rm -rf -- "$tmp_dest"' EXIT
+  HERMES_SKILLS_DIR="$tmp_dest" bash "$ROOT_DIR/hermes/install_factory_skills.sh" --all --dry-run
+fi
 
 if [[ $# -gt 0 ]]; then
   [[ $# -eq 2 && "$1" == "--profile" ]] || { echo "usage: bash hermes/verify_factory_skills.sh [--profile NAME]" >&2; exit 2; }
