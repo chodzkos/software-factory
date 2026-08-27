@@ -38,7 +38,9 @@ if name not in p:
 for skill in p[name]["required"] + p[name]["optional"]:
     if skill not in manifest["skills"]:
         raise SystemExit(f"ERROR: undeclared skill in profile {name}: {skill}")
-    print(f"{skill}\t{manifest['skills'][skill]['path']}")
+    spec=manifest["skills"][skill]
+    digest=spec.get("upstream", {}).get("sha256", "-")
+    print(f"{skill}\t{spec['path']}\t{spec['source']}\t{digest}")
 PY
 )"
   entries=()
@@ -47,13 +49,23 @@ PY
   fi
   printf '[check] installed profile skills for %s\n' "$profile"
   for entry in "${entries[@]}"; do
-    skill="${entry%%$'\t'*}"
-    relpath="${entry#*$'\t'}"
+    IFS=$'\t' read -r skill relpath source expected_sha <<<"$entry"
     src="$ROOT_DIR/$relpath"
     target="$DEST/$skill"
-    [[ -L "$target" ]] && { echo "ERROR: installed skill is symlink: $skill" >&2; exit 1; }
+    [[ -L "$target" || -L "$target/SKILL.md" ]] && { echo "ERROR: installed skill is symlink: $skill" >&2; exit 1; }
     [[ -f "$target/SKILL.md" ]] || { echo "ERROR: missing installed skill: $skill" >&2; exit 1; }
-    diff -qr "$src" "$target" >/dev/null || { echo "ERROR: installed skill drift: $skill" >&2; exit 1; }
+    if [[ "$source" == "upstream-vendored" ]]; then
+      mapfile -t target_entries < <(find "$target" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort)
+      [[ ${#target_entries[@]} -eq 1 && "${target_entries[0]}" == "SKILL.md" ]] || { echo "ERROR: installed upstream skill contains unexpected files: $skill" >&2; exit 1; }
+      actual_sha="$(python3 - "$target/SKILL.md" <<'PY'
+import hashlib, pathlib, sys
+print(hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest())
+PY
+)"
+      [[ "$actual_sha" == "$expected_sha" ]] || { echo "ERROR: installed upstream skill digest drift: $skill" >&2; exit 1; }
+    else
+      diff -qr "$src" "$target" >/dev/null || { echo "ERROR: installed skill drift: $skill" >&2; exit 1; }
+    fi
     echo "OK: $skill"
   done
 fi
