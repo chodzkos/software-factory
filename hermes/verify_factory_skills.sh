@@ -29,16 +29,16 @@ p=json.load(open(sys.argv[1]))["profiles"]
 name=sys.argv[2]
 if name not in p:
     raise SystemExit(f"ERROR: unknown profile: {name}")
-for skill in p[name]["required"]:
+for skill in p[name]["required"] + p[name]["optional"]:
     print(skill)
 PY
 )"
-  required=()
+  installed=()
   if [[ -n "$selection" ]]; then
-    mapfile -t required <<<"$selection"
+    mapfile -t installed <<<"$selection"
   fi
-  printf '[check] installed required skills for %s\n' "$profile"
-  for skill in "${required[@]}"; do
+  printf '[check] installed profile skills for %s\n' "$profile"
+  for skill in "${installed[@]}"; do
     src="$ROOT_DIR/skills/custom/$skill"
     target="$DEST/$skill"
     [[ -L "$target" ]] && { echo "ERROR: installed skill is symlink: $skill" >&2; exit 1; }
