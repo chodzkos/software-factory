@@ -53,13 +53,13 @@ expect_fail "symlink installed target" env HERMES_SKILLS_DIR="$symlink_dest" bas
 printf '[installer-test] verifier checks optional installed skills\n'
 optional_missing_dest="$TMP_ROOT/optional-missing"
 HERMES_SKILLS_DIR="$optional_missing_dest" bash "$INSTALLER" --profile coder >/dev/null
-HERMES_SKILLS_DIR="$optional_missing_dest" bash "$VERIFIER" --profile coder >/dev/null
+FACTORY_SKILLS_INSTALLED_ONLY=1 HERMES_SKILLS_DIR="$optional_missing_dest" bash "$VERIFIER" --profile coder >/dev/null
 rm -rf -- "$optional_missing_dest/ci-failure-recovery"
-expect_fail "missing optional installed skill" env HERMES_SKILLS_DIR="$optional_missing_dest" bash "$VERIFIER" --profile coder
+expect_fail "missing optional installed skill" env FACTORY_SKILLS_INSTALLED_ONLY=1 HERMES_SKILLS_DIR="$optional_missing_dest" bash "$VERIFIER" --profile coder
 
 optional_drift_dest="$TMP_ROOT/optional-drift"
 HERMES_SKILLS_DIR="$optional_drift_dest" bash "$INSTALLER" --profile coder >/dev/null
 printf '\nregression-drift\n' >> "$optional_drift_dest/ci-failure-recovery/SKILL.md"
-expect_fail "drifted optional installed skill" env HERMES_SKILLS_DIR="$optional_drift_dest" bash "$VERIFIER" --profile coder
+expect_fail "drifted optional installed skill" env FACTORY_SKILLS_INSTALLED_ONLY=1 HERMES_SKILLS_DIR="$optional_drift_dest" bash "$VERIFIER" --profile coder
 
 echo 'OK: factory skill installer adversarial checks'
