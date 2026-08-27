@@ -13,6 +13,7 @@ Use inside an already assigned Software Factory task. Kanban/profile/task contra
 - branch
 - working-tree state
 - BASE_SHA
+- CURRENT_SHA for the implementation HEAD currently being inspected
 - REVIEWED_SHA when review/audit occurs
 - VERIFIED_SHA when verification occurs
 - PR_HEAD_SHA when a PR exists
