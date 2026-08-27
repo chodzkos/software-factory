@@ -13,9 +13,9 @@ Skills do not orchestrate Kanban, create parallel review tasks, weaken runtime g
 
 ## v0.8 review scope
 
-The v0.7 pinned-upstream model remains active for installable skills. This review stage adds `repo-map` as the first pinned **multi-file upstream reference** so its executable helper can be independently reviewed before any runtime activation.
+The v0.7 pinned-upstream model remains active for installable skills. `repo-map` is retained as a pinned **multi-file upstream reference** and its raw executable helper remains non-installable after independent review classified activation as `FACTORY_FORK_REQUIRED`.
 
-`repo-map` is intentionally:
+Raw `repo-map` is intentionally:
 
 - absent from `manifest.skills`,
 - `installable=false`,
@@ -25,7 +25,9 @@ The v0.7 pinned-upstream model remains active for installable skills. This revie
 
 The vendored reference pins the exact upstream repository, full immutable commit SHA, exact file allowlist, and SHA-256 for both `SKILL.md` and `scripts/repo_map.py`.
 
-Testing the exact upstream helper found a real defect: when `.git` or `node_modules` is itself the current `os.walk` directory, its files are still mapped even though the skill description claims those directories are skipped. This defect is documented and pinned by tests; it is not treated as fixed. Runtime activation requires a later reviewed Factory fix/wrapper.
+Independent testing established that the raw helper's `sorted(os.walk(root))` exhausts the walk generator before `dirnames[:]` pruning can affect descent. As a result `.git`, `node_modules`, venv/vendor/build directories and hidden directories are traversed at any depth despite the upstream skill description claiming they are skipped. The raw helper also lacks a Factory workspace boundary, follows file symlinks, has insufficient resource bounds, reads non-dot secret/binary-like files and emits absolute/unsanitized paths. Those defects remain intentionally pinned in the byte-identical upstream reference.
+
+This review stage now adds `skills/custom/factory-repo-map/` as a **Factory-owned review-only fork** designed to close those activation findings. The fork is not in `manifest.skills`, is granted to no profile, and cannot be selected by the installer. Its independent exact-SHA review must pass before a later activation PR may extend the multi-file installer and grant it to a profile.
 
 ## Existing v0.7 runtime scope
 
@@ -37,7 +39,7 @@ Batch 1 installs `bug-diagnosis` directly as vetted upstream content for the cod
 
 - `manifest.yaml` — machine-readable inventory, profile grants, vendored-upstream provenance, exact commit/digest pins, and non-installable upstream references.
 - `profiles.yaml` — minimum profile→skill policy.
-- `custom/` — factory-owned skills and Factory-safe adapters.
+- `custom/` — factory-owned skills, Factory-safe adapters and review-only candidate implementations not yet declared in the manifest.
 - `upstream/` — pinned upstream source material plus vetting/review records. Reference-only files may live here without being installer-visible.
 - `tests/` — manifest/profile/routing and supply-chain/helper regression tests.
 - `../hermes/install_factory_skills.sh` — fail-closed profile-aware installer for manifest-declared custom and vetted vendored skills.
@@ -51,7 +53,7 @@ Batch 1 installs `bug-diagnosis` directly as vetted upstream content for the cod
 - Installable upstream directories must satisfy their reviewed source-shape contract.
 - SHA-256 is verified before the first install write.
 - Installed upstream symlinks, extra files, missing files, and digest drift fail closed.
-- Upstream text or helpers that conflict with higher Factory authority or fail security review stay reference-only until a Factory-owned adapter/wrapper exists.
+- Upstream text or helpers that conflict with higher Factory authority or fail security review stay reference-only until a Factory-owned adapter/fork exists and separately passes activation review.
 
 ## Design rules
 
