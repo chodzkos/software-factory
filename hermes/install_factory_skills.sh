@@ -26,7 +26,7 @@ done
 [[ $all -eq 0 || -z "$profile" ]] || usage
 
 selection="$(python3 - "$MANIFEST" "$PROFILES" "$profile" "$all" <<'PY'
-import json, sys
+import json, re, sys
 manifest=json.load(open(sys.argv[1]))
 profiles=json.load(open(sys.argv[2]))
 profile=sys.argv[3]
@@ -41,9 +41,14 @@ else:
     p=profiles["profiles"][profile]
     names=sorted(set(p["required"] + p["optional"]))
 for name in names:
+    if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", name):
+        raise SystemExit(f"ERROR: invalid skill name: {name!r}")
     spec=manifest["skills"][name]
     if spec["source"] != "custom":
         raise SystemExit(f"ERROR: non-custom source not supported yet: {name}")
+    expected_path=f"skills/custom/{name}"
+    if spec.get("path") != expected_path:
+        raise SystemExit(f"ERROR: custom skill path mismatch for {name}: {spec.get('path')!r}")
     print(name)
 PY
 )"
@@ -52,35 +57,58 @@ if [[ -n "$selection" ]]; then
   mapfile -t skills <<<"$selection"
 fi
 
-mkdir -p "$DEST"
 echo "Target: $DEST"
 echo "Skills: ${skills[*]:-(none)}"
 
+# Preflight the complete selection before the first write. This prevents a bad
+# later manifest entry from leaving a partially installed --all/profile set.
 for skill in "${skills[@]}"; do
   src="$ROOT_DIR/skills/custom/$skill"
   target="$DEST/$skill"
   [[ -f "$src/SKILL.md" ]] || { echo "ERROR: missing source skill: $src/SKILL.md" >&2; exit 1; }
 
+  if [[ -L "$target" ]]; then
+    echo "ERROR: refusing symlink installed target: $target" >&2
+    exit 1
+  fi
   if [[ -e "$target" ]]; then
     if [[ -d "$target" ]] && diff -qr "$src" "$target" >/dev/null; then
-      echo "OK unchanged: $skill"
       continue
     fi
     echo "ERROR: existing installed skill differs: $target" >&2
     echo "Refusing to overwrite. Inspect/remove or migrate it explicitly." >&2
     exit 1
   fi
+done
 
-  if [[ $dry -eq 1 ]]; then
-    echo "WOULD_INSTALL: $skill"
+if [[ $dry -eq 1 ]]; then
+  for skill in "${skills[@]}"; do
+    target="$DEST/$skill"
+    if [[ -d "$target" ]]; then
+      echo "OK unchanged: $skill"
+    else
+      echo "WOULD_INSTALL: $skill"
+    fi
+  done
+  echo "FACTORY_SKILLS_INSTALL_OK"
+  exit 0
+fi
+
+mkdir -p "$DEST"
+
+for skill in "${skills[@]}"; do
+  src="$ROOT_DIR/skills/custom/$skill"
+  target="$DEST/$skill"
+
+  if [[ -d "$target" ]]; then
+    echo "OK unchanged: $skill"
     continue
   fi
 
-  tmp="$DEST/.${skill}.tmp.$$"
+  tmp="$(mktemp -d "$DEST/.factory-skill.tmp.XXXXXX")"
   trap 'rm -rf -- "$tmp"' EXIT
-  mkdir "$tmp"
   cp -a "$src"/. "$tmp"/
-  mv "$tmp" "$target"
+  mv -- "$tmp" "$target"
   trap - EXIT
   echo "INSTALLED: $skill"
 done
