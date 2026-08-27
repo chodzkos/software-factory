@@ -15,8 +15,7 @@ SKIP_DIRS = {
 ALLOWED_EXTENSIONS = {
     ".py", ".js", ".jsx", ".mjs", ".ts", ".tsx", ".go", ".rs", ".java",
     ".rb", ".sh", ".bash", ".zsh", ".c", ".h", ".cc", ".cpp", ".hpp",
-    ".cs", ".kt", ".kts", ".swift", ".php", ".scala", ".sql", ".toml",
-    ".yaml", ".yml", ".json", ".md", ".txt",
+    ".cs", ".kt", ".kts", ".swift", ".php", ".scala",
 }
 SECRET_NAMES = {
     "id_rsa", "id_dsa", "id_ed25519", "credentials.json", "service-account.json",
@@ -85,12 +84,13 @@ def parse_args(argv=None):
     parser = argparse.ArgumentParser(description="Bounded workspace-confined repository map.")
     parser.add_argument("--workspace", required=True, help="Authoritative Kanban workspace path")
     parser.add_argument("path", nargs="?", default=".", help="Workspace-relative target")
-    parser.add_argument("--max-files", type=int, default=500)
+    parser.add_argument("--max-files", type=int, default=500, help="Maximum filenames examined")
+    parser.add_argument("--max-dirs", type=int, default=2000, help="Maximum directories visited")
     parser.add_argument("--max-file-bytes", type=int, default=1_048_576)
     parser.add_argument("--max-total-bytes", type=int, default=8_388_608)
     parser.add_argument("--max-symbols", type=int, default=12)
     args = parser.parse_args(argv)
-    for name in ("max_files", "max_file_bytes", "max_total_bytes", "max_symbols"):
+    for name in ("max_files", "max_dirs", "max_file_bytes", "max_total_bytes", "max_symbols"):
         if getattr(args, name) <= 0:
             parser.error(f"--{name.replace('_', '-')} must be > 0")
     return args
@@ -98,25 +98,38 @@ def parse_args(argv=None):
 
 def main(argv=None) -> int:
     args = parse_args(argv)
-    workspace = Path(args.workspace).expanduser().resolve(strict=True)
-    if not workspace.is_dir() or workspace.is_symlink():
-        raise SystemExit("ERROR: workspace must be a real directory")
+    workspace_arg = Path(args.workspace).expanduser()
+    if workspace_arg.is_symlink():
+        raise SystemExit("ERROR: workspace symlink refused")
+    workspace = workspace_arg.resolve(strict=True)
+    if not workspace.is_dir():
+        raise SystemExit("ERROR: workspace must be a directory")
 
     raw_target = Path(args.path)
     if raw_target.is_absolute():
         raise SystemExit("ERROR: target must be workspace-relative")
-    target = (workspace / raw_target).resolve(strict=True)
+    unresolved_target = workspace / raw_target
+    if unresolved_target.is_symlink():
+        raise SystemExit("ERROR: target symlink refused")
+    target = unresolved_target.resolve(strict=True)
     if not target.is_dir() or not is_within(target, workspace):
         raise SystemExit("ERROR: target escapes workspace or is not a directory")
-    if target.is_symlink() or target.name in SKIP_DIRS or target.name.startswith("."):
-        raise SystemExit("ERROR: refusing hidden/generated/symlink target")
+    if target.name in SKIP_DIRS or target.name.startswith("."):
+        raise SystemExit("ERROR: refusing hidden/generated target")
 
     rows: list[tuple[str, int, str]] = []
     total_bytes = 0
     total_lines = 0
+    files_seen = 0
+    dirs_seen = 0
     truncated = False
+    stop = False
 
     for dirpath, dirnames, filenames in os.walk(target, topdown=True, followlinks=False):
+        dirs_seen += 1
+        if dirs_seen > args.max_dirs:
+            truncated = True
+            break
         current = Path(dirpath)
         safe_dirs = []
         for dirname in sorted(dirnames):
@@ -132,9 +145,10 @@ def main(argv=None) -> int:
         dirnames[:] = safe_dirs
 
         for filename in sorted(filenames):
-            if len(rows) >= args.max_files:
+            files_seen += 1
+            if files_seen > args.max_files:
                 truncated = True
-                dirnames[:] = []
+                stop = True
                 break
             path = current / filename
             if path.is_symlink() or is_secret_like(path):
@@ -152,9 +166,13 @@ def main(argv=None) -> int:
                 size = resolved.stat().st_size
             except OSError:
                 continue
-            if size > args.max_file_bytes or total_bytes + size > args.max_total_bytes:
+            if size > args.max_file_bytes:
                 truncated = True
                 continue
+            if total_bytes + size > args.max_total_bytes:
+                truncated = True
+                stop = True
+                break
             if is_probably_binary(resolved):
                 continue
             try:
@@ -166,8 +184,8 @@ def main(argv=None) -> int:
             total_lines += lines
             rel = resolved.relative_to(workspace).as_posix()
             rows.append((sanitize(rel), lines, symbols_for(content, ext, args.max_symbols)))
-        if len(rows) >= args.max_files:
-            truncated = True
+        if stop:
+            dirnames[:] = []
             break
 
     print("# Repo map: .")
