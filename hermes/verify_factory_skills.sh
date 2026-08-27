@@ -7,9 +7,13 @@ DEST="${HERMES_SKILLS_DIR:-$HOME/.hermes/skills}"
 printf '[check] installer/verifier syntax\n'
 bash -n "$ROOT_DIR/hermes/install_factory_skills.sh"
 bash -n "$ROOT_DIR/hermes/verify_factory_skills.sh"
+bash -n "$ROOT_DIR/hermes/test_factory_skill_installer.sh"
 
 printf '[check] manifest/profile/routing tests\n'
 (cd "$ROOT_DIR/skills/tests" && python3 -m unittest -v test_factory_skills.py)
+
+printf '[check] installer adversarial tests\n'
+bash "$ROOT_DIR/hermes/test_factory_skill_installer.sh"
 
 printf '[check] dry-run all custom skills\n'
 tmp_dest="$(mktemp -d)"
@@ -37,6 +41,7 @@ PY
   for skill in "${required[@]}"; do
     src="$ROOT_DIR/skills/custom/$skill"
     target="$DEST/$skill"
+    [[ -L "$target" ]] && { echo "ERROR: installed skill is symlink: $skill" >&2; exit 1; }
     [[ -f "$target/SKILL.md" ]] || { echo "ERROR: missing installed skill: $skill" >&2; exit 1; }
     diff -qr "$src" "$target" >/dev/null || { echo "ERROR: installed skill drift: $skill" >&2; exit 1; }
     echo "OK: $skill"
