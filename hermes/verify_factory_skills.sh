@@ -9,7 +9,7 @@ bash -n "$ROOT_DIR/hermes/install_factory_skills.sh"
 bash -n "$ROOT_DIR/hermes/verify_factory_skills.sh"
 
 printf '[check] manifest/profile/routing tests\n'
-python3 -m unittest -v "$ROOT_DIR/skills/tests/test_factory_skills.py"
+(cd "$ROOT_DIR/skills/tests" && python3 -m unittest -v test_factory_skills.py)
 
 printf '[check] dry-run all custom skills\n'
 tmp_dest="$(mktemp -d)"
