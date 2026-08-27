@@ -91,8 +91,9 @@ class FactorySkillTests(unittest.TestCase):
             "Blocking items:",
         ):
             self.assertIn(field, text)
-        self.assertIn("Never invent missing evidence", text)
-        self.assertIn("Missing mandatory evidence stays missing", text)
+        lowered = text.lower()
+        self.assertIn("never invent missing evidence", lowered)
+        self.assertIn("missing mandatory evidence stays missing", lowered)
 
     def test_routing_scenarios_fit_profile_policy(self):
         profile_map = self.profiles["profiles"]
