@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 INSTALLER="$ROOT_DIR/hermes/install_factory_skills.sh"
+VERIFIER="$ROOT_DIR/hermes/verify_factory_skills.sh"
 TMP_ROOT="$(mktemp -d)"
 trap 'rm -rf -- "$TMP_ROOT"' EXIT
 
@@ -48,5 +49,17 @@ symlink_dest="$TMP_ROOT/symlink"
 mkdir -p "$symlink_dest"
 ln -s "$outside" "$symlink_dest/sha-integrity-check"
 expect_fail "symlink installed target" env HERMES_SKILLS_DIR="$symlink_dest" bash "$INSTALLER" --profile repository-analyst
+
+printf '[installer-test] verifier checks optional installed skills\n'
+optional_missing_dest="$TMP_ROOT/optional-missing"
+HERMES_SKILLS_DIR="$optional_missing_dest" bash "$INSTALLER" --profile coder >/dev/null
+HERMES_SKILLS_DIR="$optional_missing_dest" bash "$VERIFIER" --profile coder >/dev/null
+rm -rf -- "$optional_missing_dest/ci-failure-recovery"
+expect_fail "missing optional installed skill" env HERMES_SKILLS_DIR="$optional_missing_dest" bash "$VERIFIER" --profile coder
+
+optional_drift_dest="$TMP_ROOT/optional-drift"
+HERMES_SKILLS_DIR="$optional_drift_dest" bash "$INSTALLER" --profile coder >/dev/null
+printf '\nregression-drift\n' >> "$optional_drift_dest/ci-failure-recovery/SKILL.md"
+expect_fail "drifted optional installed skill" env HERMES_SKILLS_DIR="$optional_drift_dest" bash "$VERIFIER" --profile coder
 
 echo 'OK: factory skill installer adversarial checks'
