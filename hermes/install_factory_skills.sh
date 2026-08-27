@@ -33,6 +33,7 @@ profiles=json.load(open(sys.argv[3]))
 profile=sys.argv[4]
 install_all=sys.argv[5] == "1"
 policy=manifest["upstream_policy"]
+allowlist=set(policy.get("repository_allowlist", []))
 if install_all:
     names=sorted(manifest["skills"])
 else:
@@ -61,8 +62,9 @@ for name in names:
         missing=[field for field in policy["required_fields_when_enabled"] if field not in upstream]
         if missing:
             raise SystemExit(f"ERROR: incomplete upstream provenance for {name}: {missing}")
-        if not isinstance(upstream["repository"], str) or not upstream["repository"]:
-            raise SystemExit(f"ERROR: invalid upstream repository for {name}")
+        repository=upstream.get("repository")
+        if repository not in allowlist:
+            raise SystemExit(f"ERROR: upstream repository not allowlisted for {name}: {repository!r}")
         if not re.fullmatch(r"[0-9a-f]{40}", str(upstream["commit"])):
             raise SystemExit(f"ERROR: upstream commit must be exact 40-char SHA for {name}")
         if upstream["path"] != f"skills/{name}/SKILL.md":
@@ -72,15 +74,21 @@ for name in names:
         expected_sha=str(upstream["sha256"])
         if not re.fullmatch(r"[0-9a-f]{64}", expected_sha):
             raise SystemExit(f"ERROR: invalid SHA-256 for {name}")
-        skill_file=root/spec["path"]/"SKILL.md"
-        if not skill_file.is_file():
+        src=root/spec["path"]
+        skill_file=src/"SKILL.md"
+        if src.is_symlink() or skill_file.is_symlink():
+            raise SystemExit(f"ERROR: symlink vendored upstream source refused: {name}")
+        if not src.is_dir() or not skill_file.is_file():
             raise SystemExit(f"ERROR: missing vendored upstream skill: {skill_file}")
+        entries=sorted(p.name for p in src.iterdir())
+        if entries != ["SKILL.md"]:
+            raise SystemExit(f"ERROR: upstream vendored directory must contain only SKILL.md for {name}: {entries}")
         actual=hashlib.sha256(skill_file.read_bytes()).hexdigest()
         if actual != expected_sha:
             raise SystemExit(f"ERROR: vendored SHA-256 mismatch for {name}: {actual} != {expected_sha}")
     else:
         raise SystemExit(f"ERROR: unsupported skill source for {name}: {source!r}")
-    print(f"{name}\t{spec['path']}")
+    print(f"{name}\t{spec['path']}\t{source}")
 PY
 )"
 entries=()
@@ -89,9 +97,12 @@ if [[ -n "$selection" ]]; then
 fi
 skills=()
 relpaths=()
+sources=()
 for entry in "${entries[@]}"; do
-  skills+=("${entry%%$'\t'*}")
-  relpaths+=("${entry#*$'\t'}")
+  IFS=$'\t' read -r skill relpath source <<<"$entry"
+  skills+=("$skill")
+  relpaths+=("$relpath")
+  sources+=("$source")
 done
 
 echo "Target: $DEST"
@@ -101,10 +112,15 @@ echo "Skills: ${skills[*]:-(none)}"
 for i in "${!skills[@]}"; do
   skill="${skills[$i]}"
   src="$ROOT_DIR/${relpaths[$i]}"
+  source="${sources[$i]}"
   target="$DEST/$skill"
   [[ -f "$src/SKILL.md" ]] || { echo "ERROR: missing source skill: $src/SKILL.md" >&2; exit 1; }
-
-  if [[ -L "$target" ]]; then
+  if [[ "$source" == "upstream-vendored" ]]; then
+    [[ ! -L "$src" && ! -L "$src/SKILL.md" ]] || { echo "ERROR: refusing symlink upstream source: $skill" >&2; exit 1; }
+    mapfile -t source_entries < <(find "$src" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort)
+    [[ ${#source_entries[@]} -eq 1 && "${source_entries[0]}" == "SKILL.md" ]] || { echo "ERROR: upstream source must contain only SKILL.md: $skill" >&2; exit 1; }
+  fi
+  if [[ -L "$target" || -L "$target/SKILL.md" ]]; then
     echo "ERROR: refusing symlink installed target: $target" >&2
     exit 1
   fi
@@ -136,6 +152,7 @@ mkdir -p "$DEST"
 for i in "${!skills[@]}"; do
   skill="${skills[$i]}"
   src="$ROOT_DIR/${relpaths[$i]}"
+  source="${sources[$i]}"
   target="$DEST/$skill"
 
   if [[ -d "$target" ]]; then
@@ -145,7 +162,11 @@ for i in "${!skills[@]}"; do
 
   tmp="$(mktemp -d "$DEST/.factory-skill.tmp.XXXXXX")"
   trap 'rm -rf -- "$tmp"' EXIT
-  cp -a "$src"/. "$tmp"/
+  if [[ "$source" == "upstream-vendored" ]]; then
+    cp -- "$src/SKILL.md" "$tmp/SKILL.md"
+  else
+    cp -a "$src"/. "$tmp"/
+  fi
   mv -- "$tmp" "$target"
   trap - EXIT
   echo "INSTALLED: $skill"
