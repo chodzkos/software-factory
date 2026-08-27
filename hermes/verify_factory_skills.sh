@@ -53,4 +53,8 @@ PY
   done
 fi
 
-echo 'FACTORY_SKILLS_VERIFY_OK'
+if [[ "$INSTALLED_ONLY" == "1" ]]; then
+  echo 'FACTORY_SKILLS_INSTALLED_OK'
+else
+  echo 'FACTORY_SKILLS_VERIFY_OK'
+fi
