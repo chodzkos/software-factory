@@ -1,12 +1,12 @@
 {
-  "schema_version": 1,
+  "schema_version": 3,
   "profiles": {
     "repository-analyst": {"required":["sha-integrity-check","evidence-ledger"],"optional":[]},
     "architect": {"required":[],"optional":[]},
     "task-decomposer": {"required":["task-skill-router"],"optional":[]},
-    "coder": {"required":["sha-integrity-check","workspace-integrity","evidence-ledger"],"optional":["ci-failure-recovery"]},
-    "quick-reviewer": {"required":[],"optional":[]},
-    "critic": {"required":["sha-integrity-check","evidence-ledger"],"optional":[]},
+    "coder": {"required":["sha-integrity-check","workspace-integrity","evidence-ledger"],"optional":["ci-failure-recovery","bug-diagnosis","factory-tdd-workflow"]},
+    "quick-reviewer": {"required":[],"optional":["factory-ai-code-review"]},
+    "critic": {"required":["sha-integrity-check","evidence-ledger"],"optional":["factory-ai-code-review"]},
     "auditor-gpt": {"required":["sha-integrity-check","evidence-ledger"],"optional":[]},
     "auditor-grok": {"required":["sha-integrity-check","evidence-ledger"],"optional":[]},
     "auditor-ox": {"required":["sha-integrity-check","evidence-ledger"],"optional":[]},
@@ -17,5 +17,5 @@
     "runtime-controller": {"required":[],"optional":[]}
   },
   "forbidden_global_routing": ["task-skill-router"],
-  "notes": "task-skill-router is task-decomposer-only and cannot replace Hermes Kanban orchestration"
+  "notes": "task-skill-router is task-decomposer-only; conflicting upstream procedures remain byte-identical references and are exposed only through Factory-safe adapters"
 }

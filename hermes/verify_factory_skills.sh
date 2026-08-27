@@ -19,7 +19,7 @@ else
   printf '[check] installer adversarial tests\n'
   bash "$ROOT_DIR/hermes/test_factory_skill_installer.sh"
 
-  printf '[check] dry-run all custom skills\n'
+  printf '[check] dry-run all factory skills\n'
   tmp_dest="$(mktemp -d)"
   trap 'rm -rf -- "$tmp_dest"' EXIT
   HERMES_SKILLS_DIR="$tmp_dest" bash "$ROOT_DIR/hermes/install_factory_skills.sh" --all --dry-run
@@ -28,27 +28,44 @@ fi
 if [[ $# -gt 0 ]]; then
   [[ $# -eq 2 && "$1" == "--profile" ]] || { echo "usage: bash hermes/verify_factory_skills.sh [--profile NAME]" >&2; exit 2; }
   profile="$2"
-  selection="$(python3 - "$ROOT_DIR/skills/profiles.yaml" "$profile" <<'PY'
+  selection="$(python3 - "$ROOT_DIR/skills/manifest.yaml" "$ROOT_DIR/skills/profiles.yaml" "$profile" <<'PY'
 import json,sys
-p=json.load(open(sys.argv[1]))["profiles"]
-name=sys.argv[2]
+manifest=json.load(open(sys.argv[1]))
+p=json.load(open(sys.argv[2]))["profiles"]
+name=sys.argv[3]
 if name not in p:
     raise SystemExit(f"ERROR: unknown profile: {name}")
 for skill in p[name]["required"] + p[name]["optional"]:
-    print(skill)
+    if skill not in manifest["skills"]:
+        raise SystemExit(f"ERROR: undeclared skill in profile {name}: {skill}")
+    spec=manifest["skills"][skill]
+    digest=spec.get("upstream", {}).get("sha256", "-")
+    print(f"{skill}\t{spec['path']}\t{spec['source']}\t{digest}")
 PY
 )"
-  installed=()
+  entries=()
   if [[ -n "$selection" ]]; then
-    mapfile -t installed <<<"$selection"
+    mapfile -t entries <<<"$selection"
   fi
   printf '[check] installed profile skills for %s\n' "$profile"
-  for skill in "${installed[@]}"; do
-    src="$ROOT_DIR/skills/custom/$skill"
+  for entry in "${entries[@]}"; do
+    IFS=$'\t' read -r skill relpath source expected_sha <<<"$entry"
+    src="$ROOT_DIR/$relpath"
     target="$DEST/$skill"
-    [[ -L "$target" ]] && { echo "ERROR: installed skill is symlink: $skill" >&2; exit 1; }
+    [[ -L "$target" || -L "$target/SKILL.md" ]] && { echo "ERROR: installed skill is symlink: $skill" >&2; exit 1; }
     [[ -f "$target/SKILL.md" ]] || { echo "ERROR: missing installed skill: $skill" >&2; exit 1; }
-    diff -qr "$src" "$target" >/dev/null || { echo "ERROR: installed skill drift: $skill" >&2; exit 1; }
+    if [[ "$source" == "upstream-vendored" ]]; then
+      mapfile -t target_entries < <(find "$target" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort)
+      [[ ${#target_entries[@]} -eq 1 && "${target_entries[0]}" == "SKILL.md" ]] || { echo "ERROR: installed upstream skill contains unexpected files: $skill" >&2; exit 1; }
+      actual_sha="$(python3 - "$target/SKILL.md" <<'PY'
+import hashlib, pathlib, sys
+print(hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest())
+PY
+)"
+      [[ "$actual_sha" == "$expected_sha" ]] || { echo "ERROR: installed upstream skill digest drift: $skill" >&2; exit 1; }
+    else
+      diff -qr "$src" "$target" >/dev/null || { echo "ERROR: installed skill drift: $skill" >&2; exit 1; }
+    fi
     echo "OK: $skill"
   done
 fi

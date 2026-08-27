@@ -17,6 +17,16 @@ expect_fail() {
   echo "OK fail-closed: $label"
 }
 
+make_probe_root() {
+  local root="$1"
+  mkdir -p "$root/hermes" "$root/skills/upstream"
+  cp "$INSTALLER" "$root/hermes/install_factory_skills.sh"
+  cp "$ROOT_DIR/skills/manifest.yaml" "$root/skills/manifest.yaml"
+  cp "$ROOT_DIR/skills/profiles.yaml" "$root/skills/profiles.yaml"
+  cp -a "$ROOT_DIR/skills/custom" "$root/skills/"
+  cp -a "$ROOT_DIR/skills/upstream/bug-diagnosis" "$root/skills/upstream/"
+}
+
 printf '[installer-test] argument validation\n'
 expect_fail "no selector" bash "$INSTALLER"
 expect_fail "conflicting selectors" bash "$INSTALLER" --all --profile coder
@@ -27,6 +37,40 @@ printf '[installer-test] dry-run is no-write\n'
 dry_dest="$TMP_ROOT/dry target"
 HERMES_SKILLS_DIR="$dry_dest" bash "$INSTALLER" --profile coder --dry-run >/dev/null
 [[ ! -e "$dry_dest" ]] || { echo "ERROR: dry-run created destination" >&2; exit 1; }
+
+printf '[installer-test] pinned upstream digest is enforced\n'
+tamper_root="$TMP_ROOT/tamper-root"
+make_probe_root "$tamper_root"
+printf '\ntampered-upstream\n' >> "$tamper_root/skills/upstream/bug-diagnosis/SKILL.md"
+tamper_dest="$TMP_ROOT/tamper-dest"
+expect_fail "vendored upstream digest mismatch" env HERMES_SKILLS_DIR="$tamper_dest" bash "$tamper_root/hermes/install_factory_skills.sh" --profile coder --dry-run
+[[ ! -e "$tamper_dest" ]] || { echo "ERROR: digest mismatch wrote destination" >&2; exit 1; }
+
+printf '[installer-test] upstream repository allowlist is enforced\n'
+repo_root="$TMP_ROOT/repository-root"
+make_probe_root "$repo_root"
+python3 - "$repo_root/skills/manifest.yaml" <<'PY'
+import json, pathlib, sys
+p=pathlib.Path(sys.argv[1]); data=json.loads(p.read_text())
+data["skills"]["bug-diagnosis"]["upstream"]["repository"]="evil/example"
+p.write_text(json.dumps(data))
+PY
+expect_fail "upstream repository not allowlisted" env HERMES_SKILLS_DIR="$TMP_ROOT/repository-dest" bash "$repo_root/hermes/install_factory_skills.sh" --profile coder --dry-run
+
+printf '[installer-test] upstream source symlink is refused\n'
+symsrc_root="$TMP_ROOT/symsrc-root"
+make_probe_root "$symsrc_root"
+outside_upstream="$TMP_ROOT/outside-upstream"
+cp -a "$symsrc_root/skills/upstream/bug-diagnosis" "$outside_upstream"
+rm -rf "$symsrc_root/skills/upstream/bug-diagnosis"
+ln -s "$outside_upstream" "$symsrc_root/skills/upstream/bug-diagnosis"
+expect_fail "symlink upstream source" env HERMES_SKILLS_DIR="$TMP_ROOT/symsrc-dest" bash "$symsrc_root/hermes/install_factory_skills.sh" --profile coder --dry-run
+
+printf '[installer-test] upstream extra files are refused\n'
+extra_root="$TMP_ROOT/extra-root"
+make_probe_root "$extra_root"
+printf '#!/bin/sh\n' > "$extra_root/skills/upstream/bug-diagnosis/pwn.sh"
+expect_fail "extra upstream source file" env HERMES_SKILLS_DIR="$TMP_ROOT/extra-dest" bash "$extra_root/hermes/install_factory_skills.sh" --profile coder --dry-run
 
 printf '[installer-test] identical target accepted\n'
 identical_dest="$TMP_ROOT/identical"
@@ -59,6 +103,9 @@ if grep -Fq 'FACTORY_SKILLS_VERIFY_OK' <<<"$installed_output"; then
   echo "ERROR: installed-only mode emitted full verification marker" >&2
   exit 1
 fi
+for skill in bug-diagnosis factory-tdd-workflow; do
+  grep -Fq "OK: $skill" <<<"$installed_output" || { echo "ERROR: coder verifier skipped skill: $skill" >&2; exit 1; }
+done
 rm -rf -- "$optional_missing_dest/ci-failure-recovery"
 expect_fail "missing optional installed skill" env FACTORY_SKILLS_INSTALLED_ONLY=1 HERMES_SKILLS_DIR="$optional_missing_dest" bash "$VERIFIER" --profile coder
 
@@ -66,5 +113,14 @@ optional_drift_dest="$TMP_ROOT/optional-drift"
 HERMES_SKILLS_DIR="$optional_drift_dest" bash "$INSTALLER" --profile coder >/dev/null
 printf '\nregression-drift\n' >> "$optional_drift_dest/ci-failure-recovery/SKILL.md"
 expect_fail "drifted optional installed skill" env FACTORY_SKILLS_INSTALLED_ONLY=1 HERMES_SKILLS_DIR="$optional_drift_dest" bash "$VERIFIER" --profile coder
+
+printf '[installer-test] installed upstream SKILL symlink is refused\n'
+upstream_target_dest="$TMP_ROOT/upstream-target"
+HERMES_SKILLS_DIR="$upstream_target_dest" bash "$INSTALLER" --profile coder >/dev/null
+outside_skill="$TMP_ROOT/outside-skill.md"
+cp "$upstream_target_dest/bug-diagnosis/SKILL.md" "$outside_skill"
+rm "$upstream_target_dest/bug-diagnosis/SKILL.md"
+ln -s "$outside_skill" "$upstream_target_dest/bug-diagnosis/SKILL.md"
+expect_fail "installed upstream SKILL symlink" env FACTORY_SKILLS_INSTALLED_ONLY=1 HERMES_SKILLS_DIR="$upstream_target_dest" bash "$VERIFIER" --profile coder
 
 echo 'OK: factory skill installer adversarial checks'
