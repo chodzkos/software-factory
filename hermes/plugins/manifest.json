@@ -6,10 +6,11 @@
       "installable": false,
       "activation_status": "pending-independent-review",
       "files": {
-        "plugin.yaml": "32620e9defdb17c2bab5e6f4a38a9a109dbabda3",
-        "__init__.py": "0b8320fffca215657e2263a07ce40a7a34424bdb",
+        "plugin.yaml": "e26285a24ab1048c1c61e4dd7bfecd22e7178554",
+        "__init__.py": "4fcbcea7117620156fe93fc9c49e8c0b96fd764b",
         "repo_map.py": "ce7718e0879600631e84a4e44f9c7f97842af9cc",
-        "repository_tools.py": "93193e0db3453ef9b5d8f175c5fe4334ff5bf58a"
+        "repository_tools.py": "93193e0db3453ef9b5d8f175c5fe4334ff5bf58a",
+        "kanban_guard.py": "6f6131513dc18a88da3b0d00c7f8189a3223c6fd"
       }
     }
   }
