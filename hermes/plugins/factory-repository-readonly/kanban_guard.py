@@ -7,10 +7,22 @@ from pathlib import Path
 from typing import Any, Iterable, Optional
 
 ALLOWED_PROFILE = "repository-analyst"
+MAX_ARG_DEPTH = 64
+MAX_ARG_NODES = 4096
+
+# Deliberately broader than Hermes gateway extraction: any token that looks
+# like an absolute POSIX path, a home-relative path, or a Windows drive path
+# is treated as path-bearing data and must remain inside the assigned
+# workspace. The lookbehind avoids matching the path portion of http(s) URLs.
 _LOCAL_PATH_RE = re.compile(
-    r"(?<![\w:/])(?:/(?:Users|home|private|tmp|var|etc|workspace|opt|srv|root|mnt|media)/[^\s,;]+|"
-    r"[A-Za-z]:\\[^\s,;]+)"
+    r"(?<![/\w:.])(?:~/|/|[A-Za-z]:[/\\])[^\s,;]+"
 )
+_TRAILING_PUNCTUATION = "'\"`)]}>.!?:"
+_WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:[/\\]")
+
+
+def _block(message: str) -> dict[str, str]:
+    return {"action": "block", "message": message}
 
 
 def _bound_workspace() -> Path:
@@ -37,6 +49,12 @@ def _bound_workspace() -> Path:
 
 def _inside(workspace: Path, raw: str, *, must_exist: bool) -> bool:
     try:
+        if not isinstance(raw, str) or not raw or "\x00" in raw:
+            return False
+        # A Windows drive path cannot designate a file inside a POSIX worker
+        # workspace. Refuse it instead of letting pathlib treat it as relative.
+        if os.name != "nt" and _WINDOWS_DRIVE_RE.match(raw):
+            return False
         candidate = Path(raw).expanduser()
         if not candidate.is_absolute():
             candidate = workspace / candidate
@@ -50,26 +68,50 @@ def _inside(workspace: Path, raw: str, *, must_exist: bool) -> bool:
         if must_exist and (not resolved.is_file() or resolved.is_symlink()):
             return False
         return True
-    except (OSError, ValueError):
+    except (OSError, RuntimeError, ValueError):
         return False
 
 
 def _iter_strings(value: Any) -> Iterable[str]:
-    if isinstance(value, str):
-        yield value
-    elif isinstance(value, dict):
-        for item in value.values():
-            yield from _iter_strings(item)
-    elif isinstance(value, (list, tuple)):
-        for item in value:
-            yield from _iter_strings(item)
+    """Yield strings from nested JSON-like values with hard traversal bounds."""
+    stack: list[tuple[Any, int]] = [(value, 0)]
+    seen = 0
+    while stack:
+        item, depth = stack.pop()
+        seen += 1
+        if seen > MAX_ARG_NODES:
+            raise ValueError("kanban completion arguments exceed traversal limit")
+        if depth > MAX_ARG_DEPTH:
+            raise ValueError("kanban completion arguments exceed nesting limit")
+        if isinstance(item, str):
+            yield item
+        elif isinstance(item, dict):
+            stack.extend((child, depth + 1) for child in item.values())
+        elif isinstance(item, (list, tuple)):
+            stack.extend((child, depth + 1) for child in item)
 
 
-def _artifact_strings(args: dict) -> Iterable[str]:
+def _artifact_strings(args: dict) -> tuple[str, ...]:
     artifacts = args.get("artifacts")
     if artifacts is None:
         return ()
-    return tuple(_iter_strings(artifacts))
+    if isinstance(artifacts, str):
+        return (artifacts,)
+    if not isinstance(artifacts, (list, tuple)):
+        raise ValueError("artifacts must be a string or list of file paths")
+    values: list[str] = []
+    for value in artifacts:
+        if not isinstance(value, str):
+            raise ValueError("artifact path must be a string")
+        values.append(value)
+    return tuple(values)
+
+
+def _paths_from_text(text: str) -> Iterable[str]:
+    for match in _LOCAL_PATH_RE.finditer(text):
+        candidate = match.group(0).rstrip(_TRAILING_PUNCTUATION)
+        if candidate:
+            yield candidate
 
 
 def _outside_local_paths(workspace: Path, args: dict) -> list[str]:
@@ -80,13 +122,12 @@ def _outside_local_paths(workspace: Path, args: dict) -> list[str]:
         if not _inside(workspace, raw, must_exist=True):
             bad.append(raw)
 
-    # Gateway completion delivery also extracts absolute local paths from
-    # summary/result text. Refuse any such path unless it resolves inside the
-    # current workspace. Scan every string argument so schema-name drift cannot
-    # reopen the channel.
+    # Gateway completion delivery extracts path-looking values from summary and
+    # result text. Scan every nested string so field-name drift cannot reopen
+    # the channel. Path-looking values may be broader than gateway's current
+    # media-extension filter; conservative blocking is intentional here.
     for text in _iter_strings(args):
-        for match in _LOCAL_PATH_RE.findall(text):
-            candidate = match.rstrip("'\"`)]}>.!?:")
+        for candidate in _paths_from_text(text):
             if not _inside(workspace, candidate, must_exist=False):
                 bad.append(candidate)
     return bad
@@ -98,16 +139,18 @@ def on_pre_tool_call(tool_name: str = "", args: Any = None, **_: Any) -> Optiona
     # Scope the guard only to the future isolated repository-analyst worker.
     if os.environ.get("HERMES_PROFILE", "").strip() != ALLOWED_PROFILE:
         return None
+    # Hermes v0.20.4 isolates hook exceptions and otherwise continues the tool
+    # call. This security hook must therefore catch every ordinary exception
+    # itself and convert it into a block directive.
     try:
         workspace = _bound_workspace()
-    except Exception as exc:
-        return {"action": "block", "message": f"kanban completion refused: {exc}"}
-    if not isinstance(args, dict):
-        return {"action": "block", "message": "kanban completion refused: invalid arguments"}
-    bad = _outside_local_paths(workspace, args)
-    if not bad:
+        if not isinstance(args, dict):
+            raise ValueError("invalid kanban_complete arguments")
+        bad = _outside_local_paths(workspace, args)
+        if bad:
+            return _block(
+                "kanban completion refused: local artifact/path must stay inside the assigned workspace"
+            )
         return None
-    return {
-        "action": "block",
-        "message": "kanban completion refused: local artifact/path must stay inside the assigned workspace",
-    }
+    except Exception:
+        return _block("kanban completion refused: workspace/path validation failed")
