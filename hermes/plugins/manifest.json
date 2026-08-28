@@ -11,6 +11,15 @@
         "repo_map.py": "ce7718e0879600631e84a4e44f9c7f97842af9cc",
         "repository_tools.py": "93193e0db3453ef9b5d8f175c5fe4334ff5bf58a"
       }
+    },
+    "factory-kanban-artifact-guard": {
+      "source": "hermes/plugins/factory-kanban-artifact-guard",
+      "installable": false,
+      "activation_status": "pending-independent-review",
+      "files": {
+        "plugin.yaml": "4e98b5994e721d16cc9ff7ffdca5f0706ee8be9f",
+        "__init__.py": "c1da976b32196a83b0d24c3a2a9aba875c0cdd73"
+      }
     }
   }
 }
