@@ -6,6 +6,10 @@ import os
 import sys
 from pathlib import Path
 
+# The installed skill tree is integrity-pinned. Do not let Python mutate it by
+# writing __pycache__ when importing the mapper module.
+sys.dont_write_bytecode = True
+
 import repo_map
 
 ALLOWED_PROFILE = "repository-analyst"
