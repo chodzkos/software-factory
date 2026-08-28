@@ -1,71 +1,61 @@
-# Factory repo-map review gate
+# Factory repo-map activation contract
 
-Status: **FACTORY-OWNED FORK — REVIEW ONLY — NOT INSTALLABLE — NO PROFILE GRANT**
+Status: **FACTORY-OWNED FORK — ACTIVATION CANDIDATE**
 
-This implementation exists to close the activation findings found in the pinned upstream `repo-map` review. It is intentionally absent from `skills/manifest.yaml` and all profile grants in this PR.
+The raw upstream `repo-map` remains byte-identical audit material under `skills/upstream/repo-map/` and remains non-installable. Independent review required a Factory-owned fork; PR #16 closed the raw-helper activation blockers and was merged after exact-SHA review.
 
-## Findings this fork must close
+## Runtime architecture
 
-The raw upstream helper remains under `skills/upstream/repo-map/` as byte-identical audit material. Independent review classified activation as `FACTORY_FORK_REQUIRED` because the raw helper:
+`factory-repo-map` is granted only to `repository-analyst` and must be invoked through `scripts/run_repo_map.py`.
 
-1. defeats directory pruning via `sorted(os.walk(...))`,
-2. accepts arbitrary readable paths outside the Kanban workspace,
-3. follows file symlinks outside the mapped tree,
-4. does not bound individual or total bytes and materializes an unbounded walk,
-5. reads non-dot secret/binary-like files,
-6. prints absolute paths and unsanitized control characters.
+The binder does not accept a workspace argument from the model. It obtains authority from Hermes dispatcher environment:
 
-## Fork contract
+- `HERMES_KANBAN_TASK`,
+- `HERMES_KANBAN_WORKSPACE`,
+- `HERMES_PROFILE=repository-analyst`.
 
-`factory-repo-map/scripts/repo_map.py` must:
+The dispatcher-provided workspace is passed to the reviewed mapper together with fixed Factory safety limits. Missing or inconsistent binding fails closed.
 
-- require `--workspace` and treat it as the authoritative Kanban-assigned workspace,
-- reject a symlink workspace argument,
-- accept only workspace-relative targets,
-- reject target symlinks and targets resolving outside the workspace,
-- refuse hidden/generated target roots,
-- prune hidden/generated/vendor directories during live `os.walk`,
-- reject file and directory symlink traversal,
-- use a source-code extension allowlist,
-- skip secret-like names and binary-like content,
-- enforce maximum directories visited, filenames examined, bytes per file and total bytes,
-- stop traversal when hard limits are reached,
-- emit workspace-relative paths only,
-- sanitize control characters in emitted filenames,
-- remain stdlib-only, read-only, deterministic and non-executing.
+## Multi-file install contract
 
-## Default ceilings
+The manifest declares this skill as `custom-multifile` with an exact allowlist and content pins for every installed file. Installer/verifier must:
 
-- 500 filenames examined
-- 2000 directories visited
-- 1 MiB per file
-- 8 MiB total accepted source bytes
-- 12 symbols per supported file
+- reject source or target symlinks,
+- reject missing or extra files/directories outside the declared tree,
+- verify each declared file pin before writes,
+- copy only the declared files into a temp directory,
+- preserve nested relative paths,
+- refuse overwrite of a differing installed skill,
+- verify installed file pins and exact installed tree,
+- complete preflight for the full selection before the first install write.
 
-## Review/activation separation
+## Least privilege
 
-This PR does not modify:
+Only `repository-analyst` receives `factory-repo-map`, as optional. No other profile receives it in this activation change.
 
-- `skills/manifest.yaml`,
-- `skills/profiles.yaml`,
-- `hermes/install_factory_skills.sh`,
-- runtime-controller/Kanban routing.
+## Fixed mapper limits
 
-`factory-repo-map` therefore cannot be selected by `--all` or any profile. A later activation PR must separately design multi-file custom installation, per-file integrity pins, installed-state verification and a least-privilege profile grant.
+The binder fixes:
 
-## Security tests
+- 500 filenames,
+- 2000 directories,
+- 4096 entries per directory,
+- 1 MiB per source file,
+- 8 MiB total accepted bytes,
+- 12 symbols per file.
 
-`skills/tests/test_factory_repo_map.py` pins:
+The autonomous caller cannot raise these limits through binder arguments.
 
-- no manifest/profile exposure,
-- generated/hidden directory pruning at all depths,
-- refusal of generated/hidden roots,
-- absolute/parent path escape rejection,
-- workspace/target/file/directory symlink rejection,
-- file and directory traversal limits,
-- per-file and total-byte limits,
-- secret/non-code/binary filtering,
-- relative sanitized output,
-- deterministic behavior and absence of execution/network primitives.
+## Security invariants retained from PR #16
 
-Do not mark this implementation installable until an independent exact-SHA adversarial review approves this contract.
+- bounded `os.scandir` traversal,
+- target-component hidden/generated and symlink refusal,
+- workspace containment,
+- source extension allowlist,
+- secret/non-code/binary/invalid-UTF8 filtering,
+- hard ceilings,
+- `O_NOFOLLOW` leaf open when available + regular-file `fstat`,
+- relative prefixed output and control sanitization,
+- no discovered-code execution, shell, network, or repository mutation.
+
+Activation must not weaken these invariants.
