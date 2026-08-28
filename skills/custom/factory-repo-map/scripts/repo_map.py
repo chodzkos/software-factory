@@ -38,7 +38,6 @@ SYMBOL_RULES[".jsx"] = SYMBOL_RULES[".js"]
 SYMBOL_RULES[".mjs"] = SYMBOL_RULES[".js"]
 SYMBOL_RULES[".tsx"] = SYMBOL_RULES[".ts"]
 
-# Hard ceilings cannot be raised by an autonomous caller.
 HARD_MAX = {
     "max_files": 2_000,
     "max_dirs": 5_000,
@@ -67,7 +66,6 @@ def is_secret_like(path: Path) -> bool:
 
 
 def has_symlink_component(path: Path) -> bool:
-    """Check lexical path components without intentionally following a symlink."""
     candidate = Path(path.anchor) if path.is_absolute() else Path()
     for part in path.parts:
         if part in {path.anchor, "", "."}:
@@ -100,7 +98,6 @@ def symbols_for(content: str, ext: str, max_symbols: int) -> str:
 
 
 def read_regular_text(path: Path, max_bytes: int) -> tuple[str, int] | None:
-    """Open one regular file without following a leaf symlink and bound bytes before decode."""
     flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
     try:
         fd = os.open(path, flags)
@@ -179,7 +176,6 @@ def validate_target(workspace: Path, raw_target: Path) -> Path:
 
 
 def bounded_entries(directory: Path, max_entries: int) -> tuple[list[os.DirEntry[str]], bool]:
-    """Materialize at most max_entries entries; overflow skips the directory fail-closed."""
     entries: list[os.DirEntry[str]] = []
     try:
         with os.scandir(directory) as scan:
@@ -235,7 +231,10 @@ def main(argv=None) -> int:
                 if entry.is_dir(follow_symlinks=False):
                     if name in SKIP_DIRS or name.startswith("."):
                         continue
-                    resolved_dir = clean_resolve(path, "directory")
+                    try:
+                        resolved_dir = path.resolve(strict=True)
+                    except OSError:
+                        continue
                     if is_within(resolved_dir, workspace):
                         child_dirs.append(resolved_dir)
                     continue
@@ -255,17 +254,28 @@ def main(argv=None) -> int:
             if ext not in ALLOWED_EXTENSIONS:
                 continue
 
-            resolved = clean_resolve(path, "file")
+            try:
+                info = entry.stat(follow_symlinks=False)
+            except OSError:
+                continue
+            if not stat.S_ISREG(info.st_mode):
+                continue
+            if info.st_size > args.max_file_bytes:
+                truncated = True
+                continue
+            if total_bytes + info.st_size > args.max_total_bytes:
+                truncated = True
+                stop = True
+                break
+
+            try:
+                resolved = path.resolve(strict=True)
+            except OSError:
+                continue
             if not is_within(resolved, workspace):
                 continue
             read = read_regular_text(resolved, args.max_file_bytes)
             if read is None:
-                # Includes symlink races, binary/non-UTF8 content and oversized files.
-                try:
-                    if resolved.stat().st_size > args.max_file_bytes:
-                        truncated = True
-                except OSError:
-                    pass
                 continue
             content, size = read
             if total_bytes + size > args.max_total_bytes:
@@ -279,7 +289,6 @@ def main(argv=None) -> int:
             rel = resolved.relative_to(workspace).as_posix()
             rows.append((sanitize(rel), lines, symbols_for(content, ext, args.max_symbols)))
 
-        # Stack is LIFO; reverse gives deterministic ascending traversal.
         for child in reversed(child_dirs):
             stack.append(child)
 
