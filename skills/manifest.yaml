@@ -25,8 +25,8 @@
       "activation_status":"blocked-on-runtime-isolation",
       "sha_sensitive":false,
       "files": {
-        "SKILL.md":{"git_blob_sha1":"fe873ef885c20bb065072a3d19c38b8fd93da079"},
-        "REVIEW.md":{"git_blob_sha1":"71b3ece3d852612cf3ffa8dd2e58a2bf92aa3450"},
+        "SKILL.md":{"git_blob_sha1":"5f643da71857fddb396dfa3b81bc0b53e16693cd"},
+        "REVIEW.md":{"git_blob_sha1":"b740c03427095a6ba38dcef00352288c7ef291e8"},
         "scripts/repo_map.py":{"git_blob_sha1":"ce7718e0879600631e84a4e44f9c7f97842af9cc"},
         "scripts/run_repo_map.py":{"git_blob_sha1":"cb0701b5b4a8ede32082e026e377e4134e1d7885"}
       }
