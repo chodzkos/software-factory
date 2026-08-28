@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import ast
 import importlib.util
 import json
 import os
@@ -154,13 +155,52 @@ class RepositoryReadonlyPluginTests(unittest.TestCase):
                 self.assertIn("error", decode(self.rt.handle_search({"query": "x" * 257})))
 
     def test_plugin_contains_no_execution_or_write_primitives(self):
-        text = (PLUGIN / "repository_tools.py").read_text()
-        for forbidden in (
-            "subprocess", "os.system", "os.popen", "eval(", "exec(",
-            "write_text(", "write_bytes(", "unlink(", "remove(", "rename(", "replace(",
-            "socket", "urllib", "requests",
-        ):
-            self.assertNotIn(forbidden, text)
+        tree = ast.parse((PLUGIN / "repository_tools.py").read_text())
+
+        forbidden_import_roots = {
+            "subprocess", "socket", "urllib", "requests", "http", "shutil",
+        }
+        imported_roots = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                imported_roots.update(alias.name.split(".", 1)[0] for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                imported_roots.add(node.module.split(".", 1)[0])
+        self.assertFalse(forbidden_import_roots & imported_roots)
+
+        forbidden_names = {"eval", "exec", "compile", "open"}
+        forbidden_attrs = {
+            ("os", "system"), ("os", "popen"),
+            ("os", "remove"), ("os", "unlink"), ("os", "rename"), ("os", "replace"),
+        }
+        forbidden_method_calls = {
+            "write_text", "write_bytes", "unlink", "rename", "replace", "rmdir", "mkdir",
+        }
+
+        def call_name(node):
+            if isinstance(node, ast.Name):
+                return node.id
+            if isinstance(node, ast.Attribute):
+                parts = []
+                cur = node
+                while isinstance(cur, ast.Attribute):
+                    parts.append(cur.attr)
+                    cur = cur.value
+                if isinstance(cur, ast.Name):
+                    parts.append(cur.id)
+                    return tuple(reversed(parts))
+            return None
+
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            name = call_name(node.func)
+            if isinstance(name, str):
+                self.assertNotIn(name, forbidden_names)
+            elif isinstance(name, tuple):
+                if len(name) == 2:
+                    self.assertNotIn(name, forbidden_attrs)
+                self.assertNotIn(name[-1], forbidden_method_calls)
 
     def test_vendored_mapper_is_byte_identical_to_reviewed_skill_helper(self):
         canonical = ROOT / "skills" / "custom" / "factory-repo-map" / "scripts" / "repo_map.py"
