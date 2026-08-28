@@ -1,0 +1,7 @@
+name: factory-repository-readonly
+version: 0.1.0
+description: Workspace-bound read-only repository analysis tools for Software Factory repository-analyst.
+provides_tools:
+  - factory_repo_map
+  - factory_repo_read
+  - factory_repo_search
