@@ -1,6 +1,7 @@
 """Software Factory read-only repository tools for Hermes repository-analyst."""
 from __future__ import annotations
 
+from .kanban_guard import on_pre_tool_call
 from .repository_tools import (
     MAP_SCHEMA,
     READ_SCHEMA,
@@ -26,3 +27,4 @@ def register(ctx) -> None:
             check_fn=check_available,
             emoji=emoji,
         )
+    ctx.register_hook("pre_tool_call", on_pre_tool_call)
