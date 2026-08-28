@@ -7,7 +7,7 @@
       "activation_status": "pending-independent-review",
       "files": {
         "plugin.yaml": "e26285a24ab1048c1c61e4dd7bfecd22e7178554",
-        "__init__.py": "4fcbcea7117620156fe93fc9c49e8c0b96fd764b",
+        "__init__.py": "d1607626706e425b0057f10154a1b923da8f55e7",
         "repo_map.py": "ce7718e0879600631e84a4e44f9c7f97842af9cc",
         "repository_tools.py": "93193e0db3453ef9b5d8f175c5fe4334ff5bf58a",
         "kanban_guard.py": "6f6131513dc18a88da3b0d00c7f8189a3223c6fd"
