@@ -39,6 +39,11 @@ if name not in profiles: raise SystemExit(f"ERROR: unknown profile: {name}")
 for skill in profiles[name]["required"] + profiles[name]["optional"]:
     if skill not in manifest["skills"]: raise SystemExit(f"ERROR: undeclared skill in profile {name}: {skill}")
     spec=manifest["skills"][skill]
+    if spec.get("installable", True) is False:
+        raise SystemExit(f"ERROR: profile references non-installable skill: {skill}")
+    status=spec.get("activation_status")
+    if status is not None and status != "reviewed-ready":
+        raise SystemExit(f"ERROR: skill activation status is not reviewed-ready: {skill}: {status}")
     digest=spec.get("upstream", {}).get("sha256", "-")
     print(f"{skill}\t{spec['path']}\t{spec['source']}\t{digest}")
 PY
@@ -65,15 +70,30 @@ PY
 import hashlib,json,pathlib,sys
 manifest=json.load(open(sys.argv[1])); root=pathlib.Path(sys.argv[2]); name=sys.argv[3]; spec=manifest["skills"][name]
 def blob_sha(data): return hashlib.sha1(b"blob "+str(len(data)).encode()+b"\0"+data).hexdigest()
-actual=[]
+def declared_tree(pins):
+    files=sorted(pins); dirs=set()
+    for rel in files:
+        path=pathlib.PurePosixPath(rel)
+        if path.is_absolute() or ".." in path.parts or "." in path.parts or not path.parts:
+            raise SystemExit(f"ERROR: invalid installed multifile relative path: {name}/{rel}")
+        for parent in path.parents:
+            if str(parent) != ".": dirs.add(parent.as_posix())
+    return files,sorted(dirs)
+actual_files=[]; actual_dirs=[]
 for path in root.rglob("*"):
     rel=path.relative_to(root).as_posix()
     if path.is_symlink(): raise SystemExit(f"ERROR: installed multifile symlink: {name}/{rel}")
-    if path.is_file(): actual.append(rel)
-    elif not path.is_dir(): raise SystemExit(f"ERROR: installed multifile non-regular: {name}/{rel}")
-declared=sorted(spec["files"])
-if sorted(actual) != declared: raise SystemExit(f"ERROR: installed multifile tree drift: {name}: actual={sorted(actual)} declared={declared}")
-for rel in declared:
+    if path.is_file(): actual_files.append(rel)
+    elif path.is_dir(): actual_dirs.append(rel)
+    else: raise SystemExit(f"ERROR: installed multifile non-regular: {name}/{rel}")
+declared_files,declared_dirs=declared_tree(spec["files"])
+if sorted(actual_files) != declared_files or sorted(actual_dirs) != declared_dirs:
+    raise SystemExit(
+        f"ERROR: installed multifile tree drift: {name}: "
+        f"files={sorted(actual_files)} declared_files={declared_files} "
+        f"dirs={sorted(actual_dirs)} declared_dirs={declared_dirs}"
+    )
+for rel in declared_files:
     data=(root/rel).read_bytes(); expected=spec["files"][rel]["git_blob_sha1"]; got=blob_sha(data)
     if got != expected: raise SystemExit(f"ERROR: installed multifile blob drift: {name}/{rel}: {got} != {expected}")
 PY
