@@ -36,6 +36,18 @@ HERMES_SKILLS_DIR="$dest" bash "$INSTALLER" --profile repository-analyst >/dev/n
 [[ -f "$dest/factory-repo-map/scripts/run_repo_map.py" ]]
 FACTORY_SKILLS_INSTALLED_ONLY=1 HERMES_SKILLS_DIR="$dest" bash "$VERIFIER" --profile repository-analyst >/dev/null
 
+printf '[multifile-test] runtime import does not mutate installed tree\n'
+workspace="$TMP/workspace"
+mkdir -p "$workspace"
+printf 'def safe(): pass\n' > "$workspace/safe.py"
+env \
+  HERMES_KANBAN_TASK=t_multifile_test \
+  HERMES_KANBAN_WORKSPACE="$workspace" \
+  HERMES_PROFILE=repository-analyst \
+  python3 "$dest/factory-repo-map/scripts/run_repo_map.py" . >/dev/null
+[[ ! -e "$dest/factory-repo-map/scripts/__pycache__" ]] || { echo 'ERROR: binder created __pycache__' >&2; exit 1; }
+FACTORY_SKILLS_INSTALLED_ONLY=1 HERMES_SKILLS_DIR="$dest" bash "$VERIFIER" --profile repository-analyst >/dev/null
+
 echo '[multifile-test] source tamper'
 root="$TMP/tamper-root"; make_root "$root"
 printf '\n# tamper\n' >> "$root/skills/custom/factory-repo-map/scripts/repo_map.py"
