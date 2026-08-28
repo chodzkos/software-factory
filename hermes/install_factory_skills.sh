@@ -38,19 +38,44 @@ allowlist=set(policy.get("repository_allowlist", []))
 def blob_sha(data: bytes) -> str:
     return hashlib.sha1(b"blob " + str(len(data)).encode() + b"\0" + data).hexdigest()
 
+def activation_ready(name: str, spec: dict) -> None:
+    status=spec.get("activation_status")
+    if spec.get("installable", True) is not False and status is not None and status != "reviewed-ready":
+        raise SystemExit(f"ERROR: skill activation status is not reviewed-ready: {name}: {status}")
+
+def declared_tree(pins: dict):
+    files=sorted(pins)
+    dirs=set()
+    for rel in files:
+        path=pathlib.PurePosixPath(rel)
+        if path.is_absolute() or ".." in path.parts or "." in path.parts or not path.parts:
+            raise SystemExit(f"ERROR: invalid custom multifile relative path: {rel!r}")
+        for parent in path.parents:
+            if str(parent) != ".":
+                dirs.add(parent.as_posix())
+    return files, sorted(dirs)
+
 def regular_tree(src: pathlib.Path):
     if src.is_symlink() or not src.is_dir():
         raise SystemExit(f"ERROR: invalid multifile source root: {src}")
     files=[]
+    dirs=[]
     for path in src.rglob("*"):
         rel=path.relative_to(src).as_posix()
         if path.is_symlink():
             raise SystemExit(f"ERROR: symlink multifile source refused: {rel}")
         if path.is_file():
             files.append(rel)
-        elif not path.is_dir():
+        elif path.is_dir():
+            dirs.append(rel)
+        else:
             raise SystemExit(f"ERROR: non-regular multifile source refused: {rel}")
-    return sorted(files)
+    return sorted(files), sorted(dirs)
+
+# Fail closed globally if someone flips an activation candidate to installable
+# without first changing its activation_status to the independently reviewed state.
+for skill_name, skill_spec in manifest["skills"].items():
+    activation_ready(skill_name, skill_spec)
 
 if install_all:
     names=sorted(name for name,spec in manifest["skills"].items() if spec.get("installable", True) is not False)
@@ -66,6 +91,7 @@ for name in names:
     spec=manifest["skills"][name]
     if spec.get("installable", True) is False:
         raise SystemExit(f"ERROR: profile references non-installable skill: {name}")
+    activation_ready(name, spec)
     source=spec.get("source")
     if source == "custom":
         expected=f"skills/custom/{name}"
@@ -88,11 +114,15 @@ for name in names:
         if not isinstance(pins, dict) or not pins or "SKILL.md" not in pins:
             raise SystemExit(f"ERROR: invalid custom multifile pin set: {name}")
         src=root/spec["path"]
-        declared=sorted(pins)
-        actual=regular_tree(src)
-        if actual != declared:
-            raise SystemExit(f"ERROR: custom multifile tree mismatch for {name}: actual={actual} declared={declared}")
-        for rel in declared:
+        declared_files,declared_dirs=declared_tree(pins)
+        actual_files,actual_dirs=regular_tree(src)
+        if actual_files != declared_files or actual_dirs != declared_dirs:
+            raise SystemExit(
+                f"ERROR: custom multifile tree mismatch for {name}: "
+                f"files={actual_files} declared_files={declared_files} "
+                f"dirs={actual_dirs} declared_dirs={declared_dirs}"
+            )
+        for rel in declared_files:
             pin=pins[rel]
             if not isinstance(pin, dict) or not re.fullmatch(r"[0-9a-f]{40}", str(pin.get("git_blob_sha1", ""))):
                 raise SystemExit(f"ERROR: invalid git blob pin for {name}/{rel}")

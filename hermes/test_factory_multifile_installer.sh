@@ -37,7 +37,7 @@ profiles = json.load(open(profiles_path))
 spec = manifest["skills"]["factory-repo-map"]
 spec["installable"] = True
 spec["profiles"] = ["repository-analyst"]
-spec["activation_status"] = "test-fixture-only"
+spec["activation_status"] = "reviewed-ready"
 profiles["profiles"]["repository-analyst"]["optional"].append("factory-repo-map")
 open(manifest_path, "w").write(json.dumps(manifest, indent=2) + "\n")
 open(profiles_path, "w").write(json.dumps(profiles, indent=2) + "\n")
@@ -47,6 +47,25 @@ PY
 printf '[multifile-test] production policy keeps candidate disabled\n'
 prod_out="$(HERMES_SKILLS_DIR="$TMP/prod" bash "$INSTALLER" --all --dry-run)"
 ! grep -Fq 'factory-repo-map' <<<"$prod_out" || { echo 'ERROR: disabled candidate selected by --all' >&2; exit 1; }
+
+printf '[multifile-test] blocked activation status overrides installable flip\n'
+root="$TMP/blocked-root"
+mkdir -p "$root/hermes" "$root/skills"
+cp "$INSTALLER" "$root/hermes/install_factory_skills.sh"
+cp "$ROOT_DIR/skills/manifest.yaml" "$root/skills/manifest.yaml"
+cp "$ROOT_DIR/skills/profiles.yaml" "$root/skills/profiles.yaml"
+cp -a "$ROOT_DIR/skills/custom" "$root/skills/"
+mkdir -p "$root/skills/upstream"
+cp -a "$ROOT_DIR/skills/upstream/bug-diagnosis" "$root/skills/upstream/"
+python3 - "$root/skills/manifest.yaml" <<'PY'
+import json,sys
+path=sys.argv[1]
+manifest=json.load(open(path))
+manifest["skills"]["factory-repo-map"]["installable"]=True
+# Deliberately leave activation_status=blocked-on-runtime-isolation.
+open(path,"w").write(json.dumps(manifest,indent=2)+"\n")
+PY
+expect_fail "blocked activation status" env HERMES_SKILLS_DIR="$TMP/blocked-dest" bash "$root/hermes/install_factory_skills.sh" --all --dry-run
 
 printf '[multifile-test] normal fixture install\n'
 root="$TMP/normal-root"; make_root "$root"; dest="$TMP/normal"
@@ -86,6 +105,11 @@ root="$TMP/extra-root"; make_root "$root"
 printf 'unexpected\n' > "$root/skills/custom/factory-repo-map/scripts/extra.py"
 expect_fail "multifile extra source file" env HERMES_SKILLS_DIR="$TMP/extra-dest" bash "$root/hermes/install_factory_skills.sh" --profile repository-analyst --dry-run
 
+echo '[multifile-test] extra empty source directory'
+root="$TMP/empty-dir-root"; make_root "$root"
+mkdir -p "$root/skills/custom/factory-repo-map/empty-extra/nested"
+expect_fail "multifile extra empty source directory" env HERMES_SKILLS_DIR="$TMP/empty-dir-dest" bash "$root/hermes/install_factory_skills.sh" --profile repository-analyst --dry-run
+
 echo '[multifile-test] missing source file'
 root="$TMP/missing-root"; make_root "$root"
 rm "$root/skills/custom/factory-repo-map/scripts/run_repo_map.py"
@@ -109,6 +133,12 @@ root="$TMP/installed-extra-root"; make_root "$root"; dest="$TMP/installed-extra"
 HERMES_SKILLS_DIR="$dest" bash "$root/hermes/install_factory_skills.sh" --profile repository-analyst >/dev/null
 printf 'extra\n' > "$dest/factory-repo-map/extra.txt"
 expect_fail "installed multifile extra file" env FACTORY_SKILLS_INSTALLED_ONLY=1 HERMES_SKILLS_DIR="$dest" bash "$root/hermes/verify_factory_skills.sh" --profile repository-analyst
+
+echo '[multifile-test] installed extra empty directory'
+root="$TMP/installed-empty-root"; make_root "$root"; dest="$TMP/installed-empty"
+HERMES_SKILLS_DIR="$dest" bash "$root/hermes/install_factory_skills.sh" --profile repository-analyst >/dev/null
+mkdir -p "$dest/factory-repo-map/empty-extra/nested"
+expect_fail "installed multifile extra empty directory" env FACTORY_SKILLS_INSTALLED_ONLY=1 HERMES_SKILLS_DIR="$dest" bash "$root/hermes/verify_factory_skills.sh" --profile repository-analyst
 
 echo '[multifile-test] installed nested symlink'
 root="$TMP/installed-symlink-root"; make_root "$root"; dest="$TMP/installed-symlink"
