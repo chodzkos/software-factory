@@ -19,27 +19,30 @@ def run_map(workspace: Path, target=".", *args, check=True):
 
 
 class FactoryRepoMapTests(unittest.TestCase):
-    def test_activation_is_repository_analyst_optional_only(self):
+    def test_activation_is_blocked_pending_runtime_isolation(self):
         manifest = json.loads((ROOT / "skills" / "manifest.yaml").read_text())
         profiles = json.loads((ROOT / "skills" / "profiles.yaml").read_text())["profiles"]
         spec = manifest["skills"]["factory-repo-map"]
         self.assertEqual(spec["source"], "custom-multifile")
-        self.assertEqual(spec["profiles"], ["repository-analyst"])
-        self.assertIn("factory-repo-map", profiles["repository-analyst"]["optional"])
+        self.assertIs(spec["installable"], False)
+        self.assertEqual(spec["profiles"], [])
+        self.assertEqual(spec["activation_status"], "blocked-on-runtime-isolation")
         for name, policy in profiles.items():
-            if name != "repository-analyst":
-                self.assertNotIn("factory-repo-map", policy["required"] + policy["optional"], name)
+            self.assertNotIn("factory-repo-map", policy["required"] + policy["optional"], name)
 
-    def test_binder_requires_dispatcher_env_and_pins_limits(self):
-        with tempfile.TemporaryDirectory() as td:
+    def test_binder_rejects_option_shaped_targets_and_pins_limits(self):
+        with tempfile.TemporaryDirectory() as td, tempfile.TemporaryDirectory() as outside_td:
             root = Path(td)
+            outside = Path(outside_td)
             (root / "safe.py").write_text("def safe(): pass\n")
+            (outside / "secret.py").write_text("def secret_symbol(): pass\n")
             base_env = os.environ.copy()
             for key in ("HERMES_KANBAN_TASK", "HERMES_KANBAN_WORKSPACE", "HERMES_PROFILE"):
                 base_env.pop(key, None)
+
             run = subprocess.run([sys.executable, str(BINDER), "."], text=True, capture_output=True, env=base_env, timeout=10)
             self.assertNotEqual(run.returncode, 0)
-            self.assertIn("missing authoritative Kanban task binding", run.stderr)
+            self.assertIn("missing Kanban task binding", run.stderr)
 
             wrong = dict(base_env, HERMES_KANBAN_TASK="t_test", HERMES_KANBAN_WORKSPACE=str(root), HERMES_PROFILE="coder")
             run = subprocess.run([sys.executable, str(BINDER), "."], text=True, capture_output=True, env=wrong, timeout=10)
@@ -51,7 +54,13 @@ class FactoryRepoMapTests(unittest.TestCase):
             self.assertIn("safe.py", run.stdout)
             self.assertIn("safe", run.stdout)
 
-            # Binder accepts only a target; autonomous caller cannot override safety ceilings.
+            # F1 regression: one-token argparse options must never be accepted as targets.
+            for target in ("--workspace=/", f"--workspace={outside}", "--max-files=2000", "--help", "-h"):
+                run = subprocess.run([sys.executable, str(BINDER), target], text=True, capture_output=True, env=good, timeout=10)
+                self.assertNotEqual(run.returncode, 0, target)
+                self.assertNotIn("secret_symbol", run.stdout, target)
+
+            # Multiple argv tokens are still refused.
             run = subprocess.run([sys.executable, str(BINDER), ".", "--max-files", "2000"], text=True, capture_output=True, env=good, timeout=10)
             self.assertNotEqual(run.returncode, 0)
 
