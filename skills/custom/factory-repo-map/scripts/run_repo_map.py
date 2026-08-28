@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Authoritative Hermes Kanban binder for factory-repo-map."""
+"""Hermes Kanban binder for the reviewed factory-repo-map implementation."""
 from __future__ import annotations
 
 import os
@@ -28,23 +28,26 @@ def main(argv=None) -> int:
     if len(args) > 1:
         raise SystemExit("usage: run_repo_map.py [workspace-relative-target]")
     target = args[0] if args else "."
+    if not target or target.startswith("-"):
+        raise SystemExit("ERROR: target must be a non-option workspace-relative path")
 
     task_id = os.environ.get("HERMES_KANBAN_TASK", "")
     workspace_raw = os.environ.get("HERMES_KANBAN_WORKSPACE", "")
     profile = os.environ.get("HERMES_PROFILE", "")
 
     if not task_id:
-        raise SystemExit("ERROR: missing authoritative Kanban task binding")
+        raise SystemExit("ERROR: missing Kanban task binding")
     if profile != ALLOWED_PROFILE:
         raise SystemExit("ERROR: factory-repo-map is repository-analyst only")
     if not workspace_raw:
-        raise SystemExit("ERROR: missing authoritative Kanban workspace binding")
+        raise SystemExit("ERROR: missing Kanban workspace binding")
 
     workspace = Path(workspace_raw)
     if not workspace.is_absolute():
-        raise SystemExit("ERROR: authoritative Kanban workspace must be absolute")
+        raise SystemExit("ERROR: Kanban workspace must be absolute")
 
-    return repo_map.main(["--workspace", workspace_raw, target, *FIXED_LIMITS])
+    # `--` prevents a relative target from being reinterpreted as mapper options.
+    return repo_map.main(["--workspace", workspace_raw, *FIXED_LIMITS, "--", target])
 
 
 if __name__ == "__main__":
