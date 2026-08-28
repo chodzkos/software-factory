@@ -1,7 +1,7 @@
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "profiles": {
-    "repository-analyst": {"required":["sha-integrity-check","evidence-ledger"],"optional":[]},
+    "repository-analyst": {"required":["sha-integrity-check","evidence-ledger"],"optional":["factory-repo-map"]},
     "architect": {"required":[],"optional":[]},
     "task-decomposer": {"required":["task-skill-router"],"optional":[]},
     "coder": {"required":["sha-integrity-check","workspace-integrity","evidence-ledger"],"optional":["ci-failure-recovery","bug-diagnosis","factory-tdd-workflow"]},
@@ -17,5 +17,5 @@
     "runtime-controller": {"required":[],"optional":[]}
   },
   "forbidden_global_routing": ["task-skill-router"],
-  "notes": "task-skill-router is task-decomposer-only; conflicting upstream procedures remain byte-identical references and are exposed only through Factory-safe adapters"
+  "notes": "factory-repo-map is repository-analyst optional only; raw upstream repo-map remains non-installable audit reference"
 }
