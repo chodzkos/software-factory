@@ -42,6 +42,25 @@ HERMES_PLUGINS_DIR="$dest" bash "$root/hermes/install_factory_plugins.sh" --plug
 diff -qr "$root/hermes/plugins/factory-repository-readonly" "$dest/factory-repository-readonly" >/dev/null
 HERMES_PLUGINS_DIR="$dest" bash "$root/hermes/install_factory_plugins.sh" --plugin factory-repository-readonly >/dev/null
 
+printf '[plugin-installer] serialized publication under lock\n'
+root="$TMP/locked"; make_fixture "$root"; dest="$TMP/locked-install"; mkdir -p "$dest"
+lock="$dest/.factory-plugin.lock.factory-repository-readonly"
+exec 8>"$lock"
+flock -n 8 || { echo 'ERROR: could not acquire test lock' >&2; exit 1; }
+HERMES_PLUGINS_DIR="$dest" bash "$root/hermes/install_factory_plugins.sh" --plugin factory-repository-readonly >"$TMP/locked.out" 2>"$TMP/locked.err" &
+pid=$!
+sleep 0.2
+kill -0 "$pid" 2>/dev/null || { echo 'ERROR: installer did not wait on publication lock' >&2; cat "$TMP/locked.err" >&2; exit 1; }
+flock -u 8
+exec 8>&-
+wait "$pid"
+diff -qr "$root/hermes/plugins/factory-repository-readonly" "$dest/factory-repository-readonly" >/dev/null
+if find "$dest/factory-repository-readonly" -mindepth 1 -type d -print -quit | grep -q .; then
+  echo 'ERROR: serialized install nested an undeclared directory' >&2
+  exit 1
+fi
+echo 'OK: serialized plugin publication'
+
 printf '[plugin-installer] source tamper\n'
 root="$TMP/tamper"; make_fixture "$root"
 printf '\n# drift\n' >> "$root/hermes/plugins/factory-repository-readonly/repository_tools.py"
@@ -51,6 +70,11 @@ printf '[plugin-installer] extra source file\n'
 root="$TMP/extra"; make_fixture "$root"
 printf 'x\n' > "$root/hermes/plugins/factory-repository-readonly/extra.py"
 expect_fail "plugin extra source" env HERMES_PLUGINS_DIR="$TMP/extra-install" bash "$root/hermes/install_factory_plugins.sh" --plugin factory-repository-readonly --dry-run
+
+printf '[plugin-installer] extra empty source directory\n'
+root="$TMP/extra-dir"; make_fixture "$root"
+mkdir "$root/hermes/plugins/factory-repository-readonly/empty-extra"
+expect_fail "plugin extra empty source directory" env HERMES_PLUGINS_DIR="$TMP/extra-dir-install" bash "$root/hermes/install_factory_plugins.sh" --plugin factory-repository-readonly --dry-run
 
 printf '[plugin-installer] source symlink\n'
 root="$TMP/symlink"; make_fixture "$root"
