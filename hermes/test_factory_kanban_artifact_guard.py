@@ -152,9 +152,8 @@ class KanbanArtifactGuardTests(unittest.TestCase):
         forbidden_imports = {"subprocess", "shutil", "socket", "urllib", "requests", "httpx", "aiohttp"}
         forbidden_calls = {
             "eval", "exec", "compile", "open",
-            "os.system", "os.popen", "os.remove", "os.unlink", "os.rename", "os.replace",
-            "Path.write_text", "Path.write_bytes", "Path.unlink", "Path.rename", "Path.replace",
-            "Path.mkdir", "Path.rmdir", "Path.chmod",
+            "system", "popen", "remove", "unlink", "rename", "replace",
+            "write_text", "write_bytes", "mkdir", "rmdir", "chmod", "chown",
         }
         imports = set()
         calls = set()
@@ -168,8 +167,6 @@ class KanbanArtifactGuardTests(unittest.TestCase):
                 if isinstance(func, ast.Name):
                     calls.add(func.id)
                 elif isinstance(func, ast.Attribute):
-                    if isinstance(func.value, ast.Name):
-                        calls.add(f"{func.value.id}.{func.attr}")
                     calls.add(func.attr)
         self.assertFalse(imports & forbidden_imports, imports & forbidden_imports)
         self.assertFalse(calls & forbidden_calls, calls & forbidden_calls)
