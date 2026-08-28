@@ -1,0 +1,5 @@
+name: factory-kanban-artifact-guard
+version: 0.1.0
+description: Blocks repository-analyst Kanban completion paths that escape the assigned workspace.
+provides_hooks:
+  - pre_tool_call
