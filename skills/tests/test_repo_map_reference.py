@@ -33,7 +33,10 @@ class RepoMapReferenceTests(unittest.TestCase):
         self.assertEqual(ref["adapter"], "factory-repo-map")
         self.assertEqual(ref["files"], EXPECTED_FILES)
         self.assertNotIn("repo-map", MANIFEST["skills"])
-        self.assertIn("factory-repo-map", MANIFEST["skills"])
+        candidate = MANIFEST["skills"]["factory-repo-map"]
+        self.assertIs(candidate["installable"], False)
+        self.assertEqual(candidate["profiles"], [])
+        self.assertEqual(candidate["activation_status"], "blocked-on-runtime-isolation")
 
     def test_reference_tree_has_only_allowlisted_regular_files(self):
         self.assertTrue(REPO_MAP.is_dir())
@@ -63,7 +66,7 @@ class RepoMapReferenceTests(unittest.TestCase):
             self.assertNotIn(forbidden, text)
 
     def test_helper_skip_defect_remains_pinned_in_raw_reference(self):
-        """Raw upstream remains unsafe audit material; Factory runtime uses the reviewed fork."""
+        """Raw upstream remains unsafe audit material; Factory fork is also runtime-disabled pending isolation."""
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             (root / "src").mkdir(); (root / ".git").mkdir(); (root / "node_modules").mkdir()
@@ -73,14 +76,13 @@ class RepoMapReferenceTests(unittest.TestCase):
             run = subprocess.run([sys.executable, str(HELPER), str(root), "--max-files", "20", "--max-symbols", "8"], check=True, text=True, capture_output=True, timeout=10)
             out = run.stdout
             self.assertIn("app.py", out); self.assertIn("alpha", out); self.assertIn("Beta", out)
-            # sorted(os.walk(...)) exhausts traversal before dirnames pruning can
-            # affect descent, so skipped/hidden child directories leak at any depth.
             self.assertIn("secret.py", out); self.assertIn("hidden_git", out); self.assertIn("node_modules", out); self.assertIn("hidden_module", out)
 
     def test_helper_max_files_guard_truncates(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            for index in range(3): (root / f"f{index}.py").write_text(f"def f{index}(): pass\n")
+            for index in range(3):
+                (root / f"f{index}.py").write_text(f"def f{index}(): pass\n")
             run = subprocess.run([sys.executable, str(HELPER), str(root), "--max-files", "1"], check=True, text=True, capture_output=True, timeout=10)
             self.assertIn("truncated at 1 files", run.stdout)
 
