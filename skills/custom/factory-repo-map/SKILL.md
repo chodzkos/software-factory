@@ -1,6 +1,6 @@
 ---
 name: factory-repo-map
-description: "Factory-owned secure repository mapper for repository-analyst. Runtime invocation is bound to the current Hermes Kanban worker workspace; raw upstream repo-map remains audit-only."
+description: "Factory-owned secure repository mapper candidate. Runtime activation is blocked until Hermes provides a mechanically isolated invocation surface; raw upstream repo-map remains audit-only."
 ---
 
 # Factory Repo Map
@@ -13,38 +13,36 @@ Factory-owned secure repository index derived from the reviewed upstream `repo-m
 
 This skill never chooses or expands its own workspace authority.
 
-## Runtime grant
+## Activation state
 
-**INSTALLABLE — `repository-analyst` OPTIONAL ONLY.**
+**NOT INSTALLABLE — NO PROFILE GRANT — BLOCKED ON RUNTIME ISOLATION.**
 
-Do not grant this skill to coder, reviewers, auditors, orchestrator, runtime-controller, task-decomposer, release-manager, docs, or routing-sink without a separate reviewed policy change.
+PR #17 activation review found that Hermes 0.20.4 `repository-analyst` has unrestricted local terminal/code execution. In that runtime, dispatcher environment variables are not a tamper-proof authority boundary because an autonomous worker can spawn a child with changed `HERMES_KANBAN_*` values or invoke the mapper module directly.
 
-The pinned raw upstream `skills/upstream/repo-map/` remains non-installable audit material and must never be invoked for Factory runtime use.
+Therefore this candidate stays out of every profile and is skipped by `--all` until a separate reviewed runtime mechanism can expose only a narrow repo-map operation without arbitrary shell/Python bypass.
 
-## Required invocation
+The pinned raw upstream `skills/upstream/repo-map/` also remains non-installable audit material and must never be invoked for Factory runtime use.
 
-Use only the installed binder:
+## Candidate binder contract
 
-```bash
-python3 scripts/run_repo_map.py .
-python3 scripts/run_repo_map.py src
-```
+`run_repo_map.py` is retained and tested as activation infrastructure. It:
 
-Do **not** invoke `scripts/repo_map.py --workspace ...` directly during autonomous Factory work.
+- requires `HERMES_KANBAN_TASK`,
+- requires absolute `HERMES_KANBAN_WORKSPACE`,
+- requires `HERMES_PROFILE=repository-analyst`,
+- rejects option-shaped targets such as `--workspace=/`,
+- accepts at most one workspace-relative target,
+- inserts `--` before the target when invoking the mapper,
+- supplies fixed Factory limits,
+- disables bytecode writes before importing the mapper.
 
-`run_repo_map.py` obtains authority only from Hermes dispatcher environment:
-
-- `HERMES_KANBAN_TASK` must exist,
-- `HERMES_KANBAN_WORKSPACE` must exist and be absolute,
-- `HERMES_PROFILE` must equal `repository-analyst`.
-
-The binder supplies fixed Factory limits; the model cannot raise them through CLI arguments.
+These checks are defense-in-depth only until the caller itself is mechanically isolated from arbitrary terminal/code execution.
 
 ## Mapper security contract
 
 The mapper:
 
-- stays inside the dispatcher-bound workspace,
+- stays inside the supplied workspace,
 - rejects absolute/parent target traversal and hidden/generated target components,
 - rejects symlink files/directories and symlink target components,
 - prunes hidden/generated/vendor directories with bounded `os.scandir`,
@@ -58,9 +56,7 @@ The mapper:
 - sanitizes control characters in emitted filenames,
 - remains deterministic for unchanged tree and options.
 
-## Bound runtime limits
-
-The binder always supplies:
+## Candidate fixed limits
 
 - `--max-files 500`
 - `--max-dirs 2000`
