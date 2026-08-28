@@ -4,9 +4,9 @@ This directory contains Factory-owned Hermes plugins that are reviewed as runtim
 
 ## factory-repository-readonly
 
-Status: **REVIEW CANDIDATE — NOT INSTALLABLE — NO PROFILE CUTOVER**.
+Status: **REVIEWED-RUNTIME — ACTIVATION REQUIRES THE ISOLATION BOOTSTRAP AND LIVE PROBE**.
 
-Purpose: provide `repository-analyst` with a future read-only repository surface without exposing the generic Hermes `terminal`, `file`, or `code_execution` toolsets.
+Purpose: provide `repository-analyst` with a read-only repository surface without exposing the generic Hermes `terminal`, `file`, or `code_execution` toolsets.
 
 The plugin registers exactly one toolset, `factory-repository-readonly`, with three tools:
 
@@ -17,10 +17,10 @@ The plugin registers exactly one toolset, `factory-repository-readonly`, with th
 It also registers one `pre_tool_call` hook used only for `repository-analyst` Kanban workers. Before `kanban_complete` executes, the hook refuses completion when:
 
 - a declared artifact is missing, symlinked, non-regular, or outside the assigned workspace;
-- any absolute local path present anywhere in completion arguments resolves outside the assigned workspace;
+- any local path present anywhere in completion arguments resolves outside the assigned workspace;
 - the authoritative Kanban task/workspace binding is missing or invalid.
 
-This closes the artifact-delivery side channel identified during the PR #19 security review: gateway completion delivery must never receive a worker-controlled host path outside `HERMES_KANBAN_WORKSPACE` from the isolated analyst.
+This closes the artifact-delivery side channel identified during the PR #19 security review when the hook is loaded on the isolated analyst.
 
 ## Authority boundary
 
@@ -30,7 +30,7 @@ Handlers and the completion guard require the current worker process to contain:
 - absolute `HERMES_KANBAN_WORKSPACE`,
 - `HERMES_PROFILE=repository-analyst`.
 
-The intended future profile cutover removes generic shell/file/code-execution capabilities. In that restricted profile, the model cannot spawn a child process with altered environment variables and cannot invoke the low-level helper directly. This PR does **not** perform that cutover; it only hardens and reviews the plugin boundary.
+The production isolation step is `hermes/bootstrap_repository_analyst_isolation.sh`. It installs the exact pinned plugin, requires `hermes plugins doctor --ci` to pass, then sets the profile toolset to only `factory-repository-readonly` and deny-lists generic execution/file/network/delegation surfaces. Dispatcher-owned workers receive Kanban lifecycle tools separately.
 
 The plugin is not a general OS sandbox. Hermes native plugins execute in-process with the user account's permissions; security comes from exposing only bounded handlers to a profile whose generic execution/write toolsets are disabled.
 
@@ -61,23 +61,25 @@ The hook is intentionally narrow:
 - relative artifacts resolve from the bound workspace;
 - absolute artifacts are allowed only when they resolve to regular files inside that workspace;
 - symlink artifacts/components are refused;
-- absolute local paths embedded in nested completion strings are scanned so future schema-field changes cannot silently reopen the gateway-delivery channel.
+- local path-bearing nested completion strings are scanned so schema-field changes cannot silently reopen gateway delivery.
 
 The guard runs before the Kanban tool executes, so a refused external path never becomes task completion data for the gateway watcher to deliver.
 
-## Hermes integration assumptions
+## Activation and verification
 
-Design references the Hermes native plugin/toolset and plugin-hook contracts. Hermes documents that `pre_tool_call` hooks may return `{action: block, message: ...}` and that plugin tools/hooks execute in CLI and gateway agent paths.
+Manifest production state:
 
-A later activation PR must still perform a live Kanban worker schema/toolset probe against the installed Hermes version and confirm that `terminal`, `file`, and `code_execution` are absent while this plugin and Kanban lifecycle tools remain available.
+- `installable=true`
+- `activation_status=reviewed-ready`
+
+Required deployment sequence:
+
+1. run the normal profile bootstrap;
+2. run `bash hermes/bootstrap_repository_analyst_isolation.sh`;
+3. run `bash hermes/verify_repository_analyst_isolation.sh --live`;
+4. perform a live dispatcher worker schema probe and confirm only the reviewed repository tools plus Kanban lifecycle tools are present;
+5. confirm generic terminal/process/file/code-execution/delegation capabilities are absent before calling F2 closed.
 
 ## Supply chain
 
-`hermes/plugins/manifest.json` pins every installed plugin file by Git blob content id. `hermes/install_factory_plugins.sh` validates exact source shape and pins before writes, copies only declared files to a temporary directory, and refuses a differing or symlinked installed target.
-
-Production state remains:
-
-- `installable=false`
-- `activation_status=pending-independent-review`
-
-A later activation requires `activation_status=reviewed-ready` plus a separately reviewed profile cutover.
+`hermes/plugins/manifest.json` pins every installed plugin file by Git blob content id. `hermes/install_factory_plugins.sh` validates exact source shape and pins before writes, copies only declared files to a temporary directory, serializes publication, re-hashes the temporary tree and refuses a differing or symlinked installed target.
