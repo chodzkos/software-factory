@@ -34,8 +34,12 @@ if spec.get("source") != expected: raise SystemExit(f"ERROR: plugin source path 
 src=root/spec["source"]
 if src.is_symlink() or not src.is_dir(): raise SystemExit(f"ERROR: invalid plugin source root: {name}")
 pins=spec.get("files")
-if not isinstance(pins,dict) or set(pins) != {"plugin.yaml","__init__.py","repo_map.py","repository_tools.py"}:
+if not isinstance(pins,dict) or not pins or not {"plugin.yaml","__init__.py"}.issubset(pins):
     raise SystemExit(f"ERROR: invalid plugin pin set: {name}")
+for rel in pins:
+    p=pathlib.PurePosixPath(rel)
+    if p.is_absolute() or len(p.parts) != 1 or rel in {"", ".", ".."} or any(part in {".",".."} for part in p.parts):
+        raise SystemExit(f"ERROR: invalid plugin file path: {rel}")
 actual_files=[]; actual_dirs=[]
 for path in src.rglob("*"):
     rel=path.relative_to(src).as_posix()
@@ -53,6 +57,14 @@ for rel,expected_sha in sorted(pins.items()):
 print(spec["source"])
 PY
 )"
+
+mapfile -t plugin_files < <(python3 - "$MANIFEST" "$plugin" <<'PY'
+import json,sys
+manifest=json.load(open(sys.argv[1])); spec=manifest["plugins"][sys.argv[2]]
+for rel in sorted(spec["files"]): print(rel)
+PY
+)
+[[ ${#plugin_files[@]} -gt 0 ]] || { echo "ERROR: no declared plugin files" >&2; exit 1; }
 
 src="$ROOT_DIR/$selection"
 target="$DEST/$plugin"
@@ -100,7 +112,7 @@ fi
 
 tmp="$(mktemp -d "$DEST/.factory-plugin.tmp.XXXXXX")"
 trap 'rm -rf -- "$tmp"' EXIT
-for rel in plugin.yaml __init__.py repo_map.py repository_tools.py; do
+for rel in "${plugin_files[@]}"; do
   cp -- "$src/$rel" "$tmp/$rel"
 done
 
