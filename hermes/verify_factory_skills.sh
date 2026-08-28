@@ -30,39 +30,49 @@ if [[ $# -gt 0 ]]; then
   profile="$2"
   selection="$(python3 - "$ROOT_DIR/skills/manifest.yaml" "$ROOT_DIR/skills/profiles.yaml" "$profile" <<'PY'
 import json,sys
-manifest=json.load(open(sys.argv[1]))
-p=json.load(open(sys.argv[2]))["profiles"]
-name=sys.argv[3]
-if name not in p:
-    raise SystemExit(f"ERROR: unknown profile: {name}")
-for skill in p[name]["required"] + p[name]["optional"]:
-    if skill not in manifest["skills"]:
-        raise SystemExit(f"ERROR: undeclared skill in profile {name}: {skill}")
+manifest=json.load(open(sys.argv[1])); profiles=json.load(open(sys.argv[2]))["profiles"]; name=sys.argv[3]
+if name not in profiles: raise SystemExit(f"ERROR: unknown profile: {name}")
+for skill in profiles[name]["required"] + profiles[name]["optional"]:
+    if skill not in manifest["skills"]: raise SystemExit(f"ERROR: undeclared skill in profile {name}: {skill}")
     spec=manifest["skills"][skill]
     digest=spec.get("upstream", {}).get("sha256", "-")
     print(f"{skill}\t{spec['path']}\t{spec['source']}\t{digest}")
 PY
 )"
-  entries=()
-  if [[ -n "$selection" ]]; then
-    mapfile -t entries <<<"$selection"
-  fi
+  entries=(); [[ -z "$selection" ]] || mapfile -t entries <<<"$selection"
   printf '[check] installed profile skills for %s\n' "$profile"
   for entry in "${entries[@]}"; do
     IFS=$'\t' read -r skill relpath source expected_sha <<<"$entry"
-    src="$ROOT_DIR/$relpath"
-    target="$DEST/$skill"
-    [[ -L "$target" || -L "$target/SKILL.md" ]] && { echo "ERROR: installed skill is symlink: $skill" >&2; exit 1; }
-    [[ -f "$target/SKILL.md" ]] || { echo "ERROR: missing installed skill: $skill" >&2; exit 1; }
+    src="$ROOT_DIR/$relpath"; target="$DEST/$skill"
+    [[ -d "$target" && ! -L "$target" ]] || { echo "ERROR: missing/invalid installed skill: $skill" >&2; exit 1; }
+    if find "$target" -type l -print -quit | grep -q .; then echo "ERROR: installed skill contains symlink: $skill" >&2; exit 1; fi
+    [[ -f "$target/SKILL.md" && ! -L "$target/SKILL.md" ]] || { echo "ERROR: missing installed SKILL.md: $skill" >&2; exit 1; }
     if [[ "$source" == "upstream-vendored" ]]; then
       mapfile -t target_entries < <(find "$target" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort)
       [[ ${#target_entries[@]} -eq 1 && "${target_entries[0]}" == "SKILL.md" ]] || { echo "ERROR: installed upstream skill contains unexpected files: $skill" >&2; exit 1; }
       actual_sha="$(python3 - "$target/SKILL.md" <<'PY'
-import hashlib, pathlib, sys
+import hashlib,pathlib,sys
 print(hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest())
 PY
 )"
       [[ "$actual_sha" == "$expected_sha" ]] || { echo "ERROR: installed upstream skill digest drift: $skill" >&2; exit 1; }
+    elif [[ "$source" == "custom-multifile" ]]; then
+      python3 - "$ROOT_DIR/skills/manifest.yaml" "$target" "$skill" <<'PY'
+import hashlib,json,pathlib,sys
+manifest=json.load(open(sys.argv[1])); root=pathlib.Path(sys.argv[2]); name=sys.argv[3]; spec=manifest["skills"][name]
+def blob_sha(data): return hashlib.sha1(b"blob "+str(len(data)).encode()+b"\0"+data).hexdigest()
+actual=[]
+for path in root.rglob("*"):
+    rel=path.relative_to(root).as_posix()
+    if path.is_symlink(): raise SystemExit(f"ERROR: installed multifile symlink: {name}/{rel}")
+    if path.is_file(): actual.append(rel)
+    elif not path.is_dir(): raise SystemExit(f"ERROR: installed multifile non-regular: {name}/{rel}")
+declared=sorted(spec["files"])
+if sorted(actual) != declared: raise SystemExit(f"ERROR: installed multifile tree drift: {name}: actual={sorted(actual)} declared={declared}")
+for rel in declared:
+    data=(root/rel).read_bytes(); expected=spec["files"][rel]["git_blob_sha1"]; got=blob_sha(data)
+    if got != expected: raise SystemExit(f"ERROR: installed multifile blob drift: {name}/{rel}: {got} != {expected}")
+PY
     else
       diff -qr "$src" "$target" >/dev/null || { echo "ERROR: installed skill drift: $skill" >&2; exit 1; }
     fi
@@ -70,8 +80,4 @@ PY
   done
 fi
 
-if [[ "$INSTALLED_ONLY" == "1" ]]; then
-  echo 'FACTORY_SKILLS_INSTALLED_OK'
-else
-  echo 'FACTORY_SKILLS_VERIFY_OK'
-fi
+if [[ "$INSTALLED_ONLY" == "1" ]]; then echo 'FACTORY_SKILLS_INSTALLED_OK'; else echo 'FACTORY_SKILLS_VERIFY_OK'; fi
