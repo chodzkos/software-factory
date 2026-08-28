@@ -1,4 +1,4 @@
-# Software Factory Skills v0.9
+# Software Factory Skills v0.9 activation infrastructure
 
 This directory is the task-level skill layer for Software Factory.
 
@@ -13,41 +13,52 @@ Skills do not orchestrate Kanban, create parallel review tasks, weaken runtime g
 
 ## v0.9 scope
 
-v0.9 activates the reviewed Factory-owned `factory-repo-map` fork for **`repository-analyst` only**. The raw upstream `repo-map` remains byte-identical, non-installable audit material under `skills/upstream/repo-map/`.
+v0.9 adds reviewed **multi-file skill infrastructure** and preserves the Factory-owned `factory-repo-map` fork as a pinned activation candidate. Runtime activation is intentionally blocked after independent review found that Hermes 0.20.4 gives `repository-analyst` unrestricted local terminal/code execution, so dispatcher environment variables cannot serve as a tamper-proof workspace authority boundary.
 
-`factory-repo-map` is a `custom-multifile` skill. Its runtime tree is explicitly pinned in `manifest.yaml` and contains:
+Production state for `factory-repo-map`:
+
+- `source=custom-multifile`,
+- `installable=false`,
+- `activation_status=blocked-on-runtime-isolation`,
+- `profiles=[]`,
+- absent from every profile grant,
+- skipped by installer `--all`.
+
+The raw upstream `repo-map` remains byte-identical, non-installable audit material under `skills/upstream/repo-map/`.
+
+## Multi-file candidate tree
+
+`factory-repo-map` retains an explicitly pinned candidate tree in `manifest.yaml`:
 
 - `SKILL.md`
 - `REVIEW.md`
 - `scripts/repo_map.py`
 - `scripts/run_repo_map.py`
 
-The installer validates the exact tree and each Git blob content pin before writes, copies only declared files, rejects symlinks/extra/missing files, and the installed-state verifier repeats the exact-tree/content checks.
+The generic `custom-multifile` installer validates declared file paths and Git blob content pins before writes, copies only declared files, and rejects file drift/symlinks/missing/extra files. The installed-state verifier repeats the file/content checks. Adversarial tests exercise this machinery in an isolated temporary manifest fixture without enabling the production candidate.
 
-## Authoritative Kanban binding
+## Why runtime activation is blocked
 
-Autonomous workers must invoke only `scripts/run_repo_map.py`. The binder does not accept a workspace argument. It uses dispatcher-injected worker environment:
+PR #17 activation review found two HIGH authority issues in the autonomous runtime model:
 
-- `HERMES_KANBAN_TASK`
-- `HERMES_KANBAN_WORKSPACE`
-- `HERMES_PROFILE`
+1. option-shaped target injection into argparse; this is now fixed by rejecting targets beginning with `-` and inserting `--` before the target,
+2. unrestricted `repository-analyst` terminal/code execution can still override `HERMES_KANBAN_*` for a child process or invoke `repo_map.py --workspace ...` directly.
 
-The binder requires `HERMES_PROFILE=repository-analyst`, requires an absolute dispatcher workspace, and passes fixed Factory safety limits to the mapper. A missing dispatcher binding fails closed. The model can provide only an optional workspace-relative target such as `.` or `src`.
+The second issue cannot be solved by skill text or an approval-oriented command allowlist. Runtime activation requires a separate mechanically isolated surface, such as a future deny-by-default command mode, dedicated Hermes tool/plugin, or OS-level sandbox that exposes only the assigned workspace.
 
-The raw `scripts/repo_map.py --workspace ...` interface exists as the reviewed low-level implementation and test surface; the skill contract forbids direct autonomous invocation.
+Until that boundary exists, `run_repo_map.py` is defense-in-depth infrastructure only, not a security authority boundary.
 
 ## Existing runtime skills
 
 - `bug-diagnosis` — vetted pinned upstream, coder optional.
 - `factory-tdd-workflow` — Factory adapter, coder optional.
 - `factory-ai-code-review` — Factory adapter, quick-reviewer/critic optional.
-- `factory-repo-map` — Factory-owned secure multi-file fork, repository-analyst optional.
 
-Raw upstream `tdd-workflow`, `ai-code-review`, and `repo-map` remain audit references and are not runtime skills.
+Raw upstream `tdd-workflow`, `ai-code-review`, and `repo-map` remain audit references and are not runtime skills. `factory-repo-map` is also not a runtime skill yet.
 
 ## Layout
 
-- `manifest.yaml` — inventory, profile grants, source types, content pins, upstream references.
+- `manifest.yaml` — inventory, profile grants, source types, content pins, upstream references and disabled candidates.
 - `profiles.yaml` — minimum profile→skill policy.
 - `custom/` — Factory-owned skills/adapters/forks.
 - `upstream/` — pinned upstream source material and vetting/review records.
@@ -60,8 +71,9 @@ Raw upstream `tdd-workflow`, `ai-code-review`, and `repo-map` remain audit refer
 - Runtime installation performs no network acquisition.
 - Unknown/moving upstream content is never fetched by the installer.
 - Single-file custom/upstream skills retain their one-`SKILL.md` source contract.
-- `custom-multifile` requires an exact declared file tree and per-file content pins.
-- Source/target symlinks, extra files, missing files, pin drift and differing pre-existing installs fail closed.
+- `custom-multifile` candidates require an explicit declared file set and per-file content pins.
+- Source/target symlinks, missing/extra files and pin drift fail closed for selected installable skills.
+- `installable=false` entries are excluded from `--all`; a profile referencing one fails closed.
 - Full selection preflight happens before the first install write.
 
 ## Design rules
