@@ -34,6 +34,24 @@ profile=sys.argv[4]
 install_all=sys.argv[5] == "1"
 policy=manifest["upstream_policy"]
 allowlist=set(policy.get("repository_allowlist", []))
+
+def blob_sha(data: bytes) -> str:
+    return hashlib.sha1(b"blob " + str(len(data)).encode() + b"\0" + data).hexdigest()
+
+def regular_tree(src: pathlib.Path):
+    if src.is_symlink() or not src.is_dir():
+        raise SystemExit(f"ERROR: invalid multifile source root: {src}")
+    files=[]
+    for path in src.rglob("*"):
+        rel=path.relative_to(src).as_posix()
+        if path.is_symlink():
+            raise SystemExit(f"ERROR: symlink multifile source refused: {rel}")
+        if path.is_file():
+            files.append(rel)
+        elif not path.is_dir():
+            raise SystemExit(f"ERROR: non-regular multifile source refused: {rel}")
+    return sorted(files)
+
 if install_all:
     names=sorted(manifest["skills"])
 else:
@@ -41,6 +59,7 @@ else:
         raise SystemExit(f"ERROR: unknown profile: {profile}")
     p=profiles["profiles"][profile]
     names=sorted(set(p["required"] + p["optional"]))
+
 for name in names:
     if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", name):
         raise SystemExit(f"ERROR: invalid skill name: {name!r}")
@@ -59,6 +78,26 @@ for name in names:
         entries=sorted(p.name for p in src.iterdir())
         if entries != ["SKILL.md"]:
             raise SystemExit(f"ERROR: custom skill directory must contain only SKILL.md for {name}: {entries}")
+    elif source == "custom-multifile":
+        expected=f"skills/custom/{name}"
+        if spec.get("path") != expected:
+            raise SystemExit(f"ERROR: custom multifile path mismatch for {name}: {spec.get('path')!r}")
+        pins=spec.get("files")
+        if not isinstance(pins, dict) or not pins or "SKILL.md" not in pins:
+            raise SystemExit(f"ERROR: invalid custom multifile pin set: {name}")
+        src=root/spec["path"]
+        declared=sorted(pins)
+        actual=regular_tree(src)
+        if actual != declared:
+            raise SystemExit(f"ERROR: custom multifile tree mismatch for {name}: actual={actual} declared={declared}")
+        for rel in declared:
+            pin=pins[rel]
+            if not isinstance(pin, dict) or not re.fullmatch(r"[0-9a-f]{40}", str(pin.get("git_blob_sha1", ""))):
+                raise SystemExit(f"ERROR: invalid git blob pin for {name}/{rel}")
+            data=(src/rel).read_bytes()
+            actual_sha=blob_sha(data)
+            if actual_sha != pin["git_blob_sha1"]:
+                raise SystemExit(f"ERROR: custom multifile blob mismatch for {name}/{rel}: {actual_sha} != {pin['git_blob_sha1']}")
     elif source == "upstream-vendored":
         if not policy.get("enabled") or policy.get("mode") != "vendored-only" or policy.get("network_install") is not False:
             raise SystemExit("ERROR: upstream policy is not vendored-only fail-closed")
@@ -101,17 +140,11 @@ for name in names:
 PY
 )"
 entries=()
-if [[ -n "$selection" ]]; then
-  mapfile -t entries <<<"$selection"
-fi
-skills=()
-relpaths=()
-sources=()
+if [[ -n "$selection" ]]; then mapfile -t entries <<<"$selection"; fi
+skills=(); relpaths=(); sources=()
 for entry in "${entries[@]}"; do
   IFS=$'\t' read -r skill relpath source <<<"$entry"
-  skills+=("$skill")
-  relpaths+=("$relpath")
-  sources+=("$source")
+  skills+=("$skill"); relpaths+=("$relpath"); sources+=("$source")
 done
 
 echo "Target: $DEST"
@@ -119,22 +152,19 @@ echo "Skills: ${skills[*]:-(none)}"
 
 # Preflight the complete selection before the first write.
 for i in "${!skills[@]}"; do
-  skill="${skills[$i]}"
-  src="$ROOT_DIR/${relpaths[$i]}"
-  source="${sources[$i]}"
-  target="$DEST/$skill"
-  [[ -f "$src/SKILL.md" ]] || { echo "ERROR: missing source skill: $src/SKILL.md" >&2; exit 1; }
-  [[ ! -L "$src" && ! -L "$src/SKILL.md" ]] || { echo "ERROR: refusing symlink skill source: $skill" >&2; exit 1; }
-  mapfile -t source_entries < <(find "$src" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort)
-  [[ ${#source_entries[@]} -eq 1 && "${source_entries[0]}" == "SKILL.md" ]] || { echo "ERROR: skill source must contain only SKILL.md: $skill" >&2; exit 1; }
-  if [[ -L "$target" || -L "$target/SKILL.md" ]]; then
-    echo "ERROR: refusing symlink installed target: $target" >&2
-    exit 1
+  skill="${skills[$i]}"; src="$ROOT_DIR/${relpaths[$i]}"; source="${sources[$i]}"; target="$DEST/$skill"
+  [[ ! -L "$src" ]] || { echo "ERROR: refusing symlink skill source: $skill" >&2; exit 1; }
+  if [[ "$source" != "custom-multifile" ]]; then
+    [[ -f "$src/SKILL.md" && ! -L "$src/SKILL.md" ]] || { echo "ERROR: invalid source SKILL.md: $skill" >&2; exit 1; }
+    mapfile -t source_entries < <(find "$src" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort)
+    [[ ${#source_entries[@]} -eq 1 && "${source_entries[0]}" == "SKILL.md" ]] || { echo "ERROR: single-file source must contain only SKILL.md: $skill" >&2; exit 1; }
+  else
+    if find "$src" -type l -print -quit | grep -q .; then echo "ERROR: refusing symlink multifile source: $skill" >&2; exit 1; fi
   fi
   if [[ -e "$target" ]]; then
-    if [[ -d "$target" ]] && diff -qr "$src" "$target" >/dev/null; then
-      continue
-    fi
+    [[ -d "$target" && ! -L "$target" ]] || { echo "ERROR: invalid installed target: $target" >&2; exit 1; }
+    if find "$target" -type l -print -quit | grep -q .; then echo "ERROR: refusing symlink in installed target: $target" >&2; exit 1; fi
+    if diff -qr "$src" "$target" >/dev/null; then continue; fi
     echo "ERROR: existing installed skill differs: $target" >&2
     echo "Refusing to overwrite. Inspect/remove or migrate it explicitly." >&2
     exit 1
@@ -144,31 +174,34 @@ done
 if [[ $dry -eq 1 ]]; then
   for skill in "${skills[@]}"; do
     target="$DEST/$skill"
-    if [[ -d "$target" ]]; then
-      echo "OK unchanged: $skill"
-    else
-      echo "WOULD_INSTALL: $skill"
-    fi
+    if [[ -d "$target" ]]; then echo "OK unchanged: $skill"; else echo "WOULD_INSTALL: $skill"; fi
   done
   echo "FACTORY_SKILLS_INSTALL_OK"
   exit 0
 fi
 
 mkdir -p "$DEST"
-
 for i in "${!skills[@]}"; do
-  skill="${skills[$i]}"
-  src="$ROOT_DIR/${relpaths[$i]}"
-  target="$DEST/$skill"
-
-  if [[ -d "$target" ]]; then
-    echo "OK unchanged: $skill"
-    continue
-  fi
-
+  skill="${skills[$i]}"; src="$ROOT_DIR/${relpaths[$i]}"; source="${sources[$i]}"; target="$DEST/$skill"
+  if [[ -d "$target" ]]; then echo "OK unchanged: $skill"; continue; fi
   tmp="$(mktemp -d "$DEST/.factory-skill.tmp.XXXXXX")"
   trap 'rm -rf -- "$tmp"' EXIT
-  cp -- "$src/SKILL.md" "$tmp/SKILL.md"
+  if [[ "$source" == "custom-multifile" ]]; then
+    python3 - "$ROOT_DIR" "$MANIFEST" "$skill" "$tmp" <<'PY'
+import hashlib,json,pathlib,sys
+root=pathlib.Path(sys.argv[1]); manifest=json.load(open(sys.argv[2])); name=sys.argv[3]; dest=pathlib.Path(sys.argv[4])
+spec=manifest["skills"][name]; src=root/spec["path"]
+def blob_sha(data): return hashlib.sha1(b"blob "+str(len(data)).encode()+b"\0"+data).hexdigest()
+for rel,pin in sorted(spec["files"].items()):
+    source=src/rel
+    if source.is_symlink() or not source.is_file(): raise SystemExit(f"ERROR: invalid multifile source during copy: {rel}")
+    data=source.read_bytes()
+    if blob_sha(data) != pin["git_blob_sha1"]: raise SystemExit(f"ERROR: multifile source drift during copy: {rel}")
+    target=dest/rel; target.parent.mkdir(parents=True,exist_ok=True); target.write_bytes(data)
+PY
+  else
+    cp -- "$src/SKILL.md" "$tmp/SKILL.md"
+  fi
   mv -- "$tmp" "$target"
   trap - EXIT
   echo "INSTALLED: $skill"
