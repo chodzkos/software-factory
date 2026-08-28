@@ -1,6 +1,6 @@
 {
-  "schema_version": 4,
-  "factory_version": "0.8-multifile-reference",
+  "schema_version": 5,
+  "factory_version": "0.9-repo-map-activation-infra",
   "authority": [
     "standards/SOFTWARE_DEVELOPMENT_STANDARD.md",
     "workflows/KANBAN_CONTRACT.md",
@@ -17,6 +17,20 @@
     "task-skill-router": {"source":"custom","path":"skills/custom/task-skill-router","profiles":["task-decomposer"],"sha_sensitive":false},
     "factory-tdd-workflow": {"source":"custom","path":"skills/custom/factory-tdd-workflow","profiles":["coder"],"sha_sensitive":true},
     "factory-ai-code-review": {"source":"custom","path":"skills/custom/factory-ai-code-review","profiles":["quick-reviewer","critic"],"sha_sensitive":true},
+    "factory-repo-map": {
+      "source":"custom-multifile",
+      "path":"skills/custom/factory-repo-map",
+      "profiles":[],
+      "installable":false,
+      "activation_status":"blocked-on-runtime-isolation",
+      "sha_sensitive":false,
+      "files": {
+        "SKILL.md":{"git_blob_sha1":"5f643da71857fddb396dfa3b81bc0b53e16693cd"},
+        "REVIEW.md":{"git_blob_sha1":"b740c03427095a6ba38dcef00352288c7ef291e8"},
+        "scripts/repo_map.py":{"git_blob_sha1":"ce7718e0879600631e84a4e44f9c7f97842af9cc"},
+        "scripts/run_repo_map.py":{"git_blob_sha1":"cb0701b5b4a8ede32082e026e377e4134e1d7885"}
+      }
+    },
     "bug-diagnosis": {
       "source":"upstream-vendored",
       "path":"skills/upstream/bug-diagnosis",
@@ -35,11 +49,12 @@
       "local_path":"skills/upstream/repo-map",
       "installable":false,
       "vetted":false,
-      "review_status":"pending-helper-review",
+      "review_status":"replaced-by-factory-fork",
       "files": {
         "SKILL.md":"9d6923145b22099e604b2ea3888e6f59d215cf98c8c87e00f41c98f5db01c7e0",
         "scripts/repo_map.py":"bf4ccffe145eb9361f60c32aa74c13294a58890e5a2918572dacb3f9f153962d"
-      }
+      },
+      "adapter":"factory-repo-map"
     }
   },
   "upstream_policy": {

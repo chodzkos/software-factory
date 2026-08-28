@@ -32,8 +32,8 @@ class FactorySkillTests(unittest.TestCase):
         for name, spec in self.manifest["skills"].items():
             self.assertRegex(name, r"^[a-z0-9][a-z0-9-]*$")
             source = spec["source"]
-            self.assertIn(source, {"custom", "upstream-vendored"})
-            expected_root = "custom" if source == "custom" else "upstream"
+            self.assertIn(source, {"custom", "custom-multifile", "upstream-vendored"})
+            expected_root = "upstream" if source == "upstream-vendored" else "custom"
             self.assertEqual(spec["path"], f"skills/{expected_root}/{name}")
             skill = ROOT / spec["path"] / "SKILL.md"
             self.assertTrue(skill.is_file(), f"missing {name}: {skill}")
@@ -45,10 +45,7 @@ class FactorySkillTests(unittest.TestCase):
         self.assertEqual(policy["mode"], "vendored-only")
         self.assertFalse(policy["network_install"])
         self.assertEqual(policy["repository_allowlist"], [UPSTREAM_REPOSITORY])
-        self.assertEqual(
-            policy["required_fields_when_enabled"],
-            ["repository", "commit", "path", "sha256", "vetted"],
-        )
+        self.assertEqual(policy["required_fields_when_enabled"], ["repository", "commit", "path", "sha256", "vetted"])
 
     def test_upstream_bytes_are_exactly_pinned(self):
         for name, digest in UPSTREAM_DIGESTS.items():
@@ -58,11 +55,7 @@ class FactorySkillTests(unittest.TestCase):
             self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), digest, name)
 
     def test_only_conflict_free_upstream_is_installable(self):
-        upstream = {
-            name: spec
-            for name, spec in self.manifest["skills"].items()
-            if spec["source"] == "upstream-vendored"
-        }
+        upstream = {name: spec for name, spec in self.manifest["skills"].items() if spec["source"] == "upstream-vendored"}
         self.assertEqual(set(upstream), {"bug-diagnosis"})
         spec = upstream["bug-diagnosis"]
         provenance = spec["upstream"]
@@ -77,10 +70,7 @@ class FactorySkillTests(unittest.TestCase):
     def test_conflicting_upstream_is_reference_only_with_adapters(self):
         refs = self.manifest["upstream_references"]
         self.assertEqual(set(refs), {"tdd-workflow", "ai-code-review", "repo-map"})
-        for name, adapter in {
-            "tdd-workflow": "factory-tdd-workflow",
-            "ai-code-review": "factory-ai-code-review",
-        }.items():
+        for name, adapter in {"tdd-workflow": "factory-tdd-workflow", "ai-code-review": "factory-ai-code-review"}.items():
             ref = refs[name]
             self.assertFalse(ref["installable"])
             self.assertEqual(ref["adapter"], adapter)
@@ -92,8 +82,10 @@ class FactorySkillTests(unittest.TestCase):
         repo_map = refs["repo-map"]
         self.assertFalse(repo_map["installable"])
         self.assertFalse(repo_map["vetted"])
-        self.assertEqual(repo_map["review_status"], "pending-helper-review")
+        self.assertEqual(repo_map["review_status"], "replaced-by-factory-fork")
+        self.assertEqual(repo_map["adapter"], "factory-repo-map")
         self.assertNotIn("repo-map", self.manifest["skills"])
+        self.assertIn("factory-repo-map", self.manifest["skills"])
 
     def test_profile_references_are_declared(self):
         declared = set(self.manifest["skills"])
@@ -101,6 +93,7 @@ class FactorySkillTests(unittest.TestCase):
             for skill in policy["required"] + policy["optional"]:
                 self.assertIn(skill, declared, f"{profile}: undeclared {skill}")
                 self.assertIn(profile, self.manifest["skills"][skill]["profiles"])
+                self.assertIsNot(self.manifest["skills"][skill].get("installable", True), False)
 
     def test_first_upstream_batch_is_least_privilege(self):
         profiles = self.profiles["profiles"]
@@ -113,6 +106,18 @@ class FactorySkillTests(unittest.TestCase):
         for privileged in ("orchestrator", "runtime-controller", "release-manager", "task-decomposer"):
             granted = set(profiles[privileged]["required"] + profiles[privileged]["optional"])
             self.assertFalse({"bug-diagnosis", "factory-tdd-workflow", "factory-ai-code-review"} & granted, privileged)
+
+    def test_factory_repo_map_activation_is_fail_closed(self):
+        spec = self.manifest["skills"]["factory-repo-map"]
+        self.assertEqual(spec["source"], "custom-multifile")
+        self.assertEqual(spec["profiles"], [])
+        self.assertIs(spec["installable"], False)
+        self.assertEqual(spec["activation_status"], "blocked-on-runtime-isolation")
+        for profile, policy in self.profiles["profiles"].items():
+            self.assertNotIn("factory-repo-map", policy["required"] + policy["optional"], profile)
+        self.assertEqual(set(spec["files"]), {"SKILL.md", "REVIEW.md", "scripts/repo_map.py", "scripts/run_repo_map.py"})
+        for rel, pin in spec["files"].items():
+            self.assertRegex(pin["git_blob_sha1"], r"^[0-9a-f]{40}$", rel)
 
     def test_tdd_adapter_overrides_commit_per_green(self):
         text = (SKILLS / "custom" / "factory-tdd-workflow" / "SKILL.md").read_text()
@@ -128,7 +133,6 @@ class FactorySkillTests(unittest.TestCase):
         self.assertIn("kanban_request_changes", text)
         self.assertIn("severity: LOW|MEDIUM|HIGH|CRITICAL", text)
         self.assertIn("approve with required fixes", text)
-
         sys.path.insert(0, str(ROOT / "hermes"))
         try:
             from review_decision import parse_review
@@ -152,8 +156,7 @@ class FactorySkillTests(unittest.TestCase):
         self.assertNotIn("pr-merge-gate", release["optional"])
         self.assertEqual(self.manifest["skills"]["pr-merge-gate"]["profiles"], ["release-manager"])
         for profile, policy in self.profiles["profiles"].items():
-            if profile == "release-manager":
-                continue
+            if profile == "release-manager": continue
             self.assertNotIn("pr-merge-gate", policy["required"] + policy["optional"])
 
     def test_workspace_skill_forbids_second_worktree(self):
@@ -188,7 +191,8 @@ class FactorySkillTests(unittest.TestCase):
         self.assertIn("spec['source']", text)
         self.assertIn("installed profile skills", text)
         self.assertIn("installed upstream skill digest drift", text)
-        self.assertIn("installed skill is symlink", text)
+        self.assertIn("installed skill contains symlink", text)
+        self.assertIn("installed multifile blob drift", text)
 
     def test_routing_scenarios_fit_profile_policy(self):
         profile_map = self.profiles["profiles"]

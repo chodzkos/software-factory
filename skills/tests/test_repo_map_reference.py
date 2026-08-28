@@ -29,9 +29,14 @@ class RepoMapReferenceTests(unittest.TestCase):
         self.assertEqual(ref["local_path"], "skills/upstream/repo-map")
         self.assertFalse(ref["installable"])
         self.assertFalse(ref["vetted"])
-        self.assertEqual(ref["review_status"], "pending-helper-review")
+        self.assertEqual(ref["review_status"], "replaced-by-factory-fork")
+        self.assertEqual(ref["adapter"], "factory-repo-map")
         self.assertEqual(ref["files"], EXPECTED_FILES)
         self.assertNotIn("repo-map", MANIFEST["skills"])
+        candidate = MANIFEST["skills"]["factory-repo-map"]
+        self.assertIs(candidate["installable"], False)
+        self.assertEqual(candidate["profiles"], [])
+        self.assertEqual(candidate["activation_status"], "blocked-on-runtime-isolation")
 
     def test_reference_tree_has_only_allowlisted_regular_files(self):
         self.assertTrue(REPO_MAP.is_dir())
@@ -57,65 +62,28 @@ class RepoMapReferenceTests(unittest.TestCase):
         text = HELPER.read_text()
         for required in ("import argparse, os, re, sys", "os.walk", "open(fp", "errors=\"replace\""):
             self.assertIn(required, text)
-        for forbidden in (
-            "subprocess",
-            "socket",
-            "urllib",
-            "requests",
-            "http.client",
-            "shutil.rmtree",
-            "os.remove",
-            "os.unlink",
-            "os.rename",
-            "os.replace",
-            "os.system",
-            "eval(",
-            "exec(",
-        ):
+        for forbidden in ("subprocess", "socket", "urllib", "requests", "http.client", "shutil.rmtree", "os.remove", "os.unlink", "os.rename", "os.replace", "os.system", "eval(", "exec("):
             self.assertNotIn(forbidden, text)
 
-    def test_helper_root_generated_dir_skip_defect_is_pinned_pending_review(self):
-        """Pin the observed upstream bug; do not silently pretend it is fixed."""
+    def test_helper_skip_defect_remains_pinned_in_raw_reference(self):
+        """Raw upstream remains unsafe audit material; Factory fork is also runtime-disabled pending isolation."""
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            (root / "src").mkdir()
-            (root / ".git").mkdir()
-            (root / "node_modules").mkdir()
+            (root / "src").mkdir(); (root / ".git").mkdir(); (root / "node_modules").mkdir()
             (root / "src" / "app.py").write_text("def alpha():\n    return 1\n\nclass Beta:\n    pass\n")
             (root / ".git" / "secret.py").write_text("def hidden_git(): pass\n")
             (root / "node_modules" / "hidden.js").write_text("function hidden_module() {}\n")
-
-            run = subprocess.run(
-                [sys.executable, str(HELPER), str(root), "--max-files", "20", "--max-symbols", "8"],
-                check=True,
-                text=True,
-                capture_output=True,
-                timeout=10,
-            )
+            run = subprocess.run([sys.executable, str(HELPER), str(root), "--max-files", "20", "--max-symbols", "8"], check=True, text=True, capture_output=True, timeout=10)
             out = run.stdout
-            self.assertIn("app.py", out)
-            self.assertIn("alpha", out)
-            self.assertIn("Beta", out)
-            # Current upstream helper incorrectly traverses generated dirs that are
-            # themselves the os.walk root. Keeping this assertion makes the defect
-            # explicit while repo-map remains installable=false/vetted=false.
-            self.assertIn("secret.py", out)
-            self.assertIn("hidden_git", out)
-            self.assertIn("node_modules", out)
-            self.assertIn("hidden_module", out)
+            self.assertIn("app.py", out); self.assertIn("alpha", out); self.assertIn("Beta", out)
+            self.assertIn("secret.py", out); self.assertIn("hidden_git", out); self.assertIn("node_modules", out); self.assertIn("hidden_module", out)
 
     def test_helper_max_files_guard_truncates(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             for index in range(3):
                 (root / f"f{index}.py").write_text(f"def f{index}(): pass\n")
-            run = subprocess.run(
-                [sys.executable, str(HELPER), str(root), "--max-files", "1"],
-                check=True,
-                text=True,
-                capture_output=True,
-                timeout=10,
-            )
+            run = subprocess.run([sys.executable, str(HELPER), str(root), "--max-files", "1"], check=True, text=True, capture_output=True, timeout=10)
             self.assertIn("truncated at 1 files", run.stdout)
 
 

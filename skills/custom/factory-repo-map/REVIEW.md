@@ -1,71 +1,69 @@
-# Factory repo-map review gate
+# Factory repo-map activation infrastructure
 
-Status: **FACTORY-OWNED FORK — REVIEW ONLY — NOT INSTALLABLE — NO PROFILE GRANT**
+Status: **FACTORY-OWNED FORK — RUNTIME ACTIVATION BLOCKED**
 
-This implementation exists to close the activation findings found in the pinned upstream `repo-map` review. It is intentionally absent from `skills/manifest.yaml` and all profile grants in this PR.
+The raw upstream `repo-map` remains byte-identical audit material under `skills/upstream/repo-map/` and remains non-installable. PR #16 produced a reviewed Factory-owned fork. PR #17 originally attempted activation, but exact-SHA activation review found two HIGH workspace-authority bypasses in the autonomous runtime model.
 
-## Findings this fork must close
+## Why activation remains blocked
 
-The raw upstream helper remains under `skills/upstream/repo-map/` as byte-identical audit material. Independent review classified activation as `FACTORY_FORK_REQUIRED` because the raw helper:
+Hermes 0.20.4 gives `repository-analyst` unrestricted local terminal/code execution. In that environment:
 
-1. defeats directory pruning via `sorted(os.walk(...))`,
-2. accepts arbitrary readable paths outside the Kanban workspace,
-3. follows file symlinks outside the mapped tree,
-4. does not bound individual or total bytes and materializes an unbounded walk,
-5. reads non-dot secret/binary-like files,
-6. prints absolute paths and unsanitized control characters.
+- a worker can launch a child with modified `HERMES_KANBAN_WORKSPACE`,
+- a worker can invoke `scripts/repo_map.py --workspace ...` directly,
+- dispatcher environment therefore cannot be treated as a tamper-proof security boundary.
 
-## Fork contract
+Hermes' current ordinary-session `command_allowlist` is approval-oriented rather than deny-by-default. Until Factory has a mechanically isolated repo-map tool surface (for example a future deny-by-default terminal mode, dedicated tool/plugin, or OS-level sandbox that exposes only the assigned workspace), no profile receives this skill.
 
-`factory-repo-map/scripts/repo_map.py` must:
+Production manifest state must remain:
 
-- require `--workspace` and treat it as the authoritative Kanban-assigned workspace,
-- reject a symlink workspace argument,
-- accept only workspace-relative targets,
-- reject target symlinks and targets resolving outside the workspace,
-- refuse hidden/generated target roots,
-- prune hidden/generated/vendor directories during live `os.walk`,
-- reject file and directory symlink traversal,
-- use a source-code extension allowlist,
-- skip secret-like names and binary-like content,
-- enforce maximum directories visited, filenames examined, bytes per file and total bytes,
-- stop traversal when hard limits are reached,
-- emit workspace-relative paths only,
-- sanitize control characters in emitted filenames,
-- remain stdlib-only, read-only, deterministic and non-executing.
+- `installable=false`,
+- `activation_status=blocked-on-runtime-isolation`,
+- `profiles=[]`,
+- absent from all profile required/optional lists,
+- skipped by installer `--all`.
 
-## Default ceilings
+## Candidate binder hardening
 
-- 500 filenames examined
-- 2000 directories visited
-- 1 MiB per file
-- 8 MiB total accepted source bytes
-- 12 symbols per supported file
+`run_repo_map.py` is retained as reviewed activation infrastructure, not as an authority boundary. It:
 
-## Review/activation separation
+- requires `HERMES_KANBAN_TASK`,
+- requires absolute `HERMES_KANBAN_WORKSPACE`,
+- requires `HERMES_PROFILE=repository-analyst`,
+- rejects empty and option-shaped targets,
+- accepts at most one workspace-relative target,
+- inserts `--` before forwarding the target to argparse,
+- fixes Factory limits,
+- disables bytecode writes before importing the mapper.
 
-This PR does not modify:
+This closes the activation review's F1 target-option injection but does not by itself close F2 unrestricted-terminal bypass.
 
-- `skills/manifest.yaml`,
-- `skills/profiles.yaml`,
-- `hermes/install_factory_skills.sh`,
-- runtime-controller/Kanban routing.
+## Multi-file infrastructure contract
 
-`factory-repo-map` therefore cannot be selected by `--all` or any profile. A later activation PR must separately design multi-file custom installation, per-file integrity pins, installed-state verification and a least-privilege profile grant.
+The manifest retains this candidate as `custom-multifile` with exact per-file Git-blob pins. Generic installer/verifier support is tested in an isolated fixture where a temporary manifest copy enables the candidate; production policy never enables it.
 
-## Security tests
+Installer/verifier infrastructure must:
 
-`skills/tests/test_factory_repo_map.py` pins:
+- reject source or target symlinks,
+- reject missing or extra declared files,
+- verify each declared file pin before writes,
+- copy only declared files into a temp directory,
+- preserve nested relative paths,
+- refuse overwrite of a differing installed skill,
+- verify installed file pins,
+- complete preflight before the first install write.
 
-- no manifest/profile exposure,
-- generated/hidden directory pruning at all depths,
-- refusal of generated/hidden roots,
-- absolute/parent path escape rejection,
-- workspace/target/file/directory symlink rejection,
-- file and directory traversal limits,
-- per-file and total-byte limits,
-- secret/non-code/binary filtering,
-- relative sanitized output,
-- deterministic behavior and absence of execution/network primitives.
+Extra empty-directory exact-tree detection is LOW hardening and remains visible for follow-up; no undeclared file content is copied.
 
-Do not mark this implementation installable until an independent exact-SHA adversarial review approves this contract.
+## Mapper invariants retained from PR #16
+
+- bounded `os.scandir` traversal,
+- target-component hidden/generated and symlink refusal,
+- workspace containment relative to the supplied root,
+- source extension allowlist,
+- secret/non-code/binary/invalid-UTF8 filtering,
+- hard ceilings,
+- `O_NOFOLLOW` leaf open when available + regular-file `fstat`,
+- relative prefixed output and control sanitization,
+- no discovered-code execution, shell, network, or repository mutation.
+
+Do not grant or install this skill for autonomous runtime until a separate exact-SHA review proves the new runtime isolation boundary mechanically prevents workspace/env/direct-helper bypass.

@@ -1,11 +1,11 @@
 ---
 name: factory-repo-map
-description: "Factory-owned secure repo mapper derived from the reviewed upstream repo-map concept. Review-only in this PR: not in manifest.skills and not granted to any profile."
+description: "Factory-owned secure repository mapper candidate. Runtime activation is blocked until Hermes provides a mechanically isolated invocation surface; raw upstream repo-map remains audit-only."
 ---
 
 # Factory Repo Map
 
-This is a Factory-owned implementation of the useful navigation idea from the pinned upstream `repo-map`, rewritten to satisfy Software Factory security and workspace contracts.
+Factory-owned secure repository index derived from the reviewed upstream `repo-map` concept.
 
 ## Authority
 
@@ -15,49 +15,56 @@ This skill never chooses or expands its own workspace authority.
 
 ## Activation state
 
-**REVIEW ONLY — NOT INSTALLABLE — NO PROFILE GRANT.**
+**NOT INSTALLABLE — NO PROFILE GRANT — BLOCKED ON RUNTIME ISOLATION.**
 
-The implementation must pass independent exact-SHA review before any manifest/profile/installer activation PR. Do not invoke the pinned raw upstream `repo-map` helper for Factory runtime use.
+PR #17 activation review found that Hermes 0.20.4 `repository-analyst` has unrestricted local terminal/code execution. In that runtime, dispatcher environment variables are not a tamper-proof authority boundary because an autonomous worker can spawn a child with changed `HERMES_KANBAN_*` values or invoke the mapper module directly.
 
-## Required invocation contract
+Therefore this candidate stays out of every profile and is skipped by `--all` until a separate reviewed runtime mechanism can expose only a narrow repo-map operation without arbitrary shell/Python bypass.
 
-The caller must provide the authoritative Kanban-assigned workspace path explicitly:
+The pinned raw upstream `skills/upstream/repo-map/` also remains non-installable audit material and must never be invoked for Factory runtime use.
 
-```bash
-python3 scripts/repo_map.py --workspace "$WORKSPACE_PATH" .
-```
+## Candidate binder contract
 
-The target argument is workspace-relative. Absolute targets, parent traversal, hidden/generated target components, symlink components, and paths resolving outside the workspace are rejected.
+`run_repo_map.py` is retained and tested as activation infrastructure. It:
 
-## Security contract
+- requires `HERMES_KANBAN_TASK`,
+- requires absolute `HERMES_KANBAN_WORKSPACE`,
+- requires `HERMES_PROFILE=repository-analyst`,
+- rejects option-shaped targets such as `--workspace=/`,
+- accepts at most one workspace-relative target,
+- inserts `--` before the target when invoking the mapper,
+- supplies fixed Factory limits,
+- disables bytecode writes before importing the mapper.
 
-The mapper must:
+These checks are defense-in-depth only until the caller itself is mechanically isolated from arbitrary terminal/code execution.
 
-- stay inside the resolved authoritative workspace,
-- reject symlink files/directories and symlink target components,
-- prune hidden/generated/vendor directories during traversal,
-- scan only allowlisted source-code extensions,
-- skip secret-like filenames, NUL/binary-like content, and invalid UTF-8,
-- enforce directory-count, per-directory-entry, file-count, per-file-byte and total-byte limits,
-- enforce non-overridable hard upper ceilings on all CLI limits,
-- stop or skip fail-closed when a hard limit is reached,
-- open accepted files with `O_NOFOLLOW` when available,
-- avoid subprocesses, shell execution, networking and repository mutation,
-- print workspace-relative paths only with an `F ` row prefix,
-- sanitize control characters in emitted filenames,
-- remain deterministic for an unchanged tree and options.
+## Mapper security contract
 
-## Default limits
+The mapper:
+
+- stays inside the supplied workspace,
+- rejects absolute/parent target traversal and hidden/generated target components,
+- rejects symlink files/directories and symlink target components,
+- prunes hidden/generated/vendor directories with bounded `os.scandir`,
+- scans only allowlisted source-code extensions,
+- skips secret-like filenames, NUL/binary-like content, and invalid UTF-8,
+- enforces directory-count, per-directory-entry, file-count, per-file-byte and total-byte limits,
+- enforces hard upper ceilings internally,
+- opens accepted files with `O_NOFOLLOW` when available and reads via held fd,
+- avoids shell execution, networking and repository mutation,
+- prints workspace-relative paths only with `F ` row prefix,
+- sanitizes control characters in emitted filenames,
+- remains deterministic for unchanged tree and options.
+
+## Candidate fixed limits
 
 - `--max-files 500`
 - `--max-dirs 2000`
 - `--max-dir-entries 4096`
-- `--max-file-bytes 1048576` (1 MiB)
-- `--max-total-bytes 8388608` (8 MiB)
+- `--max-file-bytes 1048576`
+- `--max-total-bytes 8388608`
 - `--max-symbols 12`
-
-Callers may choose smaller values. Larger values are accepted only up to Factory hard ceilings encoded in the helper; the later activation binder must pin policy values rather than accept arbitrary agent-provided ceilings.
 
 ## Scope
 
-This mapper is an index, not a code graph. It reports relative file paths, exact logical line counts and regex-derived top-level symbols. It never executes repository code.
+This is an index, not a code graph and not a secret-redaction tool. It reports workspace-relative file paths, logical line counts and regex-derived top-level symbols. It never executes repository code.
