@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import os
 import re
+import stat
 import sys
 from pathlib import Path
 
@@ -37,6 +38,16 @@ SYMBOL_RULES[".jsx"] = SYMBOL_RULES[".js"]
 SYMBOL_RULES[".mjs"] = SYMBOL_RULES[".js"]
 SYMBOL_RULES[".tsx"] = SYMBOL_RULES[".ts"]
 
+# Hard ceilings cannot be raised by an autonomous caller.
+HARD_MAX = {
+    "max_files": 2_000,
+    "max_dirs": 5_000,
+    "max_dir_entries": 10_000,
+    "max_file_bytes": 2_097_152,
+    "max_total_bytes": 16_777_216,
+    "max_symbols": 100,
+}
+
 
 def sanitize(text: str) -> str:
     return CONTROL_RE.sub("?", text)
@@ -55,13 +66,19 @@ def is_secret_like(path: Path) -> bool:
     return lower.startswith(".") or lower in SECRET_NAMES or path.suffix.lower() in SECRET_SUFFIXES
 
 
-def is_probably_binary(path: Path, sample_size: int = 4096) -> bool:
-    try:
-        with path.open("rb") as f:
-            sample = f.read(sample_size)
-    except OSError:
-        return True
-    return b"\x00" in sample
+def has_symlink_component(path: Path) -> bool:
+    """Check lexical path components without intentionally following a symlink."""
+    candidate = Path(path.anchor) if path.is_absolute() else Path()
+    for part in path.parts:
+        if part in {path.anchor, "", "."}:
+            continue
+        candidate = candidate / part
+        try:
+            if candidate.is_symlink():
+                return True
+        except OSError:
+            return True
+    return False
 
 
 def symbols_for(content: str, ext: str, max_symbols: int) -> str:
@@ -69,9 +86,11 @@ def symbols_for(content: str, ext: str, max_symbols: int) -> str:
     if not rule:
         return ""
     found: list[str] = []
+    seen: set[str] = set()
     for match in rule.finditer(content):
         name = next((group for group in match.groups() if group), None)
-        if name and name not in found:
+        if name and name not in seen:
+            seen.add(name)
             found.append(name)
     shown = found[:max_symbols]
     if not shown:
@@ -80,42 +99,110 @@ def symbols_for(content: str, ext: str, max_symbols: int) -> str:
     return "  → " + ", ".join(shown) + extra
 
 
+def read_regular_text(path: Path, max_bytes: int) -> tuple[str, int] | None:
+    """Open one regular file without following a leaf symlink and bound bytes before decode."""
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(path, flags)
+    except OSError:
+        return None
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_size > max_bytes:
+            return None
+        chunks: list[bytes] = []
+        remaining = max_bytes + 1
+        while remaining > 0:
+            chunk = os.read(fd, min(65_536, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        data = b"".join(chunks)
+        if len(data) > max_bytes or b"\x00" in data[:4096]:
+            return None
+        try:
+            return data.decode("utf-8", errors="strict"), len(data)
+        except UnicodeDecodeError:
+            return None
+    finally:
+        os.close(fd)
+
+
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description="Bounded workspace-confined repository map.")
     parser.add_argument("--workspace", required=True, help="Authoritative Kanban workspace path")
     parser.add_argument("path", nargs="?", default=".", help="Workspace-relative target")
     parser.add_argument("--max-files", type=int, default=500, help="Maximum filenames examined")
     parser.add_argument("--max-dirs", type=int, default=2000, help="Maximum directories visited")
+    parser.add_argument("--max-dir-entries", type=int, default=4096, help="Maximum entries accepted in one directory")
     parser.add_argument("--max-file-bytes", type=int, default=1_048_576)
     parser.add_argument("--max-total-bytes", type=int, default=8_388_608)
     parser.add_argument("--max-symbols", type=int, default=12)
     args = parser.parse_args(argv)
-    for name in ("max_files", "max_dirs", "max_file_bytes", "max_total_bytes", "max_symbols"):
-        if getattr(args, name) <= 0:
-            parser.error(f"--{name.replace('_', '-')} must be > 0")
+    for name, ceiling in HARD_MAX.items():
+        value = getattr(args, name)
+        flag = f"--{name.replace('_', '-')}"
+        if value <= 0:
+            parser.error(f"{flag} must be > 0")
+        if value > ceiling:
+            parser.error(f"{flag} exceeds hard ceiling {ceiling}")
     return args
+
+
+def clean_resolve(path: Path, kind: str) -> Path:
+    try:
+        return path.resolve(strict=True)
+    except OSError:
+        raise SystemExit(f"ERROR: {kind} unavailable") from None
+
+
+def validate_target(workspace: Path, raw_target: Path) -> Path:
+    if raw_target.is_absolute():
+        raise SystemExit("ERROR: target must be workspace-relative")
+    if any(part == ".." for part in raw_target.parts):
+        raise SystemExit("ERROR: target parent traversal refused")
+
+    current = workspace
+    meaningful = [part for part in raw_target.parts if part not in {"", "."}]
+    for part in meaningful:
+        if part in SKIP_DIRS or part.startswith("."):
+            raise SystemExit("ERROR: refusing hidden/generated target component")
+        current = current / part
+        if current.is_symlink():
+            raise SystemExit("ERROR: target symlink component refused")
+
+    target = clean_resolve(workspace / raw_target, "target")
+    if not target.is_dir() or not is_within(target, workspace):
+        raise SystemExit("ERROR: target escapes workspace or is not a directory")
+    return target
+
+
+def bounded_entries(directory: Path, max_entries: int) -> tuple[list[os.DirEntry[str]], bool]:
+    """Materialize at most max_entries entries; overflow skips the directory fail-closed."""
+    entries: list[os.DirEntry[str]] = []
+    try:
+        with os.scandir(directory) as scan:
+            for entry in scan:
+                entries.append(entry)
+                if len(entries) > max_entries:
+                    return [], True
+    except OSError:
+        return [], False
+    entries.sort(key=lambda entry: entry.name)
+    return entries, False
 
 
 def main(argv=None) -> int:
     args = parse_args(argv)
     workspace_arg = Path(args.workspace).expanduser()
-    if workspace_arg.is_symlink():
+    if has_symlink_component(workspace_arg):
         raise SystemExit("ERROR: workspace symlink refused")
-    workspace = workspace_arg.resolve(strict=True)
+    workspace = clean_resolve(workspace_arg, "workspace")
     if not workspace.is_dir():
         raise SystemExit("ERROR: workspace must be a directory")
 
-    raw_target = Path(args.path)
-    if raw_target.is_absolute():
-        raise SystemExit("ERROR: target must be workspace-relative")
-    unresolved_target = workspace / raw_target
-    if unresolved_target.is_symlink():
-        raise SystemExit("ERROR: target symlink refused")
-    target = unresolved_target.resolve(strict=True)
-    if not target.is_dir() or not is_within(target, workspace):
-        raise SystemExit("ERROR: target escapes workspace or is not a directory")
-    if target.name in SKIP_DIRS or target.name.startswith("."):
-        raise SystemExit("ERROR: refusing hidden/generated target")
+    target = validate_target(workspace, Path(args.path))
 
     rows: list[tuple[str, int, str]] = []
     total_bytes = 0
@@ -124,76 +211,84 @@ def main(argv=None) -> int:
     dirs_seen = 0
     truncated = False
     stop = False
+    stack = [target]
 
-    for dirpath, dirnames, filenames in os.walk(target, topdown=True, followlinks=False):
+    while stack and not stop:
+        current = stack.pop()
         dirs_seen += 1
         if dirs_seen > args.max_dirs:
             truncated = True
             break
-        current = Path(dirpath)
-        safe_dirs = []
-        for dirname in sorted(dirnames):
-            child = current / dirname
-            if dirname in SKIP_DIRS or dirname.startswith(".") or child.is_symlink():
-                continue
+
+        entries, overflow = bounded_entries(current, args.max_dir_entries)
+        if overflow:
+            truncated = True
+            continue
+
+        child_dirs: list[Path] = []
+        for entry in entries:
+            name = entry.name
+            path = current / name
             try:
-                resolved = child.resolve(strict=True)
+                if entry.is_symlink():
+                    continue
+                if entry.is_dir(follow_symlinks=False):
+                    if name in SKIP_DIRS or name.startswith("."):
+                        continue
+                    resolved_dir = clean_resolve(path, "directory")
+                    if is_within(resolved_dir, workspace):
+                        child_dirs.append(resolved_dir)
+                    continue
+                if not entry.is_file(follow_symlinks=False):
+                    continue
             except OSError:
                 continue
-            if resolved.is_dir() and is_within(resolved, workspace):
-                safe_dirs.append(dirname)
-        dirnames[:] = safe_dirs
 
-        for filename in sorted(filenames):
             files_seen += 1
             if files_seen > args.max_files:
                 truncated = True
                 stop = True
                 break
-            path = current / filename
-            if path.is_symlink() or is_secret_like(path):
+            if is_secret_like(path):
                 continue
             ext = path.suffix.lower()
             if ext not in ALLOWED_EXTENSIONS:
                 continue
-            try:
-                resolved = path.resolve(strict=True)
-            except OSError:
+
+            resolved = clean_resolve(path, "file")
+            if not is_within(resolved, workspace):
                 continue
-            if not resolved.is_file() or not is_within(resolved, workspace):
+            read = read_regular_text(resolved, args.max_file_bytes)
+            if read is None:
+                # Includes symlink races, binary/non-UTF8 content and oversized files.
+                try:
+                    if resolved.stat().st_size > args.max_file_bytes:
+                        truncated = True
+                except OSError:
+                    pass
                 continue
-            try:
-                size = resolved.stat().st_size
-            except OSError:
-                continue
-            if size > args.max_file_bytes:
-                truncated = True
-                continue
+            content, size = read
             if total_bytes + size > args.max_total_bytes:
                 truncated = True
                 stop = True
                 break
-            if is_probably_binary(resolved):
-                continue
-            try:
-                content = resolved.read_text(encoding="utf-8", errors="replace")
-            except OSError:
-                continue
+
             total_bytes += size
-            lines = content.count("\n") + 1
+            lines = len(content.splitlines())
             total_lines += lines
             rel = resolved.relative_to(workspace).as_posix()
             rows.append((sanitize(rel), lines, symbols_for(content, ext, args.max_symbols)))
-        if stop:
-            dirnames[:] = []
-            break
+
+        # Stack is LIFO; reverse gives deterministic ascending traversal.
+        for child in reversed(child_dirs):
+            stack.append(child)
 
     print("# Repo map: .")
     print(f"# {len(rows)} files · {total_lines:,} lines · {total_bytes:,} bytes scanned")
     if truncated:
         print("# [truncated by configured safety limits]")
     for rel, lines, symbols in rows:
-        print(f"{rel:<56}{lines:>8}L{symbols}")
+        print(f"F {rel:<54}{lines:>8}L{symbols}")
     print("# navigate by map: open only files relevant to the assigned task")
     return 0
 
