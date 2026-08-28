@@ -3,8 +3,8 @@
   "plugins": {
     "factory-repository-readonly": {
       "source": "hermes/plugins/factory-repository-readonly",
-      "installable": false,
-      "activation_status": "pending-independent-review",
+      "installable": true,
+      "activation_status": "reviewed-ready",
       "files": {
         "plugin.yaml": "e26285a24ab1048c1c61e4dd7bfecd22e7178554",
         "__init__.py": "d1607626706e425b0057f10154a1b923da8f55e7",
