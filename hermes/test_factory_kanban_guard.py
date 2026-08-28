@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import importlib.util
 import os
-import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -54,6 +53,7 @@ class KanbanWorkspaceGuardTests(unittest.TestCase):
             with self.env(root):
                 self.assertIsNone(self.guard.on_pre_tool_call("kanban_complete", {"artifacts": ["reports/review.md"]}))
                 self.assertIsNone(self.guard.on_pre_tool_call("kanban_complete", {"artifacts": [str(artifact)]}))
+                self.assertIsNone(self.guard.on_pre_tool_call("kanban_complete", {"artifacts": "reports/review.md"}))
 
     def test_blocks_artifact_outside_workspace_or_missing_or_symlink(self):
         with tempfile.TemporaryDirectory() as td, tempfile.TemporaryDirectory() as od:
@@ -63,22 +63,73 @@ class KanbanWorkspaceGuardTests(unittest.TestCase):
                 for artifact in (str(outside), "../escape.txt", "missing.txt", "link.txt"):
                     result = self.guard.on_pre_tool_call("kanban_complete", {"artifacts": [artifact]})
                     self.assertEqual(result["action"], "block", artifact)
+                for malformed in (1, True, {"path": "reports/review.md"}, [123]):
+                    result = self.guard.on_pre_tool_call("kanban_complete", {"artifacts": malformed})
+                    self.assertEqual(result["action"], "block", repr(malformed))
 
-    def test_blocks_absolute_local_paths_in_summary_outside_workspace(self):
-        with tempfile.TemporaryDirectory() as td, tempfile.TemporaryDirectory() as od:
-            root = Path(td); outside = Path(od) / "notes.txt"; outside.write_text("secret\n")
+    def test_blocks_all_absolute_and_home_paths_outside_workspace(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
             inside = root / "src" / "app.py"; inside.parent.mkdir(); inside.write_text("x\n")
             with self.env(root):
                 self.assertIsNone(self.guard.on_pre_tool_call("kanban_complete", {"summary": f"checked {inside}"}))
-                for text in (f"see {outside}", "copied /etc/passwd", "result: /home/example/private.txt"):
-                    result = self.guard.on_pre_tool_call("kanban_complete", {"summary": text})
-                    self.assertEqual(result["action"], "block", text)
+                samples = (
+                    "/etc/passwd",
+                    "/home/example/private.txt",
+                    "/usr/share/doc/example/README.md",
+                    "/run/user/1000/report.md",
+                    "/dev/shm/report.md",
+                    "/data/report.md",
+                    "/app/report.md",
+                    "/code/report.md",
+                    "/projects/report.md",
+                    "~/outside.md",
+                    r"C:\Users\me\report.md",
+                    "C:/Users/me/report.md",
+                )
+                for path in samples:
+                    result = self.guard.on_pre_tool_call("kanban_complete", {"summary": f"see {path}"})
+                    self.assertEqual(result["action"], "block", path)
+
+    def test_does_not_treat_http_urls_as_local_paths(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            with self.env(root):
+                for url in (
+                    "https://example.com/home/user/file.md",
+                    "http://example.com/tmp/a.md",
+                ):
+                    self.assertIsNone(self.guard.on_pre_tool_call("kanban_complete", {"summary": url}), url)
 
     def test_scans_nested_string_arguments_for_schema_drift(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             with self.env(root):
-                result = self.guard.on_pre_tool_call("kanban_complete", {"future_field": {"nested": ["/etc/shadow"]}})
+                for value in (
+                    {"future_field": {"nested": ["/etc/shadow"]}},
+                    {"metadata": {"result": {"details": "/usr/share/doc/example/README.md"}}},
+                    {"future_field": [{"home": "~/outside.md"}]},
+                ):
+                    result = self.guard.on_pre_tool_call("kanban_complete", value)
+                    self.assertEqual(result["action"], "block")
+
+    def test_deep_or_oversized_nested_args_fail_closed_without_recursion(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            deep: object = "/usr/share/doc/example/README.md"
+            for _ in range(self.guard.MAX_ARG_DEPTH + 20):
+                deep = {"x": deep}
+            many = {"metadata": ["ok"] * (self.guard.MAX_ARG_NODES + 20)}
+            with self.env(root):
+                for args in ({"metadata": deep}, many):
+                    result = self.guard.on_pre_tool_call("kanban_complete", args)
+                    self.assertEqual(result["action"], "block")
+
+    def test_internal_validation_exception_fails_closed(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            with self.env(root), patch.object(self.guard, "_outside_local_paths", side_effect=RuntimeError("boom")):
+                result = self.guard.on_pre_tool_call("kanban_complete", {"summary": "done"})
                 self.assertEqual(result["action"], "block")
 
     def test_invalid_args_fail_closed(self):
