@@ -93,6 +93,7 @@ class FactorySkillTests(unittest.TestCase):
             for skill in policy["required"] + policy["optional"]:
                 self.assertIn(skill, declared, f"{profile}: undeclared {skill}")
                 self.assertIn(profile, self.manifest["skills"][skill]["profiles"])
+                self.assertIsNot(self.manifest["skills"][skill].get("installable", True), False)
 
     def test_first_upstream_batch_is_least_privilege(self):
         profiles = self.profiles["profiles"]
@@ -106,15 +107,13 @@ class FactorySkillTests(unittest.TestCase):
             granted = set(profiles[privileged]["required"] + profiles[privileged]["optional"])
             self.assertFalse({"bug-diagnosis", "factory-tdd-workflow", "factory-ai-code-review"} & granted, privileged)
 
-    def test_factory_repo_map_is_repository_analyst_only(self):
+    def test_factory_repo_map_activation_is_fail_closed(self):
         spec = self.manifest["skills"]["factory-repo-map"]
         self.assertEqual(spec["source"], "custom-multifile")
-        self.assertEqual(spec["profiles"], ["repository-analyst"])
-        self.assertIn("factory-repo-map", self.profiles["profiles"]["repository-analyst"]["optional"])
-        self.assertNotIn("factory-repo-map", self.profiles["profiles"]["repository-analyst"]["required"])
+        self.assertEqual(spec["profiles"], [])
+        self.assertIs(spec["installable"], False)
+        self.assertEqual(spec["activation_status"], "blocked-on-runtime-isolation")
         for profile, policy in self.profiles["profiles"].items():
-            if profile == "repository-analyst":
-                continue
             self.assertNotIn("factory-repo-map", policy["required"] + policy["optional"], profile)
         self.assertEqual(set(spec["files"]), {"SKILL.md", "REVIEW.md", "scripts/repo_map.py", "scripts/run_repo_map.py"})
         for rel, pin in spec["files"].items():
