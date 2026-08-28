@@ -1,7 +1,7 @@
 {
   "schema_version": 4,
   "profiles": {
-    "repository-analyst": {"required":["sha-integrity-check","evidence-ledger"],"optional":["factory-repo-map"]},
+    "repository-analyst": {"required":["sha-integrity-check","evidence-ledger"],"optional":[]},
     "architect": {"required":[],"optional":[]},
     "task-decomposer": {"required":["task-skill-router"],"optional":[]},
     "coder": {"required":["sha-integrity-check","workspace-integrity","evidence-ledger"],"optional":["ci-failure-recovery","bug-diagnosis","factory-tdd-workflow"]},
@@ -17,5 +17,5 @@
     "runtime-controller": {"required":[],"optional":[]}
   },
   "forbidden_global_routing": ["task-skill-router"],
-  "notes": "factory-repo-map is repository-analyst optional only; raw upstream repo-map remains non-installable audit reference"
+  "notes": "factory-repo-map activation remains blocked until Hermes provides a mechanically isolated runtime tool surface; raw upstream repo-map remains non-installable audit reference"
 }
