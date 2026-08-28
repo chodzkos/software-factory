@@ -53,7 +53,7 @@ def regular_tree(src: pathlib.Path):
     return sorted(files)
 
 if install_all:
-    names=sorted(manifest["skills"])
+    names=sorted(name for name,spec in manifest["skills"].items() if spec.get("installable", True) is not False)
 else:
     if profile not in profiles["profiles"]:
         raise SystemExit(f"ERROR: unknown profile: {profile}")
@@ -64,6 +64,8 @@ for name in names:
     if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", name):
         raise SystemExit(f"ERROR: invalid skill name: {name!r}")
     spec=manifest["skills"][name]
+    if spec.get("installable", True) is False:
+        raise SystemExit(f"ERROR: profile references non-installable skill: {name}")
     source=spec.get("source")
     if source == "custom":
         expected=f"skills/custom/{name}"
