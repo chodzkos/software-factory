@@ -34,7 +34,7 @@ if spec.get("source") != expected: raise SystemExit(f"ERROR: plugin source path 
 src=root/spec["source"]
 if src.is_symlink() or not src.is_dir(): raise SystemExit(f"ERROR: invalid plugin source root: {name}")
 pins=spec.get("files")
-if not isinstance(pins,dict) or set(pins) != {"plugin.yaml","__init__.py","repo_map.py","repository_tools.py"}:
+if not isinstance(pins,dict) or set(pins) != {"plugin.yaml","__init__.py","repo_map.py","repository_tools.py","kanban_guard.py"}:
     raise SystemExit(f"ERROR: invalid plugin pin set: {name}")
 actual_files=[]; actual_dirs=[]
 for path in src.rglob("*"):
@@ -100,7 +100,7 @@ fi
 
 tmp="$(mktemp -d "$DEST/.factory-plugin.tmp.XXXXXX")"
 trap 'rm -rf -- "$tmp"' EXIT
-for rel in plugin.yaml __init__.py repo_map.py repository_tools.py; do
+for rel in plugin.yaml __init__.py repo_map.py repository_tools.py kanban_guard.py; do
   cp -- "$src/$rel" "$tmp/$rel"
 done
 
