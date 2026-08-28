@@ -21,16 +21,12 @@ make_fixture() {
   cp "$INSTALLER" "$dst/hermes/install_factory_plugins.sh"
   cp "$ROOT_DIR/hermes/plugins/manifest.json" "$dst/hermes/plugins/manifest.json"
   cp "$ROOT_DIR/hermes/plugins/factory-repository-readonly/"* "$dst/hermes/plugins/factory-repository-readonly/"
-  python3 - "$dst/hermes/plugins/manifest.json" <<'PY'
-import json,sys
-p=sys.argv[1]; m=json.load(open(p)); s=m["plugins"]["factory-repository-readonly"]
-s["installable"]=True; s["activation_status"]="reviewed-ready"
-open(p,"w").write(json.dumps(m,indent=2)+"\n")
-PY
 }
 
-printf '[plugin-installer] production candidate remains disabled\n'
-expect_fail "production plugin disabled" env HERMES_PLUGINS_DIR="$TMP/prod" bash "$INSTALLER" --plugin factory-repository-readonly --dry-run
+printf '[plugin-installer] production candidate reviewed-ready dry-run no write\n'
+prod="$TMP/prod"
+HERMES_PLUGINS_DIR="$prod" bash "$INSTALLER" --plugin factory-repository-readonly --dry-run >/dev/null
+[[ ! -e "$prod" ]] || { echo 'ERROR: production dry-run wrote destination' >&2; exit 1; }
 
 printf '[plugin-installer] fixture dry-run no write\n'
 root="$TMP/fixture"; make_fixture "$root"; dest="$TMP/install"
