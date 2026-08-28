@@ -22,6 +22,17 @@ Production manifest state must remain:
 - absent from all profile required/optional lists,
 - skipped by installer `--all`.
 
+## Activation-status guard
+
+Installer and installed-state verifier enforce activation state mechanically:
+
+- legacy skills without `activation_status` retain their existing behavior,
+- a skill that declares `activation_status` may become installable only when the status is exactly `reviewed-ready`,
+- `installable=true` with `activation_status=blocked-on-runtime-isolation` fails closed before selection or writes,
+- profile references to non-installable or non-ready skills fail closed.
+
+This prevents a one-line `installable=true` change from silently exposing the known F2 runtime-isolation blocker. A future activation still requires changing the status to `reviewed-ready`, adding the intended profile grant, and passing a new exact-SHA review.
+
 ## Candidate binder hardening
 
 `run_repo_map.py` is retained as reviewed activation infrastructure, not as an authority boundary. It:
@@ -39,20 +50,19 @@ This closes the activation review's F1 target-option injection but does not by i
 
 ## Multi-file infrastructure contract
 
-The manifest retains this candidate as `custom-multifile` with exact per-file Git-blob pins. Generic installer/verifier support is tested in an isolated fixture where a temporary manifest copy enables the candidate; production policy never enables it.
+The manifest retains this candidate as `custom-multifile` with exact per-file Git-blob pins. Generic installer/verifier support is tested in an isolated fixture where a temporary manifest copy enables the candidate with `activation_status=reviewed-ready`; production policy never enables it.
 
 Installer/verifier infrastructure must:
 
 - reject source or target symlinks,
 - reject missing or extra declared files,
+- reject undeclared directories, including empty nested directories,
 - verify each declared file pin before writes,
 - copy only declared files into a temp directory,
 - preserve nested relative paths,
 - refuse overwrite of a differing installed skill,
-- verify installed file pins,
+- verify installed file pins and exact file/directory tree,
 - complete preflight before the first install write.
-
-Extra empty-directory exact-tree detection is LOW hardening and remains visible for follow-up; no undeclared file content is copied.
 
 ## Mapper invariants retained from PR #16
 
