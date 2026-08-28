@@ -27,4 +27,6 @@ def register(ctx) -> None:
             check_fn=check_available,
             emoji=emoji,
         )
-    ctx.register_hook("pre_tool_call", on_pre_tool_call)
+    register_hook = getattr(ctx, "register_hook", None)
+    if callable(register_hook):
+        register_hook("pre_tool_call", on_pre_tool_call)
