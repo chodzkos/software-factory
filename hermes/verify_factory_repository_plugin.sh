@@ -7,12 +7,18 @@ PLUGIN="$ROOT_DIR/hermes/plugins/factory-repository-readonly"
 echo '[check] shell/python syntax without bytecode writes'
 bash -n "$ROOT_DIR/hermes/install_factory_plugins.sh"
 bash -n "$ROOT_DIR/hermes/test_factory_plugin_installer.sh"
-python3 - "$PLUGIN" "$ROOT_DIR/hermes/test_factory_repository_plugin.py" <<'PY'
+python3 - "$PLUGIN" "$ROOT_DIR/hermes/test_factory_repository_plugin.py" "$ROOT_DIR/hermes/test_factory_kanban_guard.py" <<'PY'
 from pathlib import Path
 import sys
 plugin = Path(sys.argv[1])
-test = Path(sys.argv[2])
-for path in (plugin / "__init__.py", plugin / "repo_map.py", plugin / "repository_tools.py", test):
+tests = [Path(value) for value in sys.argv[2:]]
+for path in (
+    plugin / "__init__.py",
+    plugin / "repo_map.py",
+    plugin / "repository_tools.py",
+    plugin / "kanban_guard.py",
+    *tests,
+):
     source = path.read_text(encoding="utf-8")
     compile(source, str(path), "exec")
 print("OK: Python syntax compiled in-memory")
@@ -27,13 +33,14 @@ fi
 echo '[check] plugin boundary unit tests'
 PYTHONDONTWRITEBYTECODE=1 python3 "$ROOT_DIR/hermes/test_factory_repository_plugin.py"
 
+echo '[check] Kanban workspace-guard tests'
+PYTHONDONTWRITEBYTECODE=1 python3 "$ROOT_DIR/hermes/test_factory_kanban_guard.py"
+
 echo '[check] plugin installer adversarial tests'
 bash "$ROOT_DIR/hermes/test_factory_plugin_installer.sh"
 
 echo '[check] reviewed mapper bytes retained'
-cmp -s \
-  "$PLUGIN/repo_map.py" \
-  "$ROOT_DIR/skills/custom/factory-repo-map/scripts/repo_map.py"
+cmp -s "$PLUGIN/repo_map.py" "$ROOT_DIR/skills/custom/factory-repo-map/scripts/repo_map.py"
 echo 'OK: plugin mapper byte-identical to reviewed helper'
 
 echo '[check] production plugin remains disabled'
