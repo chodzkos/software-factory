@@ -57,7 +57,10 @@ PY
 src="$ROOT_DIR/$selection"
 target="$DEST/$plugin"
 
-if [[ -e "$target" ]]; then
+check_existing_target() {
+  if [[ ! -e "$target" ]]; then
+    return 2
+  fi
   [[ -d "$target" && ! -L "$target" ]] || { echo "ERROR: invalid installed plugin target: $target" >&2; exit 1; }
   if find "$target" -type l -print -quit | grep -q .; then
     echo "ERROR: installed plugin contains symlink: $target" >&2
@@ -70,22 +73,62 @@ if [[ -e "$target" ]]; then
   fi
   echo "ERROR: existing installed plugin differs: $target" >&2
   exit 1
-fi
+}
 
+# A dry run is strictly no-write, so it performs the target check without
+# creating the destination or lock file.
 if [[ $dry -eq 1 ]]; then
+  if [[ -e "$target" ]]; then
+    check_existing_target
+  fi
   echo "WOULD_INSTALL: $plugin -> $target"
   echo "FACTORY_PLUGIN_INSTALL_OK"
   exit 0
 fi
 
 mkdir -p "$DEST"
+command -v flock >/dev/null 2>&1 || { echo "ERROR: flock is required for serialized plugin installation" >&2; exit 1; }
+lock_file="$DEST/.factory-plugin.lock.$plugin"
+exec 9>"$lock_file"
+flock 9
+
+# Re-check only after acquiring the lock. Two concurrent installers can both
+# observe an absent target before locking; exactly one may create it.
+if [[ -e "$target" ]]; then
+  check_existing_target
+fi
+
 tmp="$(mktemp -d "$DEST/.factory-plugin.tmp.XXXXXX")"
 trap 'rm -rf -- "$tmp"' EXIT
 for rel in plugin.yaml __init__.py repo_map.py repository_tools.py; do
   cp -- "$src/$rel" "$tmp/$rel"
 done
+
+# Re-hash the copied bytes before publication. This closes source-copy TOCTOU
+# and ensures the tree that will be renamed is exactly what the manifest pins.
+python3 - "$MANIFEST" "$plugin" "$tmp" <<'PY'
+import hashlib,json,pathlib,sys
+manifest=json.load(open(sys.argv[1])); name=sys.argv[2]; root=pathlib.Path(sys.argv[3]); pins=manifest["plugins"][name]["files"]
+def blob_sha(data): return hashlib.sha1(b"blob "+str(len(data)).encode()+b"\0"+data).hexdigest()
+actual_files=[]; actual_dirs=[]
+for path in root.rglob("*"):
+    rel=path.relative_to(root).as_posix()
+    if path.is_symlink(): raise SystemExit(f"ERROR: copied plugin contains symlink: {rel}")
+    if path.is_file(): actual_files.append(rel)
+    elif path.is_dir(): actual_dirs.append(rel)
+    else: raise SystemExit(f"ERROR: copied plugin contains non-regular entry: {rel}")
+if sorted(actual_files) != sorted(pins) or actual_dirs:
+    raise SystemExit("ERROR: copied plugin tree mismatch")
+for rel,expected in sorted(pins.items()):
+    got=blob_sha((root/rel).read_bytes())
+    if got != expected: raise SystemExit(f"ERROR: copied plugin blob mismatch: {rel}: {got} != {expected}")
+PY
+
 mv -- "$tmp" "$target"
 trap - EXIT
+
+# Lock is still held here; verify the published tree exactly before success.
+diff -qr "$src" "$target" >/dev/null || { echo "ERROR: published plugin differs from reviewed source" >&2; exit 1; }
 
 echo "INSTALLED: $plugin"
 echo "FACTORY_PLUGIN_INSTALL_OK"
