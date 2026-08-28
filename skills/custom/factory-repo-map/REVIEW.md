@@ -1,56 +1,64 @@
-# Factory repo-map activation contract
+# Factory repo-map activation infrastructure
 
-Status: **FACTORY-OWNED FORK — ACTIVATION CANDIDATE**
+Status: **FACTORY-OWNED FORK — RUNTIME ACTIVATION BLOCKED**
 
-The raw upstream `repo-map` remains byte-identical audit material under `skills/upstream/repo-map/` and remains non-installable. Independent review required a Factory-owned fork; PR #16 closed the raw-helper activation blockers and was merged after exact-SHA review.
+The raw upstream `repo-map` remains byte-identical audit material under `skills/upstream/repo-map/` and remains non-installable. PR #16 produced a reviewed Factory-owned fork. PR #17 originally attempted activation, but exact-SHA activation review found two HIGH workspace-authority bypasses in the autonomous runtime model.
 
-## Runtime architecture
+## Why activation remains blocked
 
-`factory-repo-map` is granted only to `repository-analyst` and must be invoked through `scripts/run_repo_map.py`.
+Hermes 0.20.4 gives `repository-analyst` unrestricted local terminal/code execution. In that environment:
 
-The binder does not accept a workspace argument from the model. It obtains authority from Hermes dispatcher environment:
+- a worker can launch a child with modified `HERMES_KANBAN_WORKSPACE`,
+- a worker can invoke `scripts/repo_map.py --workspace ...` directly,
+- dispatcher environment therefore cannot be treated as a tamper-proof security boundary.
 
-- `HERMES_KANBAN_TASK`,
-- `HERMES_KANBAN_WORKSPACE`,
-- `HERMES_PROFILE=repository-analyst`.
+Hermes' current ordinary-session `command_allowlist` is approval-oriented rather than deny-by-default. Until Factory has a mechanically isolated repo-map tool surface (for example a future deny-by-default terminal mode, dedicated tool/plugin, or OS-level sandbox that exposes only the assigned workspace), no profile receives this skill.
 
-The dispatcher-provided workspace is passed to the reviewed mapper together with fixed Factory safety limits. Missing or inconsistent binding fails closed.
+Production manifest state must remain:
 
-## Multi-file install contract
+- `installable=false`,
+- `activation_status=blocked-on-runtime-isolation`,
+- `profiles=[]`,
+- absent from all profile required/optional lists,
+- skipped by installer `--all`.
 
-The manifest declares this skill as `custom-multifile` with an exact allowlist and content pins for every installed file. Installer/verifier must:
+## Candidate binder hardening
+
+`run_repo_map.py` is retained as reviewed activation infrastructure, not as an authority boundary. It:
+
+- requires `HERMES_KANBAN_TASK`,
+- requires absolute `HERMES_KANBAN_WORKSPACE`,
+- requires `HERMES_PROFILE=repository-analyst`,
+- rejects empty and option-shaped targets,
+- accepts at most one workspace-relative target,
+- inserts `--` before forwarding the target to argparse,
+- fixes Factory limits,
+- disables bytecode writes before importing the mapper.
+
+This closes the activation review's F1 target-option injection but does not by itself close F2 unrestricted-terminal bypass.
+
+## Multi-file infrastructure contract
+
+The manifest retains this candidate as `custom-multifile` with exact per-file Git-blob pins. Generic installer/verifier support is tested in an isolated fixture where a temporary manifest copy enables the candidate; production policy never enables it.
+
+Installer/verifier infrastructure must:
 
 - reject source or target symlinks,
-- reject missing or extra files/directories outside the declared tree,
+- reject missing or extra declared files,
 - verify each declared file pin before writes,
-- copy only the declared files into a temp directory,
+- copy only declared files into a temp directory,
 - preserve nested relative paths,
 - refuse overwrite of a differing installed skill,
-- verify installed file pins and exact installed tree,
-- complete preflight for the full selection before the first install write.
+- verify installed file pins,
+- complete preflight before the first install write.
 
-## Least privilege
+Extra empty-directory exact-tree detection is LOW hardening and remains visible for follow-up; no undeclared file content is copied.
 
-Only `repository-analyst` receives `factory-repo-map`, as optional. No other profile receives it in this activation change.
-
-## Fixed mapper limits
-
-The binder fixes:
-
-- 500 filenames,
-- 2000 directories,
-- 4096 entries per directory,
-- 1 MiB per source file,
-- 8 MiB total accepted bytes,
-- 12 symbols per file.
-
-The autonomous caller cannot raise these limits through binder arguments.
-
-## Security invariants retained from PR #16
+## Mapper invariants retained from PR #16
 
 - bounded `os.scandir` traversal,
 - target-component hidden/generated and symlink refusal,
-- workspace containment,
+- workspace containment relative to the supplied root,
 - source extension allowlist,
 - secret/non-code/binary/invalid-UTF8 filtering,
 - hard ceilings,
@@ -58,4 +66,4 @@ The autonomous caller cannot raise these limits through binder arguments.
 - relative prefixed output and control sanitization,
 - no discovered-code execution, shell, network, or repository mutation.
 
-Activation must not weaken these invariants.
+Do not grant or install this skill for autonomous runtime until a separate exact-SHA review proves the new runtime isolation boundary mechanically prevents workspace/env/direct-helper bypass.
