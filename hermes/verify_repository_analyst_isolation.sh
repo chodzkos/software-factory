@@ -34,7 +34,7 @@ echo '[check] worker-authoritative capability cutover is explicit and narrow'
 grep -Fq 'EXPECTED_TOOLSETS='"'"'["factory-repository-readonly"]'"'"'' "${BOOTSTRAP}"
 grep -Fq 'EXPECTED_CLI_TOOLSETS='"'"'["factory-repository-readonly","no_mcp"]'"'"'' "${BOOTSTRAP}"
 grep -Fq 'config set platform_toolsets.cli "${EXPECTED_CLI_TOOLSETS}"' "${BOOTSTRAP}"
-grep -Fq "config set mcp_servers '{}'" "${BOOTSTRAP}"
+grep -Fq "config set --force mcp_servers '{}'" "${BOOTSTRAP}"
 grep -Fq 'config set toolsets "${EXPECTED_TOOLSETS}"' "${BOOTSTRAP}"
 grep -Fq 'config set agent.disabled_toolsets "${EXPECTED_DISABLED}"' "${BOOTSTRAP}"
 grep -Fq 'config set tools.tool_search.enabled off' "${BOOTSTRAP}"
