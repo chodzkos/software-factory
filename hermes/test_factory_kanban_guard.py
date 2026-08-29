@@ -31,13 +31,33 @@ class KanbanWorkspaceGuardTests(unittest.TestCase):
             "HERMES_PROFILE": profile,
         }, clear=True)
 
-    def test_non_complete_and_other_profiles_are_untouched(self):
+    def test_task_local_kanban_and_other_profiles_are_untouched(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             with self.env(root):
-                self.assertIsNone(self.guard.on_pre_tool_call("kanban_comment", {"text": "/etc/passwd"}))
+                for tool in ("kanban_show", "kanban_comment", "kanban_block", "kanban_heartbeat"):
+                    self.assertIsNone(self.guard.on_pre_tool_call(tool, {"text": "ok"}), tool)
             with self.env(root, profile="coder"):
+                self.assertIsNone(self.guard.on_pre_tool_call("kanban_create", {"title": "x"}))
                 self.assertIsNone(self.guard.on_pre_tool_call("kanban_complete", {"summary": "/etc/passwd"}))
+
+    def test_blocks_nonlocal_kanban_authority_for_repository_analyst(self):
+        blocked = (
+            "kanban_create",
+            "kanban_link",
+            "kanban_request_review",
+            "kanban_request_changes",
+            "kanban_attach",
+            "kanban_attach_url",
+            "kanban_attachments",
+            "kanban_future_tool",
+        )
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            with self.env(root):
+                for tool in blocked:
+                    result = self.guard.on_pre_tool_call(tool, {})
+                    self.assertEqual(result["action"], "block", tool)
 
     def test_missing_binding_fails_closed_for_repository_analyst_completion(self):
         with patch.dict(os.environ, {"HERMES_PROFILE": "repository-analyst"}, clear=True):
