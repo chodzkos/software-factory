@@ -1,4 +1,4 @@
-"""Workspace-confinement guard for repository-analyst Kanban completion."""
+"""Workspace-confinement and Kanban-authority guard for repository-analyst."""
 from __future__ import annotations
 
 import os
@@ -7,6 +7,13 @@ from pathlib import Path
 from typing import Any, Iterable, Optional
 
 ALLOWED_PROFILE = "repository-analyst"
+ALLOWED_KANBAN_TOOLS = frozenset({
+    "kanban_show",
+    "kanban_comment",
+    "kanban_block",
+    "kanban_heartbeat",
+    "kanban_complete",
+})
 MAX_ARG_DEPTH = 64
 MAX_ARG_NODES = 4096
 
@@ -134,11 +141,19 @@ def _outside_local_paths(workspace: Path, args: dict) -> list[str]:
 
 
 def on_pre_tool_call(tool_name: str = "", args: Any = None, **_: Any) -> Optional[dict[str, str]]:
-    if tool_name != "kanban_complete":
-        return None
-    # Scope the guard only to the future isolated repository-analyst worker.
+    # Other profiles are intentionally unaffected by this Factory control.
     if os.environ.get("HERMES_PROFILE", "").strip() != ALLOWED_PROFILE:
         return None
+
+    # Dispatcher workers receive a broad native Kanban surface independently
+    # of profile toolsets. repository-analyst only needs task-local lifecycle
+    # operations; fail closed for every other current or future kanban_* tool.
+    if tool_name.startswith("kanban_") and tool_name not in ALLOWED_KANBAN_TOOLS:
+        return _block("repository-analyst may only use task-local Kanban lifecycle tools")
+
+    if tool_name != "kanban_complete":
+        return None
+
     # Hermes v0.20.4 isolates hook exceptions and otherwise continues the tool
     # call. This security hook must therefore catch every ordinary exception
     # itself and convert it into a block directive.
