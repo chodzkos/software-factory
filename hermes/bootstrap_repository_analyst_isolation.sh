@@ -10,7 +10,7 @@ SOURCE="${ROOT_DIR}/hermes/plugins/${PLUGIN}"
 DEST_ROOT="${PROFILE_HOME}/plugins"
 TARGET="${DEST_ROOT}/${PLUGIN}"
 EXPECTED_TOOLSETS='["factory-repository-readonly"]'
-EXPECTED_DISABLED='["terminal","file","code_execution","web","browser","image_gen","delegation","computer_use","cronjob","skills"]'
+EXPECTED_DISABLED='["terminal","file","code_execution","web","browser","image_gen","delegation","computer_use","cronjob","skills","vision","todo","memory","session_search","clarify","messaging","tts","moa"]'
 
 command -v hermes >/dev/null 2>&1 || { echo "ERROR: hermes not found in PATH" >&2; exit 1; }
 test -f "${INSTALLER}" || { echo "ERROR: missing plugin installer: ${INSTALLER}" >&2; exit 1; }
@@ -33,6 +33,10 @@ PYTHONDONTWRITEBYTECODE=1 hermes -p "${PROFILE}" plugins doctor "${TARGET}" --ci
 # separately; the profile itself exposes only the reviewed repository surface.
 hermes -p "${PROFILE}" config set toolsets "${EXPECTED_TOOLSETS}"
 hermes -p "${PROFILE}" config set agent.disabled_toolsets "${EXPECTED_DISABLED}"
+# The profile has only three small plugin tools. Disable progressive-disclosure
+# bridges so the model sees the reviewed tools directly and no generic tool_call
+# broker is present in the repository-analysis capability surface.
+hermes -p "${PROFILE}" config set tools.tool_search.enabled off
 hermes -p "${PROFILE}" config set fallback_providers '[]'
 hermes -p "${PROFILE}" config set worktree false
 hermes -p "${PROFILE}" config set worktree_sync false
@@ -84,7 +88,8 @@ expect_profile_list_contains() {
 
 expect_profile_list_contains plugins.enabled "${PLUGIN}"
 expect_list_exact toolsets factory-repository-readonly
-expect_list_exact agent.disabled_toolsets terminal file code_execution web browser image_gen delegation computer_use cronjob skills
+expect_list_exact agent.disabled_toolsets terminal file code_execution web browser image_gen delegation computer_use cronjob skills vision todo memory session_search clarify messaging tts moa
+expect_scalar tools.tool_search.enabled 'off'
 expect_scalar fallback_providers '[]'
 expect_scalar worktree 'false'
 expect_scalar worktree_sync 'false'
