@@ -4,28 +4,30 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PROFILE="repository-analyst"
 PLUGIN="factory-repository-readonly"
+PROFILE_HOME="${HOME}/.hermes/profiles/${PROFILE}"
 INSTALLER="${ROOT_DIR}/hermes/install_factory_plugins.sh"
 SOURCE="${ROOT_DIR}/hermes/plugins/${PLUGIN}"
-DEST_ROOT="${HERMES_PLUGINS_DIR:-${HOME}/.hermes/plugins}"
+DEST_ROOT="${PROFILE_HOME}/plugins"
 TARGET="${DEST_ROOT}/${PLUGIN}"
 EXPECTED_TOOLSETS='["factory-repository-readonly"]'
 EXPECTED_DISABLED='["terminal","file","code_execution","web","browser","image_gen","delegation","computer_use","cronjob","skills"]'
 
 command -v hermes >/dev/null 2>&1 || { echo "ERROR: hermes not found in PATH" >&2; exit 1; }
 test -f "${INSTALLER}" || { echo "ERROR: missing plugin installer: ${INSTALLER}" >&2; exit 1; }
-test -d "${HOME}/.hermes/profiles/${PROFILE}" || { echo "ERROR: profile ${PROFILE} does not exist; run bootstrap_profiles.sh first" >&2; exit 1; }
+test -d "${PROFILE_HOME}" || { echo "ERROR: profile ${PROFILE} does not exist; run bootstrap_profiles.sh first" >&2; exit 1; }
 
-# Publication is fail-closed: manifest must be reviewed-ready/installable and all
-# Git-blob pins/exact-tree checks must pass before the profile capability cutover.
-bash "${INSTALLER}" --plugin "${PLUGIN}"
+# Named Hermes profiles are separate HERMES_HOME roots. Publish the reviewed
+# plugin into the repository-analyst profile itself so dispatcher-spawned
+# `-p repository-analyst` workers can discover it.
+HERMES_PLUGINS_DIR="${DEST_ROOT}" bash "${INSTALLER}" --plugin "${PLUGIN}"
 
 test -d "${TARGET}" && ! test -L "${TARGET}" || { echo "ERROR: installed plugin target missing or symlinked" >&2; exit 1; }
 diff -qr "${SOURCE}" "${TARGET}" >/dev/null || { echo "ERROR: installed plugin differs from reviewed source" >&2; exit 1; }
 
-# User-installed standalone plugins are opt-in in Hermes. Installation and
-# doctor alone do not make their tools/hooks visible to worker processes.
-hermes plugins enable "${PLUGIN}"
-PYTHONDONTWRITEBYTECODE=1 hermes plugins doctor "${TARGET}" --ci
+# User plugins are opt-in per profile. Feed EOF so the privileged built-in tool
+# override prompt deterministically defaults to NO; this plugin needs no override.
+hermes -p "${PROFILE}" plugins enable "${PLUGIN}" </dev/null
+PYTHONDONTWRITEBYTECODE=1 hermes -p "${PROFILE}" plugins doctor "${TARGET}" --ci
 
 # Capability cutover. Dispatcher-owned workers receive Kanban lifecycle tools
 # separately; the profile itself exposes only the reviewed repository surface.
@@ -69,18 +71,18 @@ expect_list_exact() {
   done
 }
 
-expect_global_list_contains() {
+expect_profile_list_contains() {
   local key="$1" expected="$2"
-  hermes config get "${key}" 2>/dev/null \
+  hermes -p "${PROFILE}" config get "${key}" 2>/dev/null \
     | tr -d '\r' \
     | sed -n 's/^- //p' \
     | grep -Fxq -- "${expected}" || {
-      echo "ERROR: global ${key} does not contain '${expected}'" >&2
+      echo "ERROR: ${PROFILE}:${key} does not contain '${expected}'" >&2
       exit 1
     }
 }
 
-expect_global_list_contains plugins.enabled "${PLUGIN}"
+expect_profile_list_contains plugins.enabled "${PLUGIN}"
 expect_list_exact toolsets factory-repository-readonly
 expect_list_exact agent.disabled_toolsets terminal file code_execution web browser image_gen delegation computer_use cronjob skills
 expect_scalar fallback_providers '[]'
