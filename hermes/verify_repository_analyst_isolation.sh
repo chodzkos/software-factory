@@ -63,15 +63,33 @@ if [[ ${LIVE} -eq 1 ]]; then
   diff -qr "${SOURCE}" "${TARGET}" >/dev/null
   PYTHONDONTWRITEBYTECODE=1 hermes plugins doctor "${TARGET}" --ci
 
-  get_config() { hermes -p "${PROFILE}" config get "$1" 2>/dev/null | tail -n 1 | tr -d '\r'; }
-  [[ "$(get_config toolsets)" == '["factory-repository-readonly"]' ]]
-  [[ "$(get_config fallback_providers)" == '[]' ]]
-  [[ "$(get_config worktree)" == 'false' ]]
-  [[ "$(get_config worktree_sync)" == 'false' ]]
-  disabled="$(get_config agent.disabled_toolsets)"
-  for denied in terminal file code_execution web browser image_gen delegation computer_use cronjob; do
-    [[ "${disabled}" == *"${denied}"* ]] || { echo "ERROR: live profile missing disabled toolset ${denied}" >&2; exit 1; }
-  done
+  get_scalar() { hermes -p "${PROFILE}" config get "$1" 2>/dev/null | tail -n 1 | tr -d '\r'; }
+  expect_list_exact() {
+    local key="$1"; shift
+    local -a expected=("$@") actual=()
+    mapfile -t actual < <(
+      hermes -p "${PROFILE}" config get "${key}" 2>/dev/null \
+        | tr -d '\r' \
+        | sed -n 's/^- //p'
+    )
+    [[ ${#actual[@]} -eq ${#expected[@]} ]] || {
+      echo "ERROR: live ${PROFILE}:${key} expected ${#expected[@]} list items, got ${#actual[@]}" >&2
+      exit 1
+    }
+    local i
+    for i in "${!expected[@]}"; do
+      [[ "${actual[$i]}" == "${expected[$i]}" ]] || {
+        echo "ERROR: live ${PROFILE}:${key} item $i expected '${expected[$i]}', got '${actual[$i]}'" >&2
+        exit 1
+      }
+    done
+  }
+
+  expect_list_exact toolsets factory-repository-readonly
+  expect_list_exact agent.disabled_toolsets terminal file code_execution web browser image_gen delegation computer_use cronjob
+  [[ "$(get_scalar fallback_providers)" == '[]' ]]
+  [[ "$(get_scalar worktree)" == 'false' ]]
+  [[ "$(get_scalar worktree_sync)" == 'false' ]]
   echo 'REPOSITORY_ANALYST_ISOLATION_LIVE_OK'
 fi
 
