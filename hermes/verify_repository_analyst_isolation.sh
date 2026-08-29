@@ -34,7 +34,8 @@ echo '[check] capability cutover is explicit and narrow'
 grep -Fq 'EXPECTED_TOOLSETS='"'"'["factory-repository-readonly"]'"'"'' "${BOOTSTRAP}"
 grep -Fq 'config set toolsets "${EXPECTED_TOOLSETS}"' "${BOOTSTRAP}"
 grep -Fq 'config set agent.disabled_toolsets "${EXPECTED_DISABLED}"' "${BOOTSTRAP}"
-for denied in terminal file code_execution web browser image_gen delegation computer_use cronjob skills; do
+grep -Fq 'config set tools.tool_search.enabled off' "${BOOTSTRAP}"
+for denied in terminal file code_execution web browser image_gen delegation computer_use cronjob skills vision todo memory session_search clarify messaging tts moa; do
   grep -Fq "${denied}" "${BOOTSTRAP}" || { echo "ERROR: missing denied toolset ${denied}" >&2; exit 1; }
 done
 
@@ -102,7 +103,8 @@ if [[ ${LIVE} -eq 1 ]]; then
   }
 
   expect_list_exact toolsets factory-repository-readonly
-  expect_list_exact agent.disabled_toolsets terminal file code_execution web browser image_gen delegation computer_use cronjob skills
+  expect_list_exact agent.disabled_toolsets terminal file code_execution web browser image_gen delegation computer_use cronjob skills vision todo memory session_search clarify messaging tts moa
+  [[ "$(get_scalar tools.tool_search.enabled)" == 'off' ]]
   [[ "$(get_scalar fallback_providers)" == '[]' ]]
   [[ "$(get_scalar worktree)" == 'false' ]]
   [[ "$(get_scalar worktree_sync)" == 'false' ]]
