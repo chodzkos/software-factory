@@ -33,35 +33,44 @@ echo '[check] capability cutover is explicit and narrow'
 grep -Fq 'EXPECTED_TOOLSETS='"'"'["factory-repository-readonly"]'"'"'' "${BOOTSTRAP}"
 grep -Fq 'config set toolsets "${EXPECTED_TOOLSETS}"' "${BOOTSTRAP}"
 grep -Fq 'config set agent.disabled_toolsets "${EXPECTED_DISABLED}"' "${BOOTSTRAP}"
-for denied in terminal file code_execution web browser image_gen delegation computer_use cronjob; do
+for denied in terminal file code_execution web browser image_gen delegation computer_use cronjob skills; do
   grep -Fq "${denied}" "${BOOTSTRAP}" || { echo "ERROR: missing denied toolset ${denied}" >&2; exit 1; }
 done
 
-echo '[check] plugin install and doctor precede capability cutover'
+echo '[check] plugin install, enable and doctor precede capability cutover'
 python3 - "${BOOTSTRAP}" <<'PY'
 from pathlib import Path
 import sys
 text=Path(sys.argv[1]).read_text()
 install=text.index('bash "${INSTALLER}" --plugin "${PLUGIN}"')
+enable=text.index('hermes plugins enable "${PLUGIN}"')
 doctor=text.index('hermes plugins doctor "${TARGET}" --ci')
 cutover=text.index('config set toolsets "${EXPECTED_TOOLSETS}"')
-assert install < doctor < cutover
-print('OK: install -> doctor -> cutover ordering')
+assert install < enable < doctor < cutover
+print('OK: install -> enable -> doctor -> cutover ordering')
 PY
 
-echo '[check] no generic execution toolset is enabled'
-if grep -Eq 'config set toolsets .*terminal|config set toolsets .*file|config set toolsets .*code_execution|config set toolsets .*delegation' "${BOOTSTRAP}"; then
+echo '[check] no generic execution/tool-management toolset is enabled'
+if grep -Eq 'config set toolsets .*terminal|config set toolsets .*file|config set toolsets .*code_execution|config set toolsets .*delegation|config set toolsets .*skills' "${BOOTSTRAP}"; then
   echo 'ERROR: activation bootstrap enables a forbidden generic capability' >&2
   exit 1
 fi
 
 if [[ ${LIVE} -eq 1 ]]; then
-  echo '[check] live installed plugin identity and profile config'
+  echo '[check] live installed/enabled plugin identity and profile config'
   TARGET="${HERMES_PLUGINS_DIR:-${HOME}/.hermes/plugins}/${PLUGIN}"
   SOURCE="${ROOT_DIR}/hermes/plugins/${PLUGIN}"
   test -d "${TARGET}" && ! test -L "${TARGET}"
   diff -qr "${SOURCE}" "${TARGET}" >/dev/null
   PYTHONDONTWRITEBYTECODE=1 hermes plugins doctor "${TARGET}" --ci
+
+  hermes config get plugins.enabled 2>/dev/null \
+    | tr -d '\r' \
+    | sed -n 's/^- //p' \
+    | grep -Fxq -- "${PLUGIN}" || {
+      echo "ERROR: live global plugins.enabled missing ${PLUGIN}" >&2
+      exit 1
+    }
 
   get_scalar() { hermes -p "${PROFILE}" config get "$1" 2>/dev/null | tail -n 1 | tr -d '\r'; }
   expect_list_exact() {
@@ -86,7 +95,7 @@ if [[ ${LIVE} -eq 1 ]]; then
   }
 
   expect_list_exact toolsets factory-repository-readonly
-  expect_list_exact agent.disabled_toolsets terminal file code_execution web browser image_gen delegation computer_use cronjob
+  expect_list_exact agent.disabled_toolsets terminal file code_execution web browser image_gen delegation computer_use cronjob skills
   [[ "$(get_scalar fallback_providers)" == '[]' ]]
   [[ "$(get_scalar worktree)" == 'false' ]]
   [[ "$(get_scalar worktree_sync)" == 'false' ]]
