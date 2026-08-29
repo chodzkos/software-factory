@@ -9,7 +9,7 @@ SOURCE="${ROOT_DIR}/hermes/plugins/${PLUGIN}"
 DEST_ROOT="${HERMES_PLUGINS_DIR:-${HOME}/.hermes/plugins}"
 TARGET="${DEST_ROOT}/${PLUGIN}"
 EXPECTED_TOOLSETS='["factory-repository-readonly"]'
-EXPECTED_DISABLED='["terminal","file","code_execution","web","browser","image_gen","delegation","computer_use","cronjob"]'
+EXPECTED_DISABLED='["terminal","file","code_execution","web","browser","image_gen","delegation","computer_use","cronjob","skills"]'
 
 command -v hermes >/dev/null 2>&1 || { echo "ERROR: hermes not found in PATH" >&2; exit 1; }
 test -f "${INSTALLER}" || { echo "ERROR: missing plugin installer: ${INSTALLER}" >&2; exit 1; }
@@ -21,6 +21,10 @@ bash "${INSTALLER}" --plugin "${PLUGIN}"
 
 test -d "${TARGET}" && ! test -L "${TARGET}" || { echo "ERROR: installed plugin target missing or symlinked" >&2; exit 1; }
 diff -qr "${SOURCE}" "${TARGET}" >/dev/null || { echo "ERROR: installed plugin differs from reviewed source" >&2; exit 1; }
+
+# User-installed standalone plugins are opt-in in Hermes. Installation and
+# doctor alone do not make their tools/hooks visible to worker processes.
+hermes plugins enable "${PLUGIN}"
 PYTHONDONTWRITEBYTECODE=1 hermes plugins doctor "${TARGET}" --ci
 
 # Capability cutover. Dispatcher-owned workers receive Kanban lifecycle tools
@@ -65,8 +69,20 @@ expect_list_exact() {
   done
 }
 
+expect_global_list_contains() {
+  local key="$1" expected="$2"
+  hermes config get "${key}" 2>/dev/null \
+    | tr -d '\r' \
+    | sed -n 's/^- //p' \
+    | grep -Fxq -- "${expected}" || {
+      echo "ERROR: global ${key} does not contain '${expected}'" >&2
+      exit 1
+    }
+}
+
+expect_global_list_contains plugins.enabled "${PLUGIN}"
 expect_list_exact toolsets factory-repository-readonly
-expect_list_exact agent.disabled_toolsets terminal file code_execution web browser image_gen delegation computer_use cronjob
+expect_list_exact agent.disabled_toolsets terminal file code_execution web browser image_gen delegation computer_use cronjob skills
 expect_scalar fallback_providers '[]'
 expect_scalar worktree 'false'
 expect_scalar worktree_sync 'false'
