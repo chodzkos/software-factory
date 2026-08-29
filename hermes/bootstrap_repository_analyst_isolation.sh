@@ -12,7 +12,7 @@ EXPECTED_TOOLSETS='["factory-repository-readonly"]'
 EXPECTED_DISABLED='["terminal","file","code_execution","web","browser","image_gen","delegation","computer_use","cronjob"]'
 
 command -v hermes >/dev/null 2>&1 || { echo "ERROR: hermes not found in PATH" >&2; exit 1; }
-test -x "${INSTALLER}" || { echo "ERROR: missing plugin installer: ${INSTALLER}" >&2; exit 1; }
+test -f "${INSTALLER}" || { echo "ERROR: missing plugin installer: ${INSTALLER}" >&2; exit 1; }
 test -d "${HOME}/.hermes/profiles/${PROFILE}" || { echo "ERROR: profile ${PROFILE} does not exist; run bootstrap_profiles.sh first" >&2; exit 1; }
 
 # Publication is fail-closed: manifest must be reviewed-ready/installable and all
