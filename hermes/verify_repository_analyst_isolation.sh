@@ -100,6 +100,37 @@ print("OK: live reviewed plugin files exact; only __pycache__/*.pyc ignored")
 PY
 }
 
+resolve_hermes_python() {
+  local hermes_bin hermes_real shebang candidate
+  hermes_bin="$(command -v hermes)"
+  hermes_real="$(readlink -f "${hermes_bin}" 2>/dev/null || printf '%s' "${hermes_bin}")"
+  shebang="$(head -n 1 "${hermes_real}" 2>/dev/null || true)"
+
+  if [[ "${shebang}" == '#!'*python* ]]; then
+    candidate="${shebang#\#!}"
+    if [[ "${candidate}" != *' '* ]] && [[ -x "${candidate}" ]] \
+      && PYTHONDONTWRITEBYTECODE=1 "${candidate}" -c 'import hermes_cli' >/dev/null 2>&1; then
+      printf '%s\n' "${candidate}"
+      return 0
+    fi
+  fi
+
+  for candidate in \
+    "$(dirname "${hermes_real}")/python" \
+    "$(dirname "${hermes_real}")/python3" \
+    "${HOME}/.hermes/hermes-agent/.venv/bin/python" \
+    "${HOME}/.hermes/hermes-agent/venv/bin/python"; do
+    if [[ -x "${candidate}" ]] \
+      && PYTHONDONTWRITEBYTECODE=1 "${candidate}" -c 'import hermes_cli' >/dev/null 2>&1; then
+      printf '%s\n' "${candidate}"
+      return 0
+    fi
+  done
+
+  echo "ERROR: cannot locate Hermes Python runtime capable of importing hermes_cli" >&2
+  return 1
+}
+
 if [[ ${LIVE} -eq 1 ]]; then
   echo '[check] live profile-scoped plugin identity and worker-authoritative config'
   TARGET="${PROFILE_HOME}/plugins/${PLUGIN}"
@@ -154,7 +185,9 @@ if [[ ${LIVE} -eq 1 ]]; then
   }
 
   echo '[check] resolved dispatcher worker CLI toolsets'
-  PYTHONDONTWRITEBYTECODE=1 python3 - "${PROFILE_HOME}" <<'PY'
+  HERMES_PYTHON="$(resolve_hermes_python)"
+  echo "[info] Hermes resolver runtime: ${HERMES_PYTHON}"
+  PYTHONDONTWRITEBYTECODE=1 "${HERMES_PYTHON}" - "${PROFILE_HOME}" <<'PY'
 import sys
 from hermes_cli import kanban_db as kb
 profile_home = sys.argv[1]
