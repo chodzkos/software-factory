@@ -65,7 +65,7 @@ PYTHONDONTWRITEBYTECODE=1 hermes -p "${PROFILE}" plugins doctor "${TARGET}" --ci
 # to the reviewed plugin plus no_mcp and clear profile MCP definitions. The broad
 # deny-list remains defense-in-depth, not the primary isolation mechanism.
 hermes -p "${PROFILE}" config set platform_toolsets.cli "${EXPECTED_CLI_TOOLSETS}"
-hermes -p "${PROFILE}" config set mcp_servers '{}'
+hermes -p "${PROFILE}" config set --force mcp_servers '{}'
 hermes -p "${PROFILE}" config set toolsets "${EXPECTED_TOOLSETS}"
 hermes -p "${PROFILE}" config set agent.disabled_toolsets "${EXPECTED_DISABLED}"
 # The profile has only three small plugin tools. Disable progressive-disclosure
