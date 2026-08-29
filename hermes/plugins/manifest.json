@@ -10,7 +10,7 @@
         "__init__.py": "d1607626706e425b0057f10154a1b923da8f55e7",
         "repo_map.py": "ce7718e0879600631e84a4e44f9c7f97842af9cc",
         "repository_tools.py": "93193e0db3453ef9b5d8f175c5fe4334ff5bf58a",
-        "kanban_guard.py": "77d6e55721f3295dc70bf469db45aa9b78216c1e"
+        "kanban_guard.py": "8c0c5038883ac1150d0209219dc7be513afd4f9f"
       }
     }
   }
