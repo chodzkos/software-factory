@@ -137,9 +137,7 @@ if [[ ${LIVE} -eq 1 ]]; then
     done
   }
 
-  # These are the worker-authoritative inputs used by the dispatcher. `no_mcp`
-  # prevents MCP augmentation and mcp_servers is cleared as an independent
-  # fail-closed control.
+  # Worker-authoritative persisted inputs.
   expect_list_exact platform_toolsets.cli factory-repository-readonly no_mcp
   [[ "$(get_scalar mcp_servers)" == '{}' ]]
   expect_list_exact toolsets factory-repository-readonly
@@ -149,12 +147,32 @@ if [[ ${LIVE} -eq 1 ]]; then
   [[ "$(get_scalar worktree)" == 'false' ]]
   [[ "$(get_scalar worktree_sync)" == 'false' ]]
 
-  # Assert the privileged plugin override grant mechanically, not by prompt UX.
   override="$(hermes -p "${PROFILE}" config get "plugins.entries.${PLUGIN}.allow_tool_override" 2>/dev/null | tail -n 1 | tr -d '\r')"
   [[ "${override}" == 'false' ]] || {
     echo "ERROR: live plugin allow_tool_override expected false, got '${override}'" >&2
     exit 1
   }
+
+  echo '[check] resolved dispatcher worker CLI toolsets'
+  PYTHONDONTWRITEBYTECODE=1 python3 - "${PROFILE_HOME}" <<'PY'
+import sys
+from hermes_cli import kanban_db as kb
+profile_home = sys.argv[1]
+resolved = kb._resolve_worker_cli_toolsets(profile_home)
+if resolved is None:
+    raise SystemExit("ERROR: dispatcher worker toolset resolver returned None")
+resolved = list(resolved)
+actual = set(resolved)
+allowed = {"factory-repository-readonly", "no_mcp", "kanban"}
+required = {"factory-repository-readonly", "kanban"}
+missing = required - actual
+extra = actual - allowed
+if missing:
+    raise SystemExit(f"ERROR: resolved worker toolsets missing required: {sorted(missing)}; got {resolved}")
+if extra:
+    raise SystemExit(f"ERROR: resolved worker toolsets contain unexpected capability: {sorted(extra)}; got {resolved}")
+print("OK: resolved worker CLI toolsets =", ",".join(resolved))
+PY
 
   echo 'REPOSITORY_ANALYST_ISOLATION_LIVE_OK'
 fi
