@@ -31,23 +31,44 @@ hermes -p "${PROFILE}" config set fallback_providers '[]'
 hermes -p "${PROFILE}" config set worktree false
 hermes -p "${PROFILE}" config set worktree_sync false
 
-get_config() {
+get_config_scalar() {
   hermes -p "${PROFILE}" config get "$1" 2>/dev/null | tail -n 1 | tr -d '\r'
 }
 
-expect_config() {
+expect_scalar() {
   local key="$1" expected="$2" actual
-  actual="$(get_config "${key}")"
+  actual="$(get_config_scalar "${key}")"
   [[ "${actual}" == "${expected}" ]] || {
     echo "ERROR: ${PROFILE}:${key} expected '${expected}', got '${actual}'" >&2
     exit 1
   }
 }
 
-expect_config toolsets "${EXPECTED_TOOLSETS}"
-expect_config agent.disabled_toolsets "${EXPECTED_DISABLED}"
-expect_config fallback_providers '[]'
-expect_config worktree 'false'
-expect_config worktree_sync 'false'
+expect_list_exact() {
+  local key="$1"; shift
+  local -a expected=("$@") actual=()
+  mapfile -t actual < <(
+    hermes -p "${PROFILE}" config get "${key}" 2>/dev/null \
+      | tr -d '\r' \
+      | sed -n 's/^- //p'
+  )
+  if [[ ${#actual[@]} -ne ${#expected[@]} ]]; then
+    echo "ERROR: ${PROFILE}:${key} expected ${#expected[@]} list items, got ${#actual[@]}" >&2
+    exit 1
+  fi
+  local i
+  for i in "${!expected[@]}"; do
+    [[ "${actual[$i]}" == "${expected[$i]}" ]] || {
+      echo "ERROR: ${PROFILE}:${key} item $i expected '${expected[$i]}', got '${actual[$i]}'" >&2
+      exit 1
+    }
+  done
+}
+
+expect_list_exact toolsets factory-repository-readonly
+expect_list_exact agent.disabled_toolsets terminal file code_execution web browser image_gen delegation computer_use cronjob
+expect_scalar fallback_providers '[]'
+expect_scalar worktree 'false'
+expect_scalar worktree_sync 'false'
 
 echo "REPOSITORY_ANALYST_ISOLATION_BOOTSTRAP_OK"
