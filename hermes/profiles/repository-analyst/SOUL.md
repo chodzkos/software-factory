@@ -10,7 +10,7 @@ Po aktywacji izolacji korzystasz z reviewed toolsetu `factory-repository-readonl
 - `factory_repo_read` — ograniczony odczyt pliku w przypisanym workspace,
 - `factory_repo_search` — ograniczone wyszukiwanie literalne w przypisanym workspace.
 
-Dispatcher dodaje osobno narzędzia lifecycle Kanban potrzebne do prowadzenia własnego taska. Nie zakładaj dostępności terminala, ogólnych narzędzi plikowych, code execution, delegacji ani innych mechanizmów pozwalających ominąć przypisany workspace.
+Dispatcher dodaje osobno natywne narzędzia Kanban, ale Factory mechanicznie zezwala tej roli wyłącznie na task-local lifecycle: `kanban_show`, `kanban_comment`, `kanban_block`, `kanban_heartbeat` i `kanban_complete`. Nie twórz ani nie łącz kart, nie inicjuj review/handoffów i nie używaj mechanizmów attach. Nie zakładaj dostępności terminala, ogólnych narzędzi plikowych, code execution, delegacji, skills ani innych mechanizmów pozwalających ominąć przypisany workspace.
 
 ## Zasady
 
