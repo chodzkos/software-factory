@@ -58,8 +58,6 @@ def _inside(workspace: Path, raw: str, *, must_exist: bool) -> bool:
     try:
         if not isinstance(raw, str) or not raw or "\x00" in raw:
             return False
-        # A Windows drive path cannot designate a file inside a POSIX worker
-        # workspace. Refuse it instead of letting pathlib treat it as relative.
         if os.name != "nt" and _WINDOWS_DRIVE_RE.match(raw):
             return False
         candidate = Path(raw).expanduser()
@@ -123,16 +121,9 @@ def _paths_from_text(text: str) -> Iterable[str]:
 
 def _outside_local_paths(workspace: Path, args: dict) -> list[str]:
     bad: list[str] = []
-    # Artifact declarations are path-bearing by contract; require an existing
-    # regular file inside the bound workspace.
     for raw in _artifact_strings(args):
         if not _inside(workspace, raw, must_exist=True):
             bad.append(raw)
-
-    # Gateway completion delivery extracts path-looking values from summary and
-    # result text. Scan every nested string so field-name drift cannot reopen
-    # the channel. Path-looking values may be broader than gateway's current
-    # media-extension filter; conservative blocking is intentional here.
     for text in _iter_strings(args):
         for candidate in _paths_from_text(text):
             if not _inside(workspace, candidate, must_exist=False):
@@ -141,23 +132,24 @@ def _outside_local_paths(workspace: Path, args: dict) -> list[str]:
 
 
 def on_pre_tool_call(tool_name: str = "", args: Any = None, **_: Any) -> Optional[dict[str, str]]:
-    # Other profiles are intentionally unaffected by this Factory control.
-    if os.environ.get("HERMES_PROFILE", "").strip() != ALLOWED_PROFILE:
-        return None
-
-    # Dispatcher workers receive a broad native Kanban surface independently
-    # of profile toolsets. repository-analyst only needs task-local lifecycle
-    # operations; fail closed for every other current or future kanban_* tool.
-    if tool_name.startswith("kanban_") and tool_name not in ALLOWED_KANBAN_TOOLS:
-        return _block("repository-analyst may only use task-local Kanban lifecycle tools")
-
-    if tool_name != "kanban_complete":
-        return None
-
-    # Hermes v0.20.4 isolates hook exceptions and otherwise continues the tool
-    # call. This security hook must therefore catch every ordinary exception
-    # itself and convert it into a block directive.
+    # Hermes swallows plugin-hook exceptions and otherwise continues the tool
+    # call. For repository-analyst, the entire security decision therefore must
+    # convert every ordinary exception into a block rather than fail open.
     try:
+        if os.environ.get("HERMES_PROFILE", "").strip() != ALLOWED_PROFILE:
+            return None
+        if not isinstance(tool_name, str):
+            raise ValueError("invalid tool name")
+
+        # Dispatcher workers receive a broad native Kanban surface independently
+        # of profile toolsets. repository-analyst only needs task-local lifecycle
+        # operations; fail closed for every other current or future kanban_* tool.
+        if tool_name.startswith("kanban_") and tool_name not in ALLOWED_KANBAN_TOOLS:
+            return _block("repository-analyst may only use task-local Kanban lifecycle tools")
+
+        if tool_name != "kanban_complete":
+            return None
+
         workspace = _bound_workspace()
         if not isinstance(args, dict):
             raise ValueError("invalid kanban_complete arguments")
@@ -168,4 +160,4 @@ def on_pre_tool_call(tool_name: str = "", args: Any = None, **_: Any) -> Optiona
             )
         return None
     except Exception:
-        return _block("kanban completion refused: workspace/path validation failed")
+        return _block("repository-analyst tool call refused: security validation failed")
