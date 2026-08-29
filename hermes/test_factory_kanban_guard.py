@@ -59,6 +59,16 @@ class KanbanWorkspaceGuardTests(unittest.TestCase):
                     result = self.guard.on_pre_tool_call(tool, {})
                     self.assertEqual(result["action"], "block", tool)
 
+    def test_malformed_tool_name_fails_closed_for_repository_analyst(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            with self.env(root):
+                for tool in (None, 1, [], {}):
+                    result = self.guard.on_pre_tool_call(tool, {})
+                    self.assertEqual(result["action"], "block", repr(tool))
+            with self.env(root, profile="coder"):
+                self.assertIsNone(self.guard.on_pre_tool_call(None, {}))
+
     def test_missing_binding_fails_closed_for_repository_analyst_completion(self):
         with patch.dict(os.environ, {"HERMES_PROFILE": "repository-analyst"}, clear=True):
             result = self.guard.on_pre_tool_call("kanban_complete", {"summary": "done"})
