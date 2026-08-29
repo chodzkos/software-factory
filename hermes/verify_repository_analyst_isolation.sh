@@ -6,6 +6,7 @@ BOOTSTRAP="${ROOT_DIR}/hermes/bootstrap_repository_analyst_isolation.sh"
 MANIFEST="${ROOT_DIR}/hermes/plugins/manifest.json"
 PLUGIN="factory-repository-readonly"
 PROFILE="repository-analyst"
+PROFILE_HOME="${HOME}/.hermes/profiles/${PROFILE}"
 LIVE=0
 
 if [[ "${1:-}" == "--live" ]]; then
@@ -37,17 +38,23 @@ for denied in terminal file code_execution web browser image_gen delegation comp
   grep -Fq "${denied}" "${BOOTSTRAP}" || { echo "ERROR: missing denied toolset ${denied}" >&2; exit 1; }
 done
 
-echo '[check] plugin install, enable and doctor precede capability cutover'
+echo '[check] plugin is installed and enabled in repository-analyst profile scope'
+grep -Fq 'PROFILE_HOME="${HOME}/.hermes/profiles/${PROFILE}"' "${BOOTSTRAP}"
+grep -Fq 'DEST_ROOT="${PROFILE_HOME}/plugins"' "${BOOTSTRAP}"
+grep -Fq 'HERMES_PLUGINS_DIR="${DEST_ROOT}" bash "${INSTALLER}" --plugin "${PLUGIN}"' "${BOOTSTRAP}"
+grep -Fq 'hermes -p "${PROFILE}" plugins enable "${PLUGIN}" </dev/null' "${BOOTSTRAP}"
+
+echo '[check] plugin install, profile enable and doctor precede capability cutover'
 python3 - "${BOOTSTRAP}" <<'PY'
 from pathlib import Path
 import sys
 text=Path(sys.argv[1]).read_text()
-install=text.index('bash "${INSTALLER}" --plugin "${PLUGIN}"')
-enable=text.index('hermes plugins enable "${PLUGIN}"')
-doctor=text.index('hermes plugins doctor "${TARGET}" --ci')
+install=text.index('HERMES_PLUGINS_DIR="${DEST_ROOT}" bash "${INSTALLER}" --plugin "${PLUGIN}"')
+enable=text.index('hermes -p "${PROFILE}" plugins enable "${PLUGIN}" </dev/null')
+doctor=text.index('hermes -p "${PROFILE}" plugins doctor "${TARGET}" --ci')
 cutover=text.index('config set toolsets "${EXPECTED_TOOLSETS}"')
 assert install < enable < doctor < cutover
-print('OK: install -> enable -> doctor -> cutover ordering')
+print('OK: profile install -> profile enable -> doctor -> cutover ordering')
 PY
 
 echo '[check] no generic execution/tool-management toolset is enabled'
@@ -57,18 +64,18 @@ if grep -Eq 'config set toolsets .*terminal|config set toolsets .*file|config se
 fi
 
 if [[ ${LIVE} -eq 1 ]]; then
-  echo '[check] live installed/enabled plugin identity and profile config'
-  TARGET="${HERMES_PLUGINS_DIR:-${HOME}/.hermes/plugins}/${PLUGIN}"
+  echo '[check] live profile-scoped installed/enabled plugin identity and config'
+  TARGET="${PROFILE_HOME}/plugins/${PLUGIN}"
   SOURCE="${ROOT_DIR}/hermes/plugins/${PLUGIN}"
   test -d "${TARGET}" && ! test -L "${TARGET}"
   diff -qr "${SOURCE}" "${TARGET}" >/dev/null
-  PYTHONDONTWRITEBYTECODE=1 hermes plugins doctor "${TARGET}" --ci
+  PYTHONDONTWRITEBYTECODE=1 hermes -p "${PROFILE}" plugins doctor "${TARGET}" --ci
 
-  hermes config get plugins.enabled 2>/dev/null \
+  hermes -p "${PROFILE}" config get plugins.enabled 2>/dev/null \
     | tr -d '\r' \
     | sed -n 's/^- //p' \
     | grep -Fxq -- "${PLUGIN}" || {
-      echo "ERROR: live global plugins.enabled missing ${PLUGIN}" >&2
+      echo "ERROR: live ${PROFILE}:plugins.enabled missing ${PLUGIN}" >&2
       exit 1
     }
 
