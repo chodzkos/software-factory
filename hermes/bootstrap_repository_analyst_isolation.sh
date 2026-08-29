@@ -130,14 +130,7 @@ expect_scalar tools.tool_search.enabled 'off'
 expect_scalar fallback_providers '[]'
 expect_scalar worktree 'false'
 expect_scalar worktree_sync 'false'
+expect_scalar "plugins.entries.${PLUGIN}.allow_tool_override" 'false'
 
-# Verify the explicit privileged-plugin grant remains false in the profile YAML.
-python3 - "${PROFILE_HOME}/config.yaml" "${PLUGIN}" <<'PY'
-import sys, yaml
-cfg=yaml.safe_load(open(sys.argv[1])) or {}
-entry=((cfg.get("plugins") or {}).get("entries") or {}).get(sys.argv[2]) or {}
-assert entry.get("allow_tool_override") is False, entry
-print("OK: plugin built-in tool override grant is false")
-PY
-
+echo "OK: plugin built-in tool override grant is false"
 echo "REPOSITORY_ANALYST_ISOLATION_BOOTSTRAP_OK"
