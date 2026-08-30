@@ -1,6 +1,6 @@
 # Kanban task contract v1
 
-Ten dokument doprecyzowuje `standards/SOFTWARE_DEVELOPMENT_STANDARD.md` dla Software Factory uruchamianego przez Hermes Kanban. Standard pozostaje nadrzędnym źródłem prawdy.
+Ten dokument doprecyzowuje `standards/SOFTWARE_DEVELOPMENT_STANDARD.md` dla Software Factory uruchamianego przez Hermes Kanban. Standard pozostaje nadrzędnym źródłem prawdy. Politykę doboru backendu/modelu i reviewerów doprecyzowuje `workflows/MODEL_ROUTING_POLICY.md`.
 
 ## 1. Tryb orkiestracji
 
@@ -36,6 +36,7 @@ Każdy task wykonawczy powinien zawierać poniższy kontrakt Markdown:
 ## Task Contract
 TYPE: feature|bugfix|audit|docs|release|analysis|architecture|decomposition|review
 RISK: low|medium|high|critical
+SECURITY_SENSITIVE: yes|no
 ASSIGNEE: <profile>
 REPOSITORY: <owner/repo lub path>
 WORKSPACE: none|repo|worktree:<absolute-repo-path>
@@ -47,13 +48,15 @@ ACCEPTANCE_CRITERIA:
 - ...
 ```
 
+Dla tasku modyfikującego kod lub review tej zmiany `SECURITY_SENSITIVE` jest obowiązkowe. Brak pola oznacza routing drift; nie wolno domyślnie przyjąć `no`.
+
 Dla tasku modyfikującego kod `WORKSPACE` musi być `worktree:<absolute-repo-path>`. Jedna logiczna zmiana = jeden branch/worktree/current owner.
 
 Pole `WORKSPACE` jest kontraktem Software Factory. Przy tworzeniu tasku Kanban `workspace_kind=worktree` oraz create-time `workspace_path` wskazują repo bazowe, z którego Hermes utworzy izolowany worktree. Po claimie Hermes zapisuje materializowany worktree bezpośrednio w `workspace_path`; ten post-claim path jest źródłem prawdy dla późniejszego review. Sam tekst `WORKSPACE:` nie tworzy izolacji.
 
 ### 3.1. Fail-closed runtime gate
 
-Pola zapisane wyłącznie w `body` nie są dowodem konfiguracji runtime. Przed dopuszczeniem taska do `ready` oczekiwany kontrakt jest porównywany z **faktycznymi polami taska**.
+Pola zapisane wyłącznie w `body` nie są dowodem konfiguracji runtime. Przed dopuszczeniem taska do `ready` oczekiwany kontrakt jest porównywany z **faktycznymi polami taska**, a model/reviewer routing jest walidowany przez wykonywalną politykę.
 
 #### Runtime controller
 
@@ -65,8 +68,10 @@ Dlatego dla kart wymagających tych pól orchestrator deleguje mechaniczne utwor
 
 - nie implementuje kodu i nie wykonuje independent review,
 - ma osobny minimalny profil runtime,
-- używa terminala wyłącznie do repozytoryjnego wrappera `hermes/kanban_runtime_cli.sh` i walidatora `hermes/kanban_runtime_contract.py`,
-- wrapper whitelistuje tylko operacje `create`, `show`, `block`, `complete`, `validate-runtime`, `validate-handoff` i przekazuje argumenty bez `eval`,
+- używa terminala wyłącznie do repozytoryjnego wrappera `hermes/kanban_runtime_cli.sh`, walidatora `hermes/kanban_runtime_contract.py` i wykonywalnej polityki `hermes/model_routing_policy.py`,
+- wrapper whitelistuje tylko operacje `create`, `show`, `block`, `complete`, `validate-runtime`, `validate-handoff`, `validate-routing` i przekazuje argumenty bez `eval`,
+- przed utworzeniem albo zwolnieniem gate dla implementacji/review uruchamia `validate-routing --implementer ... --reviewer ... --security-sensitive yes|no`,
+- `MODEL_ROUTING_DRIFT` pozostawia gate zablokowany tak samo jak `RUNTIME_CONTRACT_DRIFT`,
 - nie wykonuje Git, curl, package managerów ani dowolnych poleceń projektu.
 
 Profil instaluje osobny, obowiązkowy bootstrap:
@@ -75,7 +80,7 @@ Profil instaluje osobny, obowiązkowy bootstrap:
 PRIMARY_PROFILE=primary-gpt bash hermes/bootstrap_runtime_controller.sh
 ```
 
-Brak działającego `runtime-controller` oznacza fail-closed: orchestrator nie może zastąpić wymaganych pól opisem Markdown ani samodzielnie poszerzyć swoich uprawnień o terminal.
+Brak działającego `runtime-controller` oznacza fail-closed: orchestrator nie może zastąpić wymaganych pól ani model routing policy opisem Markdown ani samodzielnie poszerzyć swoich uprawnień o terminal.
 
 #### Kwarantanna
 
@@ -87,8 +92,8 @@ Dla taska wymagającego runtime validation `runtime-controller` stosuje kontroln
 2. natychmiast zapisuje na niej sticky `kanban block --kind needs_input` z powodem `RUNTIME_CONTRACT_PENDING`,
 3. dopiero potem tworzy właściwy task z parentem wskazującym tę kartę kontrolną,
 4. właściwy task pozostaje zależny od niedokończonego parenta i nie może zostać promowany do `ready`,
-5. `runtime-controller` waliduje actual runtime fields właściwego taska,
-6. drift => gate parent pozostaje blocked, task nie jest dispatchowany, zapisywane jest `RUNTIME_CONTRACT_DRIFT`,
+5. `runtime-controller` waliduje actual runtime fields właściwego taska oraz model/reviewer routing,
+6. drift => gate parent pozostaje blocked, task nie jest dispatchowany, zapisywane jest `RUNTIME_CONTRACT_DRIFT` lub `MODEL_ROUTING_DRIFT`,
 7. zgodność => `runtime-controller` kończy wyłącznie techniczną kartę kontrolną, co pozwala zależnemu taskowi przejść dalej.
 
 Karta kontrolna nie jest kartą implementacyjną ani review i nie stanowi evidence wykonania zmiany. Jej jedyną rolą jest zatrzymanie zależnego taska do czasu walidacji. Utworzenie gate i sticky block jest sekwencyjne, nie atomowe; `routing-sink` jest fail-closed backstopem, jeśli gate zostanie claimed w tym krótkim oknie.
@@ -109,7 +114,8 @@ Mechaniczny gate waliduje co najmniej:
 - create-time `workspace_path`,
 - `branch_name`, jeżeli jest wymagany,
 - `max_retries`, jeżeli jest wymagany,
-- `parents` przez znormalizowany odczyt taska.
+- `parents` przez znormalizowany odczyt taska,
+- model/reviewer route przez `hermes/model_routing_policy.py`.
 
 `max_runtime` musi być jawnie ustawiony przy create, ale Hermes 0.20.4 nie wystawia go w stabilnym JSON readback używanym przez ten validator. Software Factory **nie twierdzi**, że `max_runtime` jest obecnie mechanicznie potwierdzony przez ten gate. To jawne ograniczenie pozostaje fail-visible do czasu dodania stabilnego readbacku w Hermesie.
 
@@ -131,7 +137,9 @@ Dla zmiany wykonywanej w worktree reviewer musi czytać dokładnie artefakt impl
 - `metadata.workspace_path` w runie jest dodatkowym corroboration: jeśli istnieje, musi zgadzać się z live `task.workspace_path`; jego brak nie blokuje poprawnego natywnego handoffu,
 - dispatcher uruchamia reviewera na tej samej karcie i w tym samym worktree; nie wolno tworzyć drugiego worktree ani osobnej karty tylko po to, aby przekazać workspace.
 
-Przed dispatch review należy obowiązkowo zlecić `runtime-controller validate-handoff` na live JSON tej samej karty. Brak pozytywnego `RUNTIME_CONTRACT_OK` oznacza fail-closed i reviewer nie może zostać dispatchowany. Validator wymaga co najmniej:
+Przed dispatch review należy obowiązkowo zlecić `runtime-controller validate-handoff` na live JSON tej samej karty oraz `validate-routing` dla implementera/reviewera i `SECURITY_SENSITIVE`. Brak obu pozytywnych wyników `RUNTIME_CONTRACT_OK` i `MODEL_ROUTING_OK` oznacza fail-closed i reviewer nie może zostać dispatchowany.
+
+Validator handoff wymaga co najmniej:
 
 - resolved `workspace_kind=worktree` i `workspace_path=.../.worktrees/<task-id>`,
 - `assignee` równego oczekiwanemu reviewerowi,
@@ -147,28 +155,33 @@ Osobny reviewer task pozostaje dopuszczalny wyłącznie wtedy, gdy workflow rzec
 
 ## 4. Routing
 
-- analiza repozytorium → `repository-analyst` (Ox best-effort; przy jawnie niedostępnym Ox orchestrator tworzy nowy task analizy na GPT),
-- architektura → `architect`,
+- analiza repozytorium → `repository-analyst` na primary GPT,
+- architektura → `architect`; trudna architektura/hard reasoning może jawnie eskalować do `architect-claude-opus`,
 - dekompozycja → `task-decomposer`,
-- mechaniczna kontrola/create runtime → `runtime-controller`,
-- implementacja → `coder`,
-- quick review → `quick-reviewer`,
-- deep review → `critic`,
+- mechaniczna kontrola/create runtime/model routing → `runtime-controller`,
+- implementacja → `coder` (native OpenAI) albo `coder-claude` (Claude Code skill),
+- quick review/CI triage → `quick-reviewer` jako niewystarczający samodzielnie pre-pass,
+- normalny independent review `coder` → `reviewer-claude`,
+- normalny independent review `coder-claude` → `reviewer-gpt`,
+- `SECURITY_SENSITIVE: yes` → `reviewer-gpt`; gdy implementer=`coder`, dodatkowo `critic`,
+- deep general review → `critic`,
 - audit obowiązkowy → `auditor-gpt` i `auditor-grok` zgodnie z klasą zadania,
-- Audit 3 → `auditor-ox` tylko jako opcjonalny dodatkowy sygnał,
 - dokumentacja → `docs`,
 - release gate → `release-manager`,
 - nierozpoznany/niebezpieczny routing → `routing-sink`.
 
-## 5. Ox Alpha
+Ox Alpha nie jest aktywnym backendem Software Factory i nie może być używany jako implementer/reviewer/auditor w nowych task contracts.
 
-Ox Alpha jest opcjonalny i best-effort.
+## 5. Model routing i Claude Code
 
-- chwilowy rate limit/przeciążenie nie może blokować podstawowego gate GPT+Grok,
-- dla `repository-analyst` orchestrator może utworzyć zastępczy task na GPT po jawnej porażce Ox,
-- `auditor-ox` przy niedostępności kończy wynik `DECISION: SKIPPED_OX_UNAVAILABLE`,
-- `SKIPPED_OX_UNAVAILABLE` jest dozwolone wyłącznie dla opcjonalnego Audit 3,
-- żadna porażka Ox nie może zostać przedstawiona jako `APPROVE`.
+Wykonywalna macierz znajduje się w `hermes/model_routing_policy.py`, a pełny opis w `workflows/MODEL_ROUTING_POLICY.md`.
+
+- `coder` i `reviewer-gpt` używają `factory.execution_backend=native-openai`,
+- `coder-claude`, `reviewer-claude`, `architect-claude-opus` używają `factory.execution_backend=claude-code`,
+- profile Claude są koordynatorami Hermesa; właściwa praca musi pochodzić z bundlowanego skilla `claude-code` i Claude Code CLI,
+- zwykły Claude backend używa klasy modelu `sonnet`; trudna architektura może użyć `opus`,
+- `reviewer-claude` jest zabroniony dla `SECURITY_SENSITIVE: yes`,
+- niedostępny backend/CLI/OAuth oznacza blocked; nie ma ukrytego fallbacku.
 
 ## 6. Kontrakt review/audit
 
@@ -184,12 +197,6 @@ albo:
 DECISION: CHANGES_REQUIRED
 ```
 
-Dla opcjonalnego `auditor-ox` dopuszczalne jest także:
-
-```text
-DECISION: SKIPPED_OX_UNAVAILABLE
-```
-
 Każdy finding zawiera co najmniej jawne pole `severity`, a także `location`, `evidence`, `impact`, `proposed fix`. Pole severity może być zapisane zwykłym Markdownem, np. `severity: HIGH`, ``- `severity`: HIGH`` albo w tabeli `| severity | HIGH |`.
 
 - wiarygodny HIGH/CRITICAL → `CHANGES_REQUIRED`,
@@ -202,18 +209,18 @@ Parser decyzji nie zgaduje severity z dowolnej prozy; gate opiera się na jawnym
 
 Typowy feature:
 
-`repository-analyst? → architect → task-decomposer → runtime-controller → coder → quick-reviewer → critic/required audits → required real evidence → docs? → release-manager? → done`
+`repository-analyst? → architect/architect-claude-opus? → task-decomposer → runtime-controller(model+runtime gate) → coder|coder-claude → required cross-vendor reviewer → critic/required audits → required real evidence → docs? → release-manager? → done`
 
 Typowy bugfix:
 
-`reproducer/root cause → runtime-controller → coder + regression test → tests → quick-reviewer → required independent review → targeted verification → done`
+`reproducer/root cause → runtime-controller(model+runtime gate) → coder|coder-claude + regression test → tests → required cross-vendor reviewer → targeted verification → done`
 
 Znaki `?` oznaczają etap wymagany tylko przez zakres/ryzyko/task contract.
 
 ## 8. Reguły przejść
 
-- orchestrator nie dispatchuje taska z `RUNTIME_CONTRACT_DRIFT`; jego gate parent pozostaje blocked,
-- brak `runtime-controller` przy tasku wymagającym branch/retry oznacza blocked, nie degradację do LLM-only create,
+- orchestrator nie dispatchuje taska z `RUNTIME_CONTRACT_DRIFT` ani `MODEL_ROUTING_DRIFT`; jego gate parent pozostaje blocked,
+- brak `runtime-controller` przy tasku wymagającym branch/retry/model routing oznacza blocked, nie degradację do LLM-only create,
 - implementer wymagający independent review nie kończy tej karty jako VERIFIED; używa natywnego `review_requested`, po którym ta sama karta przechodzi do `review` i innego assignee,
 - karta może przejść do `done` dopiero po zakończeniu wymaganego review lifecycle albo gdy task contract nie wymaga review,
 - nadrzędna zmiana pozostaje nieweryfikowana, dopóki wszystkie wymagane review/audit/evidence z task contract nie są zamknięte,
@@ -232,7 +239,7 @@ PRIMARY_PROFILE=primary-gpt bash hermes/bootstrap_runtime_controller.sh
 DISPATCHER_PROFILE=default bash hermes/configure_kanban.sh
 ```
 
-Pierwszy instaluje profil `runtime-controller` i scoped runtime-control surface. Drugi stosuje konfigurację dispatchera Kanban. Oba są wymagane przed utworzeniem pierwszego tasku Software Factory wymagającego runtime gate.
+Pierwszy instaluje profil `runtime-controller`, scoped runtime-control surface oraz `model_routing_policy.py`. Drugi stosuje konfigurację dispatchera Kanban. Oba są wymagane przed utworzeniem pierwszego tasku Software Factory wymagającego runtime gate.
 
 Po wykonaniu należy potwierdzić co najmniej:
 
@@ -248,7 +255,7 @@ hermes -p default config get kanban.default_assignee
 Oczekiwane wartości obejmują:
 
 ```text
-["hermes-cli", "kanban", "terminal"]
+["hermes-cli", "terminal"]
 []
 false
 true
