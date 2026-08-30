@@ -5,9 +5,13 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PROFILE_ROOT="${HOME}/.hermes/profiles"
 STANDARD_SRC="${ROOT_DIR}/standards/SOFTWARE_DEVELOPMENT_STANDARD.md"
 PLUGIN_INSTALLER="${ROOT_DIR}/hermes/install_factory_plugins.sh"
+ANALYST_BOOTSTRAP="${ROOT_DIR}/hermes/bootstrap_repository_analyst_isolation.sh"
+ANALYST_VERIFY="${ROOT_DIR}/hermes/verify_repository_analyst_isolation.sh"
 EXECUTION_GUARD="factory-execution-guards"
 PRIMARY_PROFILE="${PRIMARY_PROFILE:-default}"
 DISPATCHER_PROFILE="${DISPATCHER_PROFILE:-default}"
+SECURITY_REVIEW_PROVIDER="openai-codex"
+SECURITY_REVIEW_MODEL="gpt-5.6-sol"
 GROK_PROVIDER="${GROK_PROVIDER:-xai-oauth}"
 GROK_MODEL="${GROK_MODEL:-grok-4.6}"
 GEMINI_PROVIDER="${GEMINI_PROVIDER:-gemini}"
@@ -28,7 +32,7 @@ declare -A descriptions=(
   [coder]="Native OpenAI/GPT implementer for one logical change in an isolated workspace."
   [coder-claude]="Implementation coordinator that delegates the actual coding task to Claude Code CLI through the bundled claude-code skill."
   [quick-reviewer]="Performs cheap first-pass review, CI triage and obvious defect detection."
-  [reviewer-gpt]="Independent native OpenAI reviewer and the only deep security-review profile."
+  [reviewer-gpt]="Pinned native OpenAI security/cross-vendor reviewer."
   [reviewer-claude]="Independent reviewer that delegates read-only review to Claude Code CLI; forbidden for security-sensitive review."
   [critic]="Independent deep reviewer using Grok; challenges design, tests and verification evidence."
   [auditor-gpt]="Independent final auditor using the primary GPT model."
@@ -39,8 +43,9 @@ declare -A descriptions=(
 )
 
 command -v hermes >/dev/null 2>&1 || { echo "ERROR: hermes not found in PATH" >&2; exit 1; }
-[[ -f "${STANDARD_SRC}" ]] || { echo "ERROR: brak kanonicznego standardu ${STANDARD_SRC}" >&2; exit 1; }
-[[ -x "${PLUGIN_INSTALLER}" || -f "${PLUGIN_INSTALLER}" ]] || { echo "ERROR: missing ${PLUGIN_INSTALLER}" >&2; exit 1; }
+for required in "${STANDARD_SRC}" "${PLUGIN_INSTALLER}" "${ANALYST_BOOTSTRAP}" "${ANALYST_VERIFY}"; do
+  [[ -f "${required}" ]] || { echo "ERROR: missing ${required}" >&2; exit 1; }
+done
 
 profile_exists() { local name="$1"; [[ -d "${PROFILE_ROOT}/${name}" ]]; }
 get_config() { local profile="$1" key="$2"; hermes -p "${profile}" config get "${key}" 2>/dev/null | tail -n 1 | tr -d '\r'; }
@@ -63,9 +68,12 @@ install_execution_guard() {
 
 mkdir -p "${PROFILE_ROOT}"
 primary_provider="$(get_config "${PRIMARY_PROFILE}" model.provider)"; primary_model="$(get_config "${PRIMARY_PROFILE}" model.default)"
-[[ -n "${primary_model}" ]] || { echo "ERROR: PRIMARY_PROFILE='${PRIMARY_PROFILE}' nie ma ustawionego model.default" >&2; exit 1; }
-if [[ "${ALLOW_NON_GPT_PRIMARY}" != "1" && ! "${primary_model}" =~ [Gg][Pp][Tt] ]]; then echo "ERROR: PRIMARY_PROFILE='${PRIMARY_PROFILE}' używa modelu '${primary_model}', który nie wygląda na GPT." >&2; exit 1; fi
+[[ -n "${primary_provider}" && -n "${primary_model}" ]] || { echo "ERROR: PRIMARY_PROFILE='${PRIMARY_PROFILE}' has no usable model config" >&2; exit 1; }
+if [[ "${ALLOW_NON_GPT_PRIMARY}" != "1" && ! "${primary_model}" =~ [Gg][Pp][Tt] ]]; then echo "ERROR: PRIMARY_PROFILE='${PRIMARY_PROFILE}' uses non-GPT model '${primary_model}'" >&2; exit 1; fi
 
+# The mandatory security reviewer is not derived from PRIMARY_PROFILE and is not
+# affected by ALLOW_NON_GPT_PRIMARY.
+echo "Security reviewer pin: ${SECURITY_REVIEW_PROVIDER}/${SECURITY_REVIEW_MODEL}"
 echo "Primary profile: ${PRIMARY_PROFILE} -> ${primary_provider}/${primary_model}"
 echo "Dispatcher profile: ${DISPATCHER_PROFILE}"
 echo "Gemini policy: ${GEMINI_PROVIDER}/${GEMINI_MODEL}"
@@ -79,7 +87,13 @@ for profile in "${profiles[@]}"; do
   hermes -p "${profile}" config set agent.tool_use_enforcement auto
 done
 
-for profile in orchestrator architect repository-analyst coder reviewer-gpt auditor-gpt release-manager routing-sink; do hermes -p "${profile}" config set model.provider "${primary_provider}"; hermes -p "${profile}" config set model.default "${primary_model}"; done
+for profile in orchestrator architect repository-analyst coder auditor-gpt release-manager routing-sink; do
+  hermes -p "${profile}" config set model.provider "${primary_provider}"
+  hermes -p "${profile}" config set model.default "${primary_model}"
+done
+hermes -p reviewer-gpt config set model.provider "${SECURITY_REVIEW_PROVIDER}"
+hermes -p reviewer-gpt config set model.default "${SECURITY_REVIEW_MODEL}"
+
 for profile in coder-claude reviewer-claude architect-claude-opus; do
   hermes -p "${profile}" config set model.provider "${primary_provider}"
   hermes -p "${profile}" config set model.default "${primary_model}"
@@ -116,7 +130,10 @@ hermes -p routing-sink config set agent.disabled_toolsets '["terminal","file","c
 hermes -p "${DISPATCHER_PROFILE}" config set kanban.orchestrator_profile orchestrator
 hermes -p "${DISPATCHER_PROFILE}" config set kanban.default_assignee routing-sink
 
-expect_config reviewer-gpt factory.execution_backend native-openai; expect_config coder factory.execution_backend native-openai
+expect_config reviewer-gpt model.provider "${SECURITY_REVIEW_PROVIDER}"
+expect_config reviewer-gpt model.default "${SECURITY_REVIEW_MODEL}"
+expect_config reviewer-gpt factory.execution_backend native-openai
+expect_config coder factory.execution_backend native-openai
 expect_config coder-claude factory.execution_backend claude-code; expect_config coder-claude factory.claude_model_class sonnet
 expect_config reviewer-claude factory.execution_backend claude-code; expect_config reviewer-claude factory.claude_model_class sonnet
 expect_config architect-claude-opus factory.execution_backend claude-code; expect_config architect-claude-opus factory.claude_model_class opus
@@ -126,6 +143,11 @@ expect_config coder worktree "false"; expect_config coder worktree_sync "false";
 expect_config "${DISPATCHER_PROFILE}" kanban.orchestrator_profile orchestrator; expect_config "${DISPATCHER_PROFILE}" kanban.default_assignee routing-sink
 if profile_exists auditor-ox; then expect_config auditor-ox model.provider disabled-legacy; expect_config auditor-ox model.default disabled-legacy; expect_config auditor-ox factory.execution_backend disabled-legacy; expect_config auditor-ox fallback_providers '[]'; fi
 
-[[ -f "${PROFILE_ROOT}/orchestrator/SOUL.md" ]] && grep -Fq '# Software Development Standard — wstrzyknięty kontekst runtime' "${PROFILE_ROOT}/orchestrator/SOUL.md" || { echo "ERROR: orchestrator nie otrzymał wstrzykniętego Standardu" >&2; exit 1; }
+[[ -f "${PROFILE_ROOT}/orchestrator/SOUL.md" ]] && grep -Fq '# Software Development Standard — wstrzyknięty kontekst runtime' "${PROFILE_ROOT}/orchestrator/SOUL.md" || { echo "ERROR: orchestrator did not receive injected Standard" >&2; exit 1; }
+
+# Fresh deployments must end with the repository-analyst capability cut over to
+# its reviewed profile-scoped plugin, not inherited primary-profile tools.
+PYTHONDONTWRITEBYTECODE=1 bash "${ANALYST_BOOTSTRAP}"
+PYTHONDONTWRITEBYTECODE=1 bash "${ANALYST_VERIFY}" --live
 
 echo; hermes profile list; echo; echo "Bootstrap profili zakończony."
