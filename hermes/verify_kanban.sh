@@ -27,6 +27,7 @@ grep -Fq 'worktree:<absolute-repo-path>' "${CONTRACT}"
 grep -Fq 'IMPLEMENTED != VERIFIED' "${CONTRACT}"
 grep -Fq 'RUNTIME_CONTRACT_DRIFT' "${CONTRACT}"
 grep -Fq 'MODEL_ROUTING_DRIFT' "${CONTRACT}"
+grep -Fq 'validate-routed-handoff' "${CONTRACT}"
 test -f "${MODEL_POLICY_DOC}"
 
 printf '[check] exact model routing\n'
@@ -42,7 +43,6 @@ grep -Fq '`coder-claude` | `yes` | `reviewer-gpt`' "${MODEL_POLICY_DOC}"
 printf '[check] body-bound live handoff\n'
 grep -Fq 'def validate_routed_review_handoff' "${RUNTIME_VALIDATOR}"
 grep -Fq 'route_from_payload(payload)' "${RUNTIME_VALIDATOR}"
-grep -Fq 'same_card_review_requires_exactly_one_reviewer' "${RUNTIME_VALIDATOR}"
 grep -Fq 'routed-handoff' "${RUNTIME_VALIDATOR}"
 grep -Fq 'validate-routed-handoff' "${RUNTIME_WRAPPER}"
 grep -Fq 'exec python3 "${VALIDATOR}" routed-handoff "$@"' "${RUNTIME_WRAPPER}"
@@ -69,6 +69,9 @@ printf '[check] review decision tests\n'
 
 printf '[check] runtime contract tests\n'
 (cd "${ROOT_DIR}/hermes" && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -q test_kanban_runtime_contract.py)
+
+printf '[check] routed handoff regression\n'
+(cd "${ROOT_DIR}" && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -q hermes.test_routed_handoff_policy)
 
 printf '[check] model routing tests from repo root\n'
 (cd "${ROOT_DIR}" && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -q hermes.test_model_routing_policy)
