@@ -2,15 +2,17 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
+import re
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Mapping, Sequence
 
 try:
     from .model_routing_policy import DuplicateJsonKey, route_from_payload, strict_json_loads
-except ImportError:  # Direct script execution from installed profile directory.
+except ImportError:
     from model_routing_policy import DuplicateJsonKey, route_from_payload, strict_json_loads
+
+_WORKSPACE_RE = re.compile(r"^WORKSPACE:\s*(.*?)\s*$")
 
 
 @dataclass(frozen=True)
@@ -26,39 +28,31 @@ class RuntimeExpectation:
 def normalize_snapshot(payload: Mapping[str, Any]) -> dict[str, Any]:
     if "task" in payload:
         nested = payload.get("task")
-        if not isinstance(nested, Mapping):
-            return {}
+        if not isinstance(nested, Mapping): return {}
         task = dict(nested)
-        if "parents" not in task and "parents" in payload:
-            task["parents"] = payload.get("parents")
+        if "parents" not in task and "parents" in payload: task["parents"] = payload.get("parents")
     else:
         task = dict(payload)
-    if "parents" not in task and "parent_ids" in task:
-        task["parents"] = task.get("parent_ids")
+    if "parents" not in task and "parent_ids" in task: task["parents"] = task.get("parent_ids")
     return task
 
 
 def _parents(actual: Mapping[str, Any]) -> tuple[str, ...]:
     raw = actual.get("parents", ())
-    if raw is None:
-        return ()
+    if raw is None: return ()
     return tuple(str(value) for value in raw)
 
 
 def _records(payload: Mapping[str, Any], key: str) -> tuple[Mapping[str, Any], ...]:
     raw = payload.get(key, ())
-    if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes)):
-        return ()
-    if any(not isinstance(value, Mapping) for value in raw):
-        return ()
+    if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes)): return ()
+    if any(not isinstance(value, Mapping) for value in raw): return ()
     return tuple(raw)
 
 
 def _latest_review_requested_event(payload: Mapping[str, Any]) -> Mapping[str, Any] | None:
-    events = _records(payload, "events")
-    for event in reversed(events):
-        if event.get("kind") == "review_requested":
-            return event
+    for event in reversed(_records(payload, "events")):
+        if event.get("kind") == "review_requested": return event
     return None
 
 
@@ -69,89 +63,69 @@ def _latest_run(payload: Mapping[str, Any]) -> Mapping[str, Any] | None:
 
 def validate_runtime(payload: Mapping[str, Any], expectation: RuntimeExpectation) -> list[str]:
     actual = normalize_snapshot(payload)
+    if not actual: return ["runtime_task_missing_or_invalid"]
     errors: list[str] = []
-    if not actual:
-        return ["runtime_task_missing_or_invalid"]
-    checks = {
-        "assignee": expectation.assignee,
-        "workspace_kind": expectation.workspace_kind,
-        "workspace_path": expectation.workspace_path,
-        "branch_name": expectation.branch_name,
-        "max_retries": expectation.max_retries,
-    }
+    checks = {"assignee": expectation.assignee, "workspace_kind": expectation.workspace_kind, "workspace_path": expectation.workspace_path, "branch_name": expectation.branch_name, "max_retries": expectation.max_retries}
     for field, expected in checks.items():
-        if expected is None:
-            continue
-        actual_value = actual.get(field)
-        if actual_value != expected:
-            errors.append(f"{field}: expected={expected!r} actual={actual_value!r}")
-    actual_parents = _parents(actual)
-    if actual_parents != expectation.parents:
-        errors.append(f"parents: expected={expectation.parents!r} actual={actual_parents!r}")
+        if expected is not None and actual.get(field) != expected: errors.append(f"{field}: expected={expected!r} actual={actual.get(field)!r}")
+    if _parents(actual) != expectation.parents: errors.append(f"parents: expected={expectation.parents!r} actual={_parents(actual)!r}")
     return errors
 
 
-def _canonical_worktree_path(raw: str, task_id: str) -> str | None:
-    if not raw.startswith("/") or not task_id:
-        return None
+def _canonical_absolute(raw: str) -> str | None:
+    if not isinstance(raw, str) or not raw.startswith("/"): return None
     pure = PurePosixPath(raw)
-    if any(part in {".", ".."} for part in pure.parts):
-        return None
-    parts = pure.parts
-    matches = [i for i, part in enumerate(parts) if part == ".worktrees"]
-    if len(matches) != 1:
-        return None
-    index = matches[0]
-    if index + 2 != len(parts) or parts[index + 1] != task_id:
-        return None
-
-    # When the live path exists, require every component to be non-symlinked and
-    # the real path to remain byte-for-byte identical to the canonical input.
+    if any(part in {".", ".."} for part in pure.parts): return None
     path = Path(raw)
     if path.exists():
         current = Path(path.anchor)
         for part in path.parts[1:]:
             current = current / part
-            if current.is_symlink():
-                return None
+            if current.is_symlink(): return None
         try:
-            if str(path.resolve(strict=True)) != raw.rstrip("/"):
-                return None
+            resolved = str(path.resolve(strict=True))
         except OSError:
             return None
+        if resolved != raw.rstrip("/"): return None
     return raw.rstrip("/")
+
+
+def _declared_repository_root(task: Mapping[str, Any]) -> str | None:
+    body = task.get("body")
+    if not isinstance(body, str): return None
+    values: list[str] = []
+    for line in body.splitlines():
+        match = _WORKSPACE_RE.match(line.strip())
+        if match: values.append(match.group(1))
+    if len(values) != 1 or not values[0].startswith("worktree:"): return None
+    return _canonical_absolute(values[0][len("worktree:"):])
 
 
 def resolved_implementation_worktree(payload: Mapping[str, Any]) -> str | None:
     task = normalize_snapshot(payload)
-    if task.get("workspace_kind") != "worktree":
-        return None
-    task_id = task.get("id")
-    path = task.get("workspace_path")
-    if not isinstance(task_id, str) or not isinstance(path, str):
-        return None
-    return _canonical_worktree_path(path, task_id)
+    if task.get("workspace_kind") != "worktree": return None
+    task_id = task.get("id"); path = task.get("workspace_path")
+    if not isinstance(task_id, str) or not task_id or not isinstance(path, str): return None
+    repo_root = _declared_repository_root(task)
+    canonical_path = _canonical_absolute(path)
+    if not repo_root or not canonical_path: return None
+    expected = f"{repo_root}/.worktrees/{task_id}"
+    return canonical_path if canonical_path == expected else None
 
 
 def validate_review_handoff(payload: Mapping[str, Any], *, implementer_profile: str, reviewer_profile: str) -> list[str]:
     task = normalize_snapshot(payload)
+    if not task: return ["implementation_task_missing_or_invalid"]
     errors: list[str] = []
-    if not task:
-        return ["implementation_task_missing_or_invalid"]
-    if implementer_profile == reviewer_profile:
-        errors.append("implementer_and_reviewer_must_differ")
+    if implementer_profile == reviewer_profile: errors.append("implementer_and_reviewer_must_differ")
     task_id = task.get("id")
     if not isinstance(task_id, str) or not task_id:
-        errors.append("implementation_id_missing")
-        return errors
+        errors.append("implementation_id_missing"); return errors
     resolved_path = resolved_implementation_worktree(payload)
     if not resolved_path:
-        errors.append("implementation_resolved_worktree_missing")
-        return errors
-    if task.get("assignee") != reviewer_profile:
-        errors.append(f"review_assignee: expected={reviewer_profile!r} actual={task.get('assignee')!r}")
-    if task.get("status") != "review":
-        errors.append(f"review_status: expected='review' actual={task.get('status')!r}")
+        errors.append("implementation_resolved_worktree_missing"); return errors
+    if task.get("assignee") != reviewer_profile: errors.append(f"review_assignee: expected={reviewer_profile!r} actual={task.get('assignee')!r}")
+    if task.get("status") != "review": errors.append(f"review_status: expected='review' actual={task.get('status')!r}")
 
     latest_event = _latest_review_requested_event(payload)
     event_run_id: int | None = None
@@ -159,53 +133,34 @@ def validate_review_handoff(payload: Mapping[str, Any], *, implementer_profile: 
         errors.append("review_requested_event_missing_or_mismatched")
     else:
         event_payload = latest_event.get("payload")
-        if not isinstance(event_payload, Mapping) or (
-            event_payload.get("implementer") != implementer_profile
-            or event_payload.get("reviewer") != reviewer_profile
-        ):
+        if not isinstance(event_payload, Mapping) or event_payload.get("implementer") != implementer_profile or event_payload.get("reviewer") != reviewer_profile:
             errors.append("review_requested_event_missing_or_mismatched")
         raw_event_run_id = latest_event.get("run_id")
-        if not isinstance(raw_event_run_id, int):
-            errors.append("review_requested_event_run_id_required")
-        else:
-            event_run_id = raw_event_run_id
+        if not isinstance(raw_event_run_id, int): errors.append("review_requested_event_run_id_required")
+        else: event_run_id = raw_event_run_id
 
     latest_run = _latest_run(payload)
-    if latest_run is None or (
-        latest_run.get("profile") != implementer_profile
-        or latest_run.get("outcome") != "review_requested"
-    ):
+    if latest_run is None or latest_run.get("profile") != implementer_profile or latest_run.get("outcome") != "review_requested":
         errors.append("current_implementer_review_run_missing_or_mismatched")
     else:
         run_id = latest_run.get("id")
-        if not isinstance(run_id, int):
-            errors.append("current_implementer_run_id_required")
-        elif event_run_id is None or run_id != event_run_id:
-            errors.append("review_requested_event_run_mismatch")
+        if not isinstance(run_id, int): errors.append("current_implementer_run_id_required")
+        elif event_run_id is None or run_id != event_run_id: errors.append("review_requested_event_run_mismatch")
         metadata = latest_run.get("metadata")
         if not isinstance(metadata, Mapping):
             errors.append("implementer_review_run_metadata_required")
         else:
             metadata_path = metadata.get("workspace_path") or metadata.get("workspace")
-            if metadata_path != resolved_path:
-                errors.append("implementer_review_run_workspace_mismatched")
-            metadata_task_id = metadata.get("task_id")
-            if metadata_task_id is not None and metadata_task_id != task_id:
-                errors.append("implementer_review_run_task_mismatched")
+            if metadata_path != resolved_path: errors.append("implementer_review_run_workspace_mismatched")
+            if metadata.get("task_id") != task_id: errors.append("implementer_review_run_task_mismatched")
     return errors
 
 
 def validate_routed_review_handoff(payload: Mapping[str, Any]) -> list[str]:
     route, route_errors = route_from_payload(payload)
-    if route_errors or route is None:
-        return [f"model_routing:{error}" for error in (route_errors or ["unparseable"])]
-    if len(route.required_reviewers) != 1:
-        return ["same_card_review_requires_exactly_one_reviewer"]
-    return validate_review_handoff(
-        payload,
-        implementer_profile=route.implementer,
-        reviewer_profile=route.required_reviewers[0],
-    )
+    if route_errors or route is None: return [f"model_routing:{error}" for error in (route_errors or ["unparseable"])]
+    if len(route.required_reviewers) != 1: return ["same_card_review_requires_exactly_one_reviewer"]
+    return validate_review_handoff(payload, implementer_profile=route.implementer, reviewer_profile=route.required_reviewers[0])
 
 
 def validate_task_graph(actual: Mapping[str, Any], expectation: RuntimeExpectation) -> list[str]:
@@ -213,9 +168,7 @@ def validate_task_graph(actual: Mapping[str, Any], expectation: RuntimeExpectati
 
 
 def format_drift(errors: Sequence[str]) -> str:
-    if not errors:
-        return "RUNTIME_CONTRACT_OK"
-    return "RUNTIME_CONTRACT_DRIFT: " + "; ".join(errors)
+    return "RUNTIME_CONTRACT_OK" if not errors else "RUNTIME_CONTRACT_DRIFT: " + "; ".join(errors)
 
 
 def _json_object(value: str, label: str) -> Mapping[str, Any]:
@@ -225,24 +178,19 @@ def _json_object(value: str, label: str) -> Mapping[str, Any]:
         raise SystemExit(f"{label}: duplicate JSON key: {exc}") from exc
     except json.JSONDecodeError as exc:
         raise SystemExit(f"{label}: invalid JSON: {exc}") from exc
-    if not isinstance(parsed, dict):
-        raise SystemExit(f"{label}: expected JSON object")
+    if not isinstance(parsed, dict): raise SystemExit(f"{label}: expected JSON object")
     return parsed
 
 
 def _runtime_command(args: argparse.Namespace) -> int:
     actual = _json_object(args.actual_json, "actual-json")
     expectation = RuntimeExpectation(args.assignee, args.workspace_kind, args.workspace_path, args.branch_name, args.max_retries, tuple(args.parent))
-    errors = validate_runtime(actual, expectation)
-    print(format_drift(errors))
-    return 0 if not errors else 2
+    errors = validate_runtime(actual, expectation); print(format_drift(errors)); return 0 if not errors else 2
 
 
 def _routed_handoff_command(args: argparse.Namespace) -> int:
     actual = _json_object(args.actual_json, "actual-json")
-    errors = validate_routed_review_handoff(actual)
-    print(format_drift(errors))
-    return 0 if not errors else 2
+    errors = validate_routed_review_handoff(actual); print(format_drift(errors)); return 0 if not errors else 2
 
 
 def build_cli_parser() -> argparse.ArgumentParser:
@@ -252,15 +200,12 @@ def build_cli_parser() -> argparse.ArgumentParser:
     runtime.add_argument("--actual-json", required=True); runtime.add_argument("--assignee", required=True); runtime.add_argument("--workspace-kind", required=True)
     runtime.add_argument("--workspace-path", default=None); runtime.add_argument("--branch-name", default=None); runtime.add_argument("--max-retries", type=int, default=None); runtime.add_argument("--parent", action="append", default=[])
     runtime.set_defaults(func=_runtime_command)
-    routed = sub.add_parser("routed-handoff")
-    routed.add_argument("--actual-json", required=True); routed.set_defaults(func=_routed_handoff_command)
+    routed = sub.add_parser("routed-handoff"); routed.add_argument("--actual-json", required=True); routed.set_defaults(func=_routed_handoff_command)
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    args = build_cli_parser().parse_args(argv)
-    return int(args.func(args))
+    args = build_cli_parser().parse_args(argv); return int(args.func(args))
 
 
-if __name__ == "__main__":
-    raise SystemExit(main())
+if __name__ == "__main__": raise SystemExit(main())
