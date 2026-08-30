@@ -82,11 +82,11 @@ There is no body-independent `validate-handoff` operation. Routed handoff derive
 
 ## 7. Claude Code mechanical execution boundary
 
-Claude-backed profiles use profile-scoped `factory-execution-guards` v0.3.0.
+Claude-backed profiles use profile-scoped `factory-execution-guards` v0.4.0.
 
 Outer GPT terminal access is **Claude-only**: no `find`, Git, Python, grep or other helper executable is permitted. Direct file/code mutation tools are blocked.
 
-Only literal argv0 `claude` is accepted. `./claude`, `/tmp/claude` and alternate paths are refused. Guard resolves the PATH-selected Claude binary itself, resolves it to a non-symlinked regular file, and binds its path + SHA-256 to the attestation.
+Only literal argv0 `claude` is accepted. `./claude`, `/tmp/claude` and alternate paths are refused. Guard resolves the PATH-selected Claude binary itself and binds its resolved path + SHA-256 to the attestation.
 
 Claude argv uses a closed schema:
 
@@ -110,27 +110,17 @@ Read,Write,Edit,Glob,Grep,Bash(git status *),Bash(git diff *),Bash(git rev-parse
 Read,Glob,Grep
 ```
 
-Reviewer/architect Claude receives **no Bash capability at all**. This mechanically excludes Git output flags, external diff/pager execution and any shell-based write path during read-only Claude review/architecture.
+Reviewer/architect Claude receives **no Bash capability at all**.
 
 ### In-process attestation and durable evidence
 
-Before a canonical Claude terminal call, `pre_tool_call` creates a random nonce held only in the trusted Hermes worker process and captures:
+Before canonical Claude execution, `pre_tool_call` creates a random nonce held only in the trusted Hermes worker process and captures task/run/profile, resolved workspace, command SHA-256, Claude binary path+SHA-256, Git HEAD, and a content-state digest.
 
-- task/run/profile,
-- resolved workspace,
-- command SHA-256,
-- Claude binary path + SHA-256,
-- Git HEAD before execution,
-- SHA-256 of `git status --porcelain=v1 -z --untracked-files=all` before execution.
+The content-state digest covers staged diff plus raw bytes/mode/symlink targets for all modified, deleted and untracked paths. It therefore changes when file contents change even if `git status` would still show the same status class.
 
-`post_tool_call` may emit evidence only if it sees the matching pending in-memory attestation and a successful Claude JSON result. Evidence schema v4 additionally records Git HEAD/workspace-state after execution and an attestation ID derived from the in-memory nonce.
+`post_tool_call` may emit evidence only for the matching pending in-memory attestation and a successful Claude JSON result. Evidence schema v5 records before/after Git HEAD and content-state digests plus an attestation ID derived from the in-memory nonce.
 
-A durable JSON file **alone cannot unlock lifecycle**. `kanban_request_review` / Claude-backed completion requires both:
-
-1. matching schema-v4 evidence, and
-2. matching completed attestation still held in the same worker process.
-
-The guard revalidates current Claude binary identity, resolved workspace, current Git HEAD and workspace-state digest against the evidence immediately before lifecycle transition. Any subsequent workspace change invalidates the evidence. Starting another Claude command invalidates prior completed attestation.
+A durable JSON file alone cannot unlock lifecycle. `kanban_request_review` / Claude-backed completion requires both matching schema-v5 evidence and matching completed attestation still held in the same worker process. Current Claude binary identity, resolved workspace, Git HEAD and content-state digest are revalidated immediately before lifecycle transition. Any subsequent workspace-content change or another Claude invocation invalidates the prior attestation.
 
 ## 8. Runtime-controller mechanical boundary
 
