@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BOOTSTRAP="${ROOT_DIR}/hermes/bootstrap_profiles.sh"
 RUNTIME_BOOTSTRAP="${ROOT_DIR}/hermes/bootstrap_runtime_controller.sh"
+PLUGIN_INSTALLER="${ROOT_DIR}/hermes/install_factory_plugins.sh"
 STANDARD="${ROOT_DIR}/standards/SOFTWARE_DEVELOPMENT_STANDARD.md"
 MODEL_POLICY="${ROOT_DIR}/workflows/MODEL_ROUTING_POLICY.md"
 MODEL_ROUTING="${ROOT_DIR}/hermes/model_routing_policy.py"
@@ -12,8 +13,8 @@ GUARD_TESTS="${ROOT_DIR}/hermes/test_factory_execution_guards.py"
 ORCHESTRATOR_SOUL="${ROOT_DIR}/hermes/profiles/orchestrator/SOUL.md"
 
 printf '[check] syntax and required sources\n'
-bash -n "${BOOTSTRAP}" "${RUNTIME_BOOTSTRAP}"
-for path in "${STANDARD}" "${MODEL_POLICY}" "${MODEL_ROUTING}" "${GUARD}" "${GUARD_TESTS}"; do test -f "${path}"; done
+bash -n "${BOOTSTRAP}" "${RUNTIME_BOOTSTRAP}" "${PLUGIN_INSTALLER}"
+for path in "${STANDARD}" "${MODEL_POLICY}" "${MODEL_ROUTING}" "${GUARD}" "${GUARD_TESTS}" "${PLUGIN_INSTALLER}"; do test -f "${path}"; done
 
 printf '[check] pinned Claude policy\n'
 grep -Fq 'CLAUDE_SKILL="claude-code"' "${BOOTSTRAP}"
@@ -28,6 +29,13 @@ grep -Fq 'config set --force factory.execution_backend claude-code' "${BOOTSTRAP
 grep -Fq 'coder-claude config set --force factory.claude_model_class sonnet' "${BOOTSTRAP}"
 grep -Fq 'reviewer-claude config set --force factory.claude_model_class sonnet' "${BOOTSTRAP}"
 grep -Fq 'architect-claude-opus config set --force factory.claude_model_class opus' "${BOOTSTRAP}"
+
+printf '[check] controlled reviewed plugin upgrade\n'
+grep -Fq -- '--replace-reviewed' "${PLUGIN_INSTALLER}"
+grep -Fq 'backup=' "${PLUGIN_INSTALLER}"
+grep -Fq 'restore_on_failure()' "${PLUGIN_INSTALLER}"
+grep -Fq -- '--plugin "${EXECUTION_GUARD}" --replace-reviewed' "${BOOTSTRAP}"
+grep -Fq -- '--plugin "${EXECUTION_GUARD}" --replace-reviewed' "${RUNTIME_BOOTSTRAP}"
 
 printf '[check] legacy Ox inference kill switch\n'
 grep -Fq 'if profile_exists auditor-ox; then' "${BOOTSTRAP}"
@@ -53,6 +61,8 @@ grep -Fq 'factory-evidence' "${GUARD}"
 grep -Fq 'session_id' "${GUARD}"
 grep -Fq 'subtype") != "success"' "${GUARD}"
 grep -Fq 'profile == "reviewer-claude" and "Write"' "${GUARD}"
+grep -Fq 'HERMES_KANBAN_TASK' "${GUARD}"
+grep -Fq 'hook ids are fallback only outside Kanban' "${GUARD}"
 
 printf '[check] routing policy shape\n'
 grep -Fq 'security_sensitive_openai_implementer_forbidden' "${MODEL_ROUTING}"
@@ -75,5 +85,5 @@ grep -Fq 'SECURITY_SENSITIVE: yes' "${ORCHESTRATOR_SOUL}"
 printf '[check] guard unit tests\n'
 (cd "${ROOT_DIR}" && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -q hermes.test_factory_execution_guards)
 
-if command -v shellcheck >/dev/null 2>&1; then shellcheck "${BOOTSTRAP}" "${RUNTIME_BOOTSTRAP}" "$0"; else echo '[info] shellcheck nie jest zainstalowany; pomijam'; fi
+if command -v shellcheck >/dev/null 2>&1; then shellcheck "${BOOTSTRAP}" "${RUNTIME_BOOTSTRAP}" "${PLUGIN_INSTALLER}" "$0"; else echo '[info] shellcheck nie jest zainstalowany; pomijam'; fi
 printf 'OK: statyczna weryfikacja bootstrapu i mechanicznych execution guards zakończona\n'
