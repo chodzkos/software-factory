@@ -21,10 +21,7 @@ mapfile -t argv <"${HERMES_FAKE_LOG}"
 expected=(kanban block --kind needs_input t_gate "RUNTIME CONTRACT PENDING")
 [[ "${#argv[@]}" -eq "${#expected[@]}" ]]
 for i in "${!expected[@]}"; do
-  [[ "${argv[$i]}" == "${expected[$i]}" ]] || {
-    echo "ERROR: argv[$i] expected '${expected[$i]}', got '${argv[$i]}'" >&2
-    exit 1
-  }
+  [[ "${argv[$i]}" == "${expected[$i]}" ]] || { echo "ERROR: argv[$i] mismatch" >&2; exit 1; }
 done
 
 rm -f "${HERMES_FAKE_LOG}"
@@ -32,8 +29,17 @@ set +e
 bash "${WRAPPER}" block t_gate --kind transient SMUGGLE >/dev/null 2>&1
 rc=$?
 set -e
-[[ "${rc}" -eq 2 ]] || { echo "ERROR: flag-shaped block reason expected exit 2, got ${rc}" >&2; exit 1; }
-[[ ! -e "${HERMES_FAKE_LOG}" ]] || { echo "ERROR: rejected block reason must not invoke hermes" >&2; exit 1; }
+[[ "${rc}" -eq 2 ]]
+[[ ! -e "${HERMES_FAKE_LOG}" ]]
+
+# The old body-independent handoff operation must be completely absent.
+rm -f "${HERMES_FAKE_LOG}"
+set +e
+bash "${WRAPPER}" validate-handoff --actual-json '{}' --implementer-profile coder --reviewer-profile reviewer-gpt >/dev/null 2>&1
+rc=$?
+set -e
+[[ "${rc}" -eq 2 ]] || { echo "ERROR: legacy validate-handoff unexpectedly exposed" >&2; exit 1; }
+[[ ! -e "${HERMES_FAKE_LOG}" ]] || { echo "ERROR: legacy validate-handoff invoked hermes" >&2; exit 1; }
 
 NORMAL_BODY=$'## Task Contract\nTYPE: feature\nRISK: medium\nSECURITY_SENSITIVE: no\nASSIGNEE: coder\nREPOSITORY: owner/repo\nWORKSPACE: worktree:/repo\nIMPLEMENTER: coder\nREQUIRED_REVIEWERS: reviewer-claude\nOPTIONAL_REVIEWERS: none\nREQUIRED_EVIDENCE: tests\nACCEPTANCE_CRITERIA:\n- works\n'
 NORMAL_JSON="$(python3 -c 'import json,sys; print(json.dumps({"task":{"body":sys.argv[1]}}))' "${NORMAL_BODY}")"
@@ -45,10 +51,7 @@ set +e
 routing_bad="$(bash "${WRAPPER}" validate-routing --task-body "${SECURITY_BAD_BODY}" 2>&1)"
 rc=$?
 set -e
-[[ "${rc}" -eq 2 ]] || { echo "ERROR: forbidden Claude security reviewer expected exit 2, got ${rc}" >&2; exit 1; }
-[[ "${routing_bad}" == MODEL_ROUTING_DRIFT:*anthropic_security_reviewer_forbidden* ]] || {
-  echo "ERROR: expected anthropic security-review block, got ${routing_bad}" >&2
-  exit 1
-}
+[[ "${rc}" -eq 2 ]]
+[[ "${routing_bad}" == MODEL_ROUTING_DRIFT:*anthropic_security_reviewer_forbidden* ]]
 
-printf 'OK: scoped runtime wrapper block and body-bound model-routing hardening\n'
+printf 'OK: scoped runtime wrapper exposes only body-bound handoff and routing operations\n'
