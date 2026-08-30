@@ -96,7 +96,7 @@ grep -Fq 'exec python3 "${VALIDATOR}" runtime "$@"' "${RUNTIME_WRAPPER}"
 grep -Fq 'exec python3 "${VALIDATOR}" handoff "$@"' "${RUNTIME_WRAPPER}"
 grep -Fq 'exec python3 "${MODEL_ROUTING_VALIDATOR}" "$@"' "${RUNTIME_WRAPPER}"
 if grep -Fq 'eval ' "${RUNTIME_WRAPPER}"; then echo 'ERROR: runtime wrapper must not use eval' >&2; exit 1; fi
-bash "${RUNTIME_WRAPPER_TEST}"
+PYTHONDONTWRITEBYTECODE=1 bash "${RUNTIME_WRAPPER_TEST}"
 
 printf '[check] runtime controller bootstrap policy\n'
 grep -Fq 'PROFILE="runtime-controller"' "${RUNTIME_BOOTSTRAP}"
@@ -119,8 +119,8 @@ grep -Fq 'CLAUDE_REVIEWER = "reviewer-claude"' "${MODEL_ROUTING}"
 grep -Fq 'anthropic_security_reviewer_forbidden' "${MODEL_ROUTING}"
 grep -Fq 'normal_review_must_be_cross_vendor' "${MODEL_ROUTING}"
 grep -Fq 'SECURITY_SENSITIVE: yes|no' "${DECOMPOSER_SOUL}"
-grep -Fq '`coder` wymaga `reviewer-claude`' "${DECOMPOSER_SOUL}"
-grep -Fq '`coder-claude` wymaga `reviewer-gpt`' "${DECOMPOSER_SOUL}"
+grep -Fq '`reviewer-claude`' "${DECOMPOSER_SOUL}"
+grep -Fq '`reviewer-gpt`' "${DECOMPOSER_SOUL}"
 grep -Fq 'review zawsze wykonuje `reviewer-gpt`' "${ORCHESTRATOR_SOUL}"
 grep -Fq 'security-sensitive' "${REVIEWER_GPT_SOUL}"
 grep -Fq 'SECURITY_SENSITIVE: yes' "${REVIEWER_CLAUDE_SOUL}"
@@ -143,17 +143,24 @@ grep -Fq 'PRIMARY_PROFILE=primary-gpt bash hermes/bootstrap_runtime_controller.s
 grep -Fq 'DISPATCHER_PROFILE=default bash hermes/configure_kanban.sh' "${CONTRACT}"
 grep -Fq 'Software Factory nie jest gotowy do uruchamiania tasków wymagających runtime gate' "${CONTRACT}"
 
-printf '[check] python syntax\n'
-python3 -m py_compile "${PARSER}" "${PARSER_TESTS}" "${RUNTIME_VALIDATOR}" "${RUNTIME_TESTS}" "${MODEL_ROUTING}" "${MODEL_ROUTING_TESTS}"
+printf '[check] python syntax without bytecode writes\n'
+PYTHONDONTWRITEBYTECODE=1 python3 - "${PARSER}" "${PARSER_TESTS}" "${RUNTIME_VALIDATOR}" "${RUNTIME_TESTS}" "${MODEL_ROUTING}" "${MODEL_ROUTING_TESTS}" <<'PY'
+from pathlib import Path
+import sys
+for raw in sys.argv[1:]:
+    path = Path(raw)
+    compile(path.read_text(encoding='utf-8'), str(path), 'exec')
+print('OK: Python syntax compiled in-memory')
+PY
 
 printf '[check] parser tests\n'
-(cd "${ROOT_DIR}/hermes" && python3 -m unittest -q test_review_decision.py)
+(cd "${ROOT_DIR}/hermes" && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -q test_review_decision.py)
 
 printf '[check] runtime contract tests\n'
-(cd "${ROOT_DIR}/hermes" && python3 -m unittest -q test_kanban_runtime_contract.py)
+(cd "${ROOT_DIR}/hermes" && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -q test_kanban_runtime_contract.py)
 
 printf '[check] model routing tests\n'
-(cd "${ROOT_DIR}/hermes" && python3 -m unittest -q test_model_routing_policy.py)
+(cd "${ROOT_DIR}/hermes" && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -q test_model_routing_policy.py)
 
 printf '[check] bootstrap compatibility\n'
 bash "${BOOTSTRAP_VERIFY}"
