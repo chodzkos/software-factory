@@ -85,9 +85,22 @@ HERMES_PLUGINS_DIR="$dest" bash "$root/hermes/install_factory_plugins.sh" --plug
 printf '\n# installed drift\n' >> "$dest/factory-repository-readonly/repository_tools.py"
 expect_fail "differing installed plugin" env HERMES_PLUGINS_DIR="$dest" bash "$root/hermes/install_factory_plugins.sh" --plugin factory-repository-readonly
 
+printf '[plugin-installer] reviewed replacement restores exact pinned target\n'
+root="$TMP/replace"; make_fixture "$root"; dest="$TMP/replace-install"
+HERMES_PLUGINS_DIR="$dest" bash "$root/hermes/install_factory_plugins.sh" --plugin factory-repository-readonly >/dev/null
+printf '\n# old reviewed bytes simulation\n' >> "$dest/factory-repository-readonly/repository_tools.py"
+HERMES_PLUGINS_DIR="$dest" bash "$root/hermes/install_factory_plugins.sh" --plugin factory-repository-readonly --dry-run --replace-reviewed >/dev/null
+HERMES_PLUGINS_DIR="$dest" bash "$root/hermes/install_factory_plugins.sh" --plugin factory-repository-readonly --replace-reviewed >/dev/null
+diff -qr "$root/hermes/plugins/factory-repository-readonly" "$dest/factory-repository-readonly" >/dev/null
+if find "$dest" -maxdepth 1 -type d -name '.factory-plugin.backup.*' -print -quit | grep -q .; then
+  echo 'ERROR: reviewed replacement left backup directory behind' >&2
+  exit 1
+fi
+echo 'OK: reviewed plugin replacement'
+
 printf '[plugin-installer] target symlink refused\n'
 root="$TMP/target-link"; make_fixture "$root"; mkdir -p "$TMP/target-link-dest" "$TMP/elsewhere"
 ln -s "$TMP/elsewhere" "$TMP/target-link-dest/factory-repository-readonly"
-expect_fail "installed plugin target symlink" env HERMES_PLUGINS_DIR="$TMP/target-link-dest" bash "$root/hermes/install_factory_plugins.sh" --plugin factory-repository-readonly
+expect_fail "installed plugin target symlink" env HERMES_PLUGINS_DIR="$TMP/target-link-dest" bash "$root/hermes/install_factory_plugins.sh" --plugin factory-repository-readonly --replace-reviewed
 
 echo 'OK: factory plugin installer adversarial checks'
