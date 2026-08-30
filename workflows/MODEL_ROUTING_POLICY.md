@@ -53,6 +53,16 @@ SECURITY_SENSITIVE: yes|no
 
 This field is explicit; absence is routing drift, not an implicit `no`.
 
+The actual Markdown body stored on the Kanban card is the routing source of truth. The routing gate requires these body fields:
+
+```text
+IMPLEMENTER: <profile>
+REQUIRED_REVIEWERS: <comma-separated profiles>
+SECURITY_SENSITIVE: yes|no
+```
+
+Duplicate or missing routing fields fail closed.
+
 ## 5. Mechanical routing matrix
 
 | Implementer | SECURITY_SENSITIVE | Required reviewers |
@@ -71,7 +81,16 @@ Rules:
 - unknown implementers/reviewers fail closed,
 - hidden provider/model fallback is forbidden; backend unavailability becomes a visible blocked state.
 
-The executable policy is `hermes/model_routing_policy.py`. `runtime-controller` must execute `kanban_runtime_cli.sh validate-routing ...` before releasing a runtime gate for implementation/review work.
+The executable policy is `hermes/model_routing_policy.py`.
+
+`runtime-controller` uses it in two stages:
+
+1. before create, optional preflight on the exact proposed body:
+   `kanban_runtime_cli.sh validate-routing --task-body "<exact task body>"`;
+2. after create/readback and before gate release or review dispatch, mandatory validation of the live card:
+   `kanban_runtime_cli.sh validate-routing --actual-json "<live show --json payload>"`.
+
+`MODEL_ROUTING_OK` is required. `MODEL_ROUTING_DRIFT` keeps the runtime gate blocked. Text arguments supplied separately by the orchestrator do not override a conflicting live task body.
 
 ## 6. Claude Code backend requirements
 
