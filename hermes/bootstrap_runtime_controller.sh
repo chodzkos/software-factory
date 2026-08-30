@@ -9,9 +9,10 @@ PROFILE_DIR="${PROFILE_ROOT}/${PROFILE}"
 SOUL_SRC="${ROOT_DIR}/hermes/profiles/${PROFILE}/SOUL.md"
 WRAPPER_SRC="${ROOT_DIR}/hermes/kanban_runtime_cli.sh"
 VALIDATOR_SRC="${ROOT_DIR}/hermes/kanban_runtime_contract.py"
+MODEL_ROUTING_SRC="${ROOT_DIR}/hermes/model_routing_policy.py"
 
 if ! command -v hermes >/dev/null 2>&1; then echo "ERROR: hermes not found in PATH" >&2; exit 1; fi
-for path in "${SOUL_SRC}" "${WRAPPER_SRC}" "${VALIDATOR_SRC}"; do
+for path in "${SOUL_SRC}" "${WRAPPER_SRC}" "${VALIDATOR_SRC}" "${MODEL_ROUTING_SRC}"; do
   test -f "${path}" || { echo "ERROR: missing ${path}" >&2; exit 1; }
 done
 
@@ -27,6 +28,7 @@ fi
 install -m 0644 "${SOUL_SRC}" "${PROFILE_DIR}/SOUL.md"
 install -m 0755 "${WRAPPER_SRC}" "${PROFILE_DIR}/kanban_runtime_cli.sh"
 install -m 0644 "${VALIDATOR_SRC}" "${PROFILE_DIR}/kanban_runtime_contract.py"
+install -m 0644 "${MODEL_ROUTING_SRC}" "${PROFILE_DIR}/model_routing_policy.py"
 
 hermes -p "${PROFILE}" config set model.provider "${primary_provider}"
 hermes -p "${PROFILE}" config set model.default "${primary_model}"
@@ -59,4 +61,5 @@ fi
 
 test -x "${PROFILE_DIR}/kanban_runtime_cli.sh"
 test -f "${PROFILE_DIR}/kanban_runtime_contract.py"
+test -f "${PROFILE_DIR}/model_routing_policy.py"
 echo "OK: ${PROFILE} bootstrapped with scoped runtime-control policy"
