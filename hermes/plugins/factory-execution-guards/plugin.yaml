@@ -1,5 +1,5 @@
 name: factory-execution-guards
-version: 0.3.0
+version: 0.4.0
 description: Fail-closed execution guards for Software Factory runtime-controller and Claude-backed profiles.
 entrypoint: __init__:register
 provides_hooks:
