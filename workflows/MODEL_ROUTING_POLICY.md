@@ -13,11 +13,11 @@ This policy supplements `standards/SOFTWARE_DEVELOPMENT_STANDARD.md` and `workfl
 
 ### `coder-claude`
 
-- Hermes coordination profile; actual coding is delegated through the bundled Hermes skill `claude-code` to Claude Code CLI,
+- Hermes coordination profile; actual coding is delegated through bundled `claude-code` to Claude Code CLI,
 - `factory.execution_backend=claude-code`,
-- model class is pinned to `sonnet`,
+- model class pinned to `sonnet`,
 - exact reviewer: `reviewer-gpt`,
-- required implementer for `SECURITY_SENSITIVE: yes` so the mandatory OpenAI security review remains cross-vendor.
+- required implementer for `SECURITY_SENSITIVE: yes` so mandatory OpenAI security review remains cross-vendor.
 
 Ox Alpha is not an active Software Factory implementation/review backend.
 
@@ -25,16 +25,17 @@ Ox Alpha is not an active Software Factory implementation/review backend.
 
 ### `reviewer-gpt`
 
-- native OpenAI/GPT independent reviewer,
+- native OpenAI independent reviewer,
+- provider is pinned to `openai-codex`, model to `gpt-5.6-sol`; this pin does not inherit `PRIMARY_PROFILE` and is not affected by `ALLOW_NON_GPT_PRIMARY`,
 - exact reviewer for `coder-claude`,
 - the only same-card profile allowed to perform `SECURITY_SENSITIVE: yes` review.
 
 ### `reviewer-claude`
 
-- actual review delegated to Claude Code through the bundled `claude-code` skill,
-- model class is pinned to `sonnet`,
+- actual review delegated to Claude Code through bundled `claude-code`,
+- model class pinned to `sonnet`,
 - exact reviewer for non-security native OpenAI `coder`,
-- forbidden for `SECURITY_SENSITIVE: yes` review.
+- mechanically read-only and forbidden for `SECURITY_SENSITIVE: yes` review.
 
 ### `critic`
 
@@ -44,7 +45,7 @@ Ox Alpha is not an active Software Factory implementation/review backend.
 
 ## 3. Complex architecture escalation
 
-`architect-claude-opus` is optional and may be used only for difficult architecture/hard-reasoning tasks. It delegates analysis through the `claude-code` skill with model class pinned to `opus`. It is not a routine coding/review profile and is never a security reviewer.
+`architect-claude-opus` is optional for difficult architecture/hard reasoning. It delegates read-only analysis through `claude-code` with model class pinned to `opus`. It is never a security reviewer or implementation profile.
 
 ## 4. Required task-contract fields
 
@@ -56,7 +57,7 @@ REQUIRED_REVIEWERS: <exact reviewer profile>
 SECURITY_SENSITIVE: yes|no
 ```
 
-The actual Markdown body stored on the Kanban card is the routing source of truth. Missing/duplicate fields, malformed reviewer CSV, `none`, unknown profiles or extra reviewers fail closed.
+Live Markdown body is the routing source of truth. Missing/duplicate fields, malformed reviewer CSV, `none`, unknown profiles or extra reviewers fail closed.
 
 ## 5. Mechanical routing matrix
 
@@ -70,43 +71,70 @@ The actual Markdown body stored on the Kanban card is the routing source of trut
 Rules:
 
 - normal review is cross-vendor relative to the implementer,
-- security-sensitive review is always OpenAI and cross-vendor,
-- OpenAI implementation is therefore forbidden for security-sensitive cards,
+- security-sensitive review is always pinned OpenAI and cross-vendor,
+- OpenAI implementation is forbidden for security-sensitive cards,
 - Claude review is forbidden for security-sensitive cards,
-- the reviewer set must equal the canonical set exactly; additional reviewers cannot be smuggled into `REQUIRED_REVIEWERS`,
+- reviewer set must equal the canonical set exactly,
 - hidden provider/model fallback is forbidden.
 
-The executable policy is `hermes/model_routing_policy.py`.
+## 6. Strict live routing and handoff binding
 
-## 6. Live routing and handoff binding
-
-`runtime-controller` performs two distinct checks against the same live task state:
+Both live validators use the same strict JSON decoder and reject duplicate keys at any object depth.
 
 1. `validate-routing --actual-json "<live show --json>"` validates exact task-body routing;
-2. `validate-routed-handoff --actual-json "<same live show --json>"` derives implementer/reviewer from that body and verifies the current assignee, `review_requested` event, implementer run and resolved worktree.
+2. `validate-routed-handoff --actual-json "<same live show --json>"` is the **only** production handoff validator.
 
-The handoff validator does not accept orchestrator-supplied implementer/reviewer identities as security inputs. A conflicting assignee/event cannot pass by supplying matching CLI arguments.
+There is no body-independent `validate-handoff` operation. Routed handoff derives implementer/reviewer from live body and requires:
+
+- exact `status=review` and reviewer assignee,
+- canonical absolute `.../.worktrees/<task-id>` with no `.`/`..` escape and no symlink escape when the path exists,
+- latest `review_requested` with matching profiles and mandatory integer `run_id`,
+- latest implementer run with `outcome=review_requested` and identical run ID,
+- mandatory run metadata containing the same resolved worktree.
 
 ## 7. Claude Code mechanical execution boundary
 
-Profiles using `factory.execution_backend=claude-code` must have profile-scoped `factory-execution-guards` enabled.
+Profiles using `factory.execution_backend=claude-code` have profile-scoped `factory-execution-guards` v0.2.0.
 
-The guard:
+Outer GPT terminal access is **Claude-only**: no `find`, Git, Python, grep or other helper executable is permitted. File/code mutation tools are also blocked directly.
 
-- blocks direct outer-agent write/patch/code-execution capability,
-- allows canonical Claude print-mode invocation only with the profile's pinned model class and JSON output,
-- permits only a small read-only terminal verification surface outside Claude,
-- stores durable successful Claude evidence outside the repository keyed by task/run/profile, including model class and Claude session id,
-- blocks `coder-claude` review handoff until successful Claude evidence exists for the current run,
-- blocks Claude-backed reviewer/architecture completion until equivalent evidence exists,
-- fails closed if evidence cannot be written or validated.
+Only literal argv0 `claude` is accepted; `./claude`, `/tmp/claude` and alternate paths are refused. Guard resolves the process PATH-selected Claude binary itself and records its resolved path plus SHA-256 in evidence.
 
-`reviewer-claude` additionally refuses Claude commands that expose `Write` in its allowed-tools declaration.
+Claude argv uses a closed schema:
+
+- exactly one `-p` or `--print`,
+- exact profile model (`sonnet` or `opus`),
+- `--output-format json`,
+- exact profile-specific `--allowedTools`,
+- optional bounded `--max-turns` and low/medium/high `--effort`,
+- duplicate flags, unknown flags, permission bypass, settings, MCP, plugins, resume/worktree/debug and fallback flags are refused.
+
+`coder-claude` exact tools:
+
+```text
+Read,Write,Edit,Bash(git status *),Bash(git diff *),Bash(git rev-parse *),Bash(python3 *)
+```
+
+`reviewer-claude` and `architect-claude-opus` exact read-only tools:
+
+```text
+Read,Bash(git status *),Bash(git diff *),Bash(git rev-parse *),Bash(git show *),Bash(git log *)
+```
+
+Evidence schema v2 is stored outside the repository and binds task ID, run ID, profile, model class, resolved workspace, Claude session ID, command hash, resolved Claude binary path and binary SHA-256. Before handoff/completion the current binary identity and workspace are revalidated against the record.
 
 ## 8. Runtime-controller mechanical boundary
 
-`runtime-controller` also has profile-scoped `factory-execution-guards` enabled. It receives only the terminal toolset, and `pre_tool_call` permits only direct execution of the installed `kanban_runtime_cli.sh` with the closed operation allowlist. Direct `hermes`, Git, Python, curl, file tools, shell operators and command substitution are blocked before execution.
+`runtime-controller` has profile-scoped `factory-execution-guards`, only the terminal toolset, and can execute only installed `kanban_runtime_cli.sh` operations: `create`, `show`, `block`, `complete`, `validate-runtime`, `validate-routed-handoff`, `validate-routing`. Direct `hermes`, Git, Python, curl, file tools, shell operators and command substitution are blocked.
 
-## 9. Legacy Ox
+## 9. Plugin supply-chain transaction
 
-A pre-existing `auditor-ox` directory may remain as historical local state, but bootstrap sets both `model.provider` and `model.default` to `disabled-legacy`, clears fallbacks/toolsets and disables tool discovery. `auditor-ox` is removed from Factory skill manifests and active routing/documentation. The custom metadata value is defense-in-depth; the invalid provider/model is the inference kill switch.
+Reviewed profile-scoped plugin installation freezes a single immutable source/pin snapshot after initial manifest validation. Publication never reopens the mutable manifest. Replacement is explicit (`--replace-reviewed`), serialized with `flock`, staged and re-hashed against the frozen snapshot. Rollback is armed before moving the old target; any post-publication failure removes the new target and atomically restores the backup. Restoration failures are not suppressed.
+
+## 10. Repository analyst isolation
+
+Canonical `bootstrap_profiles.sh` ends by running `bootstrap_repository_analyst_isolation.sh` and `verify_repository_analyst_isolation.sh --live`. A fresh deployment therefore cannot leave `repository-analyst` on inherited primary-profile capabilities.
+
+## 11. Legacy Ox
+
+A pre-existing `auditor-ox` directory may remain as historical local state, but bootstrap sets both `model.provider` and `model.default` to `disabled-legacy`, clears fallbacks/toolsets and disables tool discovery. `auditor-ox` is removed from Factory skill manifests and active routing. The invalid provider/model is the inference kill switch.
