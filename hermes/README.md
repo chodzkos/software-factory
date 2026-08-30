@@ -1,6 +1,6 @@
 # Hermes Software Factory
 
-Ta sekcja opisuje deklaratywną konfigurację profili Hermesa dla Software Factory. Kanoniczne zasady bezpieczeństwa i procesu pozostają w `standards/SOFTWARE_DEVELOPMENT_STANDARD.md`, `workflows/KANBAN_CONTRACT.md` i `workflows/MODEL_ROUTING_POLICY.md`.
+Ta sekcja opisuje konfigurację profili Hermesa dla Software Factory. Kanoniczne zasady pozostają w `standards/SOFTWARE_DEVELOPMENT_STANDARD.md`, `workflows/KANBAN_CONTRACT.md` i `workflows/MODEL_ROUTING_POLICY.md`.
 
 ## Polityka modeli
 
@@ -10,12 +10,12 @@ Ta sekcja opisuje deklaratywną konfigurację profili Hermesa dla Software Facto
 | `runtime-controller` | mechaniczny create/readback/runtime/model gate | primary GPT + guarded terminal only |
 | `architect` | wymagania/architektura | primary GPT |
 | `architect-claude-opus` | trudna architektura/hard reasoning | `claude-code` / pinned `opus` |
-| `repository-analyst` | analiza repo | primary GPT, isolated readonly tools |
+| `repository-analyst` | analiza repo | primary GPT + mandatory isolated readonly tools |
 | `task-decomposer` | dekompozycja | Gemini Flash-Lite |
 | `coder` | non-security implementation | primary GPT / native-openai |
 | `coder-claude` | Claude implementation; wymagany dla security-sensitive | `claude-code` / pinned `sonnet` |
-| `reviewer-gpt` | cross-vendor review pracy Claude; jedyny security reviewer | primary GPT / native-openai |
-| `reviewer-claude` | cross-vendor review non-security pracy `coder` | `claude-code` / pinned `sonnet` |
+| `reviewer-gpt` | cross-vendor review pracy Claude; jedyny security reviewer | **pinned `openai-codex/gpt-5.6-sol`** |
+| `reviewer-claude` | read-only cross-vendor review non-security pracy `coder` | `claude-code` / pinned `sonnet` |
 | `quick-reviewer` | tani pre-pass/CI triage | Gemini Flash-Lite |
 | `critic` | deep review/audit | Grok 4.6 |
 | `auditor-gpt` | audyt GPT | primary GPT |
@@ -38,49 +38,54 @@ SECURITY_SENSITIVE=yes:
   coder-claude -> reviewer-gpt
 ```
 
-Reviewer set musi być dokładny. Security review zawsze wykonuje OpenAI, a implementation security-sensitive musi być Claude, aby review pozostał cross-vendor. Dodatkowy `critic` jest modelowany osobnym mechanically gated audit taskiem, nie drugim reviewerem na tej samej Hermes 0.20.4 card.
+Reviewer set musi być dokładny. Security reviewer jest przypięty do OpenAI i nie dziedziczy providera/modelu z `PRIMARY_PROFILE`.
 
 ## Claude Code
 
-Profile Claude nie udają natywnego Anthropica w Hermesie. Outer Hermes używa primary GPT jako koordynatora, ale właściwa praca musi być wykonana przez bundlowany skill `claude-code` i Claude Code CLI.
+Profile Claude nie udają natywnego Anthropica w Hermesie. Outer Hermes koordynuje, ale właściwa praca musi przejść przez `claude-code`.
 
-Profile `coder-claude`, `reviewer-claude`, `architect-claude-opus` mają profile-scoped plugin `factory-execution-guards`:
+`factory-execution-guards` v0.2.0:
 
 - blokuje direct outer-GPT write/patch/code execution,
-- ogranicza terminal do canonical Claude invocation i małego read-only verification surface,
-- przypina `sonnet`/`opus`,
-- zapisuje durable Claude success evidence per task/run/profile poza repo,
-- blokuje lifecycle handoff/completion bez evidence.
+- terminal pozwala wyłącznie na literalne `claude`; żaden `find`, Git, Python, grep ani inny helper binary nie jest dopuszczony,
+- odrzuca `./claude`, `/tmp/claude`, duplicate/unknown flags, permission bypass, settings/MCP/plugin/resume/worktree/debug/fallback,
+- wymaga exact model + JSON + exact profile-specific `--allowedTools`,
+- dla reviewer/architect exact tools są read-only,
+- evidence schema v2 wiąże task/run/profile, resolved workspace, Claude session, command hash oraz resolved Claude binary path+SHA-256,
+- lifecycle transition ponownie sprawdza workspace i binary identity.
 
 Brak Claude CLI/OAuth/skilla/evidence oznacza blocked; nie ma hidden fallbacku.
 
 ## Runtime controller
 
-`runtime-controller` jest mechanicznie ograniczony, nie tylko instrukcją w SOUL. Bootstrap instaluje profile-scoped `factory-execution-guards`, a profil ma tylko toolset `terminal`. `pre_tool_call` przepuszcza wyłącznie dokładny:
+`runtime-controller` ma tylko toolset `terminal`; `pre_tool_call` przepuszcza wyłącznie:
 
 ```text
 ~/.hermes/profiles/runtime-controller/kanban_runtime_cli.sh <allowlisted-op> ...
 ```
 
-Direct `hermes`, Git, Python, curl, file/code tools, shell chaining, pipe i command substitution są blokowane.
+Operacje: `create`, `show`, `block`, `complete`, `validate-runtime`, `validate-routed-handoff`, `validate-routing`.
 
-Wrapper udostępnia zamknięte operacje: `create`, `show`, `block`, `complete`, `validate-runtime`, `validate-handoff` (legacy compatibility), `validate-routed-handoff`, `validate-routing`.
-
-Dla security-sensitive review źródłem prawdy jest `validate-routed-handoff`: sam parsuje live task body i wiąże routing z assignee/event/run/worktree. Osobne nazwy implementera/reviewera przekazane przez orchestratora nie są trusted security input.
-
-Bootstrap:
-
-```bash
-PRIMARY_PROFILE=default bash hermes/bootstrap_runtime_controller.sh
-```
+Body-independent `validate-handoff` został usunięty. Routed handoff jest jedynym production handoff gate, używa strict duplicate-key JSON i wiąże live body z assignee/event/run/worktree.
 
 ## Repository analyst
 
-`repository-analyst` pozostaje profilem izolowanym przez reviewed-ready `factory-repository-readonly`. Worker surface jest ograniczony do readonly repository tools + task-local guarded Kanban; brak generic terminal/file/code/MCP capability pozostaje osobnym, zweryfikowanym kontraktem z PR #22.
+Canonical `bootstrap_profiles.sh` nie kończy się już na utworzeniu/clonowaniu profilu. Na końcu obowiązkowo wykonuje:
+
+```text
+bootstrap_repository_analyst_isolation.sh
+verify_repository_analyst_isolation.sh --live
+```
+
+Fresh deployment nie może pozostawić `repository-analyst` z szerokim surface odziedziczonym z primary profile.
+
+## Plugin supply chain
+
+Reviewed plugin installer zamraża source+pin set w jednym immutable transaction snapshot. Transakcja później nie czyta ponownie mutable manifestu. `--replace-reviewed` jest explicit opt-in; staging/final verification używa tego samego snapshotu, publikacja jest pod `flock`, rollback jest uzbrojony przed ruszeniem starego targetu, a failure usuwa nowy target i obowiązkowo przywraca backup.
 
 ## Legacy Ox
 
-Stary katalog profilu `auditor-ox` może pozostać lokalnie po wcześniejszych wdrożeniach, ale nie jest aktywną rolą Factory. Bootstrap ustawia mu:
+Existing `auditor-ox` jest inference-disabled:
 
 ```text
 model.provider=disabled-legacy
@@ -90,8 +95,6 @@ fallback_providers=[]
 toolsets=[]
 tool_search=off
 ```
-
-oraz szeroki denylist. `auditor-ox` został usunięty z skill manifests i aktywnej polityki. Invalid provider/model jest inference kill switch.
 
 ## Instalacja / ponowny bootstrap
 
@@ -108,11 +111,11 @@ PRIMARY_PROFILE=default bash hermes/bootstrap_runtime_controller.sh
 DISPATCHER_PROFILE=default bash hermes/configure_kanban.sh
 ```
 
-Po bootstrapie wymagane są live negative/positive probes execution guarda oraz routing/handoffu przed uznaniem wdrożenia za VERIFIED.
+`bootstrap_profiles.sh` zawiera już live repository-analyst isolation gate. Po bootstrapie nadal wymagane są live negative/positive probes execution guarda i routed handoffu przed VERIFIED.
 
 ## Założenia procesu
 
-- `PRIMARY_PROFILE` jest działającym profilem GPT.
+- `PRIMARY_PROFILE` może sterować zwykłymi primary-GPT rolami, ale nie security reviewerem;
 - task kodowy używa `workspace=worktree:<repo>`;
 - jedna logiczna zmiana = jedna branch/worktree/card lifecycle;
 - implementer nie zatwierdza własnej pracy;
