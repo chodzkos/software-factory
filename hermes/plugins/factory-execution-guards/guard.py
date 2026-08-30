@@ -26,13 +26,9 @@ CLAUDE_ALLOWED_TOOLS = {
 }
 
 CODER_CLAUDE_TOOLS = "Read,Write,Edit,Glob,Grep,Bash(git status *),Bash(git diff *),Bash(git rev-parse *),Bash(python3 *)"
-READONLY_CLAUDE_TOOLS = (
-    "Read,Glob,Grep,"
-    "Bash(git status --short --untracked-files=all),"
-    "Bash(git diff --no-ext-diff --no-textconv --),"
-    "Bash(git diff --cached --no-ext-diff --no-textconv --),"
-    "Bash(git rev-parse HEAD),Bash(git rev-parse --show-toplevel)"
-)
+# No Bash at all for review/architecture. This removes git --output, external
+# diff/pager and similar write-capable escape hatches from Claude review runs.
+READONLY_CLAUDE_TOOLS = "Read,Glob,Grep"
 EVIDENCE_ROOT = Path.home() / ".hermes" / "factory-evidence" / "claude-code"
 SHELL_OPERATORS = frozenset({";", "&&", "||", "|", "&", ">", ">>", "<", "<<", "(", ")"})
 FORBIDDEN_CLAUDE_FLAGS = frozenset({
