@@ -44,15 +44,18 @@ Reviewer set musi być dokładny. Security reviewer jest przypięty do OpenAI i 
 
 Profile Claude nie udają natywnego Anthropica w Hermesie. Outer Hermes koordynuje, ale właściwa praca musi przejść przez `claude-code`.
 
-`factory-execution-guards` v0.2.0:
+`factory-execution-guards` v0.3.0:
 
 - blokuje direct outer-GPT write/patch/code execution,
-- terminal pozwala wyłącznie na literalne `claude`; żaden `find`, Git, Python, grep ani inny helper binary nie jest dopuszczony,
+- terminal pozwala wyłącznie na literalne `claude`; żaden `find`, Git, Python, grep ani inny helper binary nie jest dopuszczony dla outer GPT,
 - odrzuca `./claude`, `/tmp/claude`, duplicate/unknown flags, permission bypass, settings/MCP/plugin/resume/worktree/debug/fallback,
 - wymaga exact model + JSON + exact profile-specific `--allowedTools`,
-- dla reviewer/architect exact tools są read-only,
-- evidence schema v2 wiąże task/run/profile, resolved workspace, Claude session, command hash oraz resolved Claude binary path+SHA-256,
-- lifecycle transition ponownie sprawdza workspace i binary identity.
+- prompt musi zawierać exact task ID, run ID i resolved worktree,
+- reviewer/architect używają wyłącznie exact read-only Claude tool set,
+- przed Claude runem guard tworzy losowy in-process attestation i zapisuje trusted Git HEAD + workspace-state digest,
+- evidence schema v4 wiąże task/run/profile, resolved workspace, Claude session, command hash, Claude binary path+SHA-256, Git HEAD/state before/after oraz attestation ID,
+- sam plik evidence nie odblokowuje lifecycle: wymagany jest również completed attestation w pamięci tego samego worker process,
+- zmiana workspace albo Claude binary po evidence unieważnia handoff/completion.
 
 Brak Claude CLI/OAuth/skilla/evidence oznacza blocked; nie ma hidden fallbacku.
 
@@ -66,22 +69,26 @@ Brak Claude CLI/OAuth/skilla/evidence oznacza blocked; nie ma hidden fallbacku.
 
 Operacje: `create`, `show`, `block`, `complete`, `validate-runtime`, `validate-routed-handoff`, `validate-routing`.
 
-Body-independent `validate-handoff` został usunięty. Routed handoff jest jedynym production handoff gate, używa strict duplicate-key JSON i wiąże live body z assignee/event/run/worktree.
+Body-independent `validate-handoff` został usunięty. Routed handoff jest jedynym production handoff gate, używa strict duplicate-key JSON i wiąże live body z assignee/event/run/worktree. `WORKSPACE: worktree:<base-repo>` z body musi odpowiadać dokładnie live `<base-repo>/.worktrees/<task-id>`, a implementer-run metadata musi zawierać exact `task_id` i workspace.
 
 ## Repository analyst
 
-Canonical `bootstrap_profiles.sh` nie kończy się już na utworzeniu/clonowaniu profilu. Na końcu obowiązkowo wykonuje:
+Canonical `bootstrap_profiles.sh` na końcu obowiązkowo wykonuje:
 
 ```text
 bootstrap_repository_analyst_isolation.sh
 verify_repository_analyst_isolation.sh --live
 ```
 
-Fresh deployment nie może pozostawić `repository-analyst` z szerokim surface odziedziczonym z primary profile.
+Fresh deployment nie może pozostawić `repository-analyst` z szerokim surface odziedziczonym z primary profile. Re-run bootstrapu używa kontrolowanego reviewed replacement, więc runtime `__pycache__` nie blokuje przywrócenia exact pinned plugin tree.
+
+## Integrity skills
+
+Nowe profile `coder-claude`, `reviewer-gpt`, `reviewer-claude` i `architect-claude-opus` są jawnie zadeklarowane w `skills/profiles.yaml`. SHA/workspace/evidence contracts są więc dostępne dla model-routing roles zamiast kończyć się `unknown profile`.
 
 ## Plugin supply chain
 
-Reviewed plugin installer zamraża source+pin set w jednym immutable transaction snapshot. Transakcja później nie czyta ponownie mutable manifestu. `--replace-reviewed` jest explicit opt-in; staging/final verification używa tego samego snapshotu, publikacja jest pod `flock`, rollback jest uzbrojony przed ruszeniem starego targetu, a failure usuwa nowy target i obowiązkowo przywraca backup.
+Reviewed plugin installer zamraża source+pin set w jednym immutable transaction snapshot. Transakcja później nie czyta ponownie mutable manifestu. `--replace-reviewed` jest explicit opt-in; staging/final verification używa tego samego snapshotu, publikacja jest pod `flock`, rollback jest uzbrojony przed ruszeniem starego targetu, a failure usuwa nowy target i obowiązkowo przywraca backup. Adversarial test wymusza corruption po publish i sprawdza exact restore starego targetu.
 
 ## Legacy Ox
 
