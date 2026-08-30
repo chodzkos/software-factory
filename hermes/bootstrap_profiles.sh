@@ -55,7 +55,7 @@ install_profile_soul() {
 }
 install_execution_guard() {
   local profile="$1" dest="${PROFILE_ROOT}/${profile}/plugins"
-  HERMES_PLUGINS_DIR="${dest}" PYTHONDONTWRITEBYTECODE=1 bash "${PLUGIN_INSTALLER}" --plugin "${EXECUTION_GUARD}"
+  HERMES_PLUGINS_DIR="${dest}" PYTHONDONTWRITEBYTECODE=1 bash "${PLUGIN_INSTALLER}" --plugin "${EXECUTION_GUARD}" --replace-reviewed
   hermes -p "${profile}" plugins enable "${EXECUTION_GUARD}" --no-allow-tool-override
   hermes -p "${profile}" plugins doctor "${EXECUTION_GUARD}" >/dev/null
   hermes -p "${profile}" config set tools.tool_search.enabled off
