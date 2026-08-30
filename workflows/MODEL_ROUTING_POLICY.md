@@ -107,8 +107,10 @@ Read,Write,Edit,Glob,Grep,Bash(git status *),Bash(git diff *),Bash(git rev-parse
 `reviewer-claude` and `architect-claude-opus` exact read-only tools:
 
 ```text
-Read,Glob,Grep,Bash(git status --short --untracked-files=all),Bash(git diff --no-ext-diff --no-textconv --),Bash(git diff --cached --no-ext-diff --no-textconv --),Bash(git rev-parse HEAD),Bash(git rev-parse --show-toplevel)
+Read,Glob,Grep
 ```
+
+Reviewer/architect Claude receives **no Bash capability at all**. This mechanically excludes Git output flags, external diff/pager execution and any shell-based write path during read-only Claude review/architecture.
 
 ### In-process attestation and durable evidence
 
