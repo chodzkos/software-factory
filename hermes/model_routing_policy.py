@@ -50,15 +50,17 @@ def _strict_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return result
 
 
+def strict_json_loads(raw: str) -> Any:
+    """Decode JSON while rejecting duplicate keys at every object depth."""
+    return json.loads(raw, object_pairs_hook=_strict_object)
+
+
 def required_reviewers(implementer: str, *, security_sensitive: bool) -> tuple[str, ...]:
     """Return the exact allowed same-card reviewer set for an implementation profile."""
     if implementer not in IMPLEMENTER_VENDOR:
         raise ValueError(f"unknown implementer profile: {implementer}")
 
     if security_sensitive:
-        # Security review is always OpenAI and must remain cross-vendor. Hermes
-        # 0.20.4 has one same-card reviewer lifecycle, so OpenAI implementation
-        # is refused instead of pretending a second reviewer is mechanically gated.
         if implementer == OPENAI_IMPLEMENTER:
             raise ValueError("security_sensitive_openai_implementer_forbidden")
         return (OPENAI_REVIEWER,)
@@ -158,7 +160,7 @@ def parse_task_contract(body: str) -> tuple[ReviewRoute | None, list[str]]:
 
 def _task_body_from_json(raw: str) -> tuple[str | None, list[str]]:
     try:
-        payload = json.loads(raw, object_pairs_hook=_strict_object)
+        payload = strict_json_loads(raw)
     except DuplicateJsonKey as exc:
         return None, [f"actual_json_duplicate_key:{exc}"]
     except json.JSONDecodeError as exc:
