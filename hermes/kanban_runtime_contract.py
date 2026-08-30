@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Any, Mapping, Sequence
 
+from model_routing_policy import route_from_payload
+
 
 @dataclass(frozen=True)
 class RuntimeExpectation:
@@ -19,9 +21,11 @@ class RuntimeExpectation:
 
 def normalize_snapshot(payload: Mapping[str, Any]) -> dict[str, Any]:
     """Znormalizuj CLI JSON lub kanban_show do jednego kształtu walidatora."""
-
-    if isinstance(payload.get("task"), Mapping):
-        task = dict(payload["task"])
+    if "task" in payload:
+        nested = payload.get("task")
+        if not isinstance(nested, Mapping):
+            return {}
+        task = dict(nested)
         if "parents" not in task and "parents" in payload:
             task["parents"] = payload.get("parents")
     else:
@@ -62,10 +66,10 @@ def _latest_run(payload: Mapping[str, Any]) -> Mapping[str, Any] | None:
 
 
 def validate_runtime(payload: Mapping[str, Any], expectation: RuntimeExpectation) -> list[str]:
-    """Porównaj oczekiwane pola z realnym snapshotem Hermesa fail-closed."""
-
     actual = normalize_snapshot(payload)
     errors: list[str] = []
+    if not actual:
+        return ["runtime_task_missing_or_invalid"]
     checks = {
         "assignee": expectation.assignee,
         "workspace_kind": expectation.workspace_kind,
@@ -87,8 +91,6 @@ def validate_runtime(payload: Mapping[str, Any], expectation: RuntimeExpectation
 
 
 def resolved_implementation_worktree(payload: Mapping[str, Any]) -> str | None:
-    """Po claimie Hermes zapisuje materializowany worktree bezpośrednio w workspace_path."""
-
     task = normalize_snapshot(payload)
     if task.get("workspace_kind") != "worktree":
         return None
@@ -112,11 +114,11 @@ def validate_review_handoff(
     implementer_profile: str,
     reviewer_profile: str,
 ) -> list[str]:
-    """Waliduj bieżący natywny Hermes same-card handoff do independent reviewera."""
-
     task = normalize_snapshot(payload)
     errors: list[str] = []
 
+    if not task:
+        return ["implementation_task_missing_or_invalid"]
     if implementer_profile == reviewer_profile:
         errors.append("implementer_and_reviewer_must_differ")
 
@@ -166,6 +168,21 @@ def validate_review_handoff(
                 errors.append("implementer_review_run_workspace_mismatched")
 
     return errors
+
+
+def validate_routed_review_handoff(payload: Mapping[str, Any]) -> list[str]:
+    """Bind live handoff identity to the exact routing declared in task.body."""
+    route, route_errors = route_from_payload(payload)
+    if route_errors or route is None:
+        return [f"model_routing:{error}" for error in (route_errors or ["unparseable"])]
+    if len(route.required_reviewers) != 1:
+        return ["same_card_review_requires_exactly_one_reviewer"]
+    reviewer = route.required_reviewers[0]
+    return validate_review_handoff(
+        payload,
+        implementer_profile=route.implementer,
+        reviewer_profile=reviewer,
+    )
 
 
 def validate_task_graph(
@@ -232,6 +249,13 @@ def _handoff_command(args: argparse.Namespace) -> int:
     return 0 if not errors else 2
 
 
+def _routed_handoff_command(args: argparse.Namespace) -> int:
+    actual = _json_object(args.actual_json, "actual-json")
+    errors = validate_routed_review_handoff(actual)
+    print(format_drift(errors))
+    return 0 if not errors else 2
+
+
 def build_cli_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Software Factory Kanban runtime contract validator")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -246,11 +270,18 @@ def build_cli_parser() -> argparse.ArgumentParser:
     runtime.add_argument("--parent", action="append", default=[])
     runtime.set_defaults(func=_runtime_command)
 
-    handoff = sub.add_parser("handoff", help="Validate native same-card implementer to reviewer handoff")
+    handoff = sub.add_parser("handoff", help="Legacy explicit-profile handoff validator")
     handoff.add_argument("--actual-json", required=True)
     handoff.add_argument("--implementer-profile", required=True)
     handoff.add_argument("--reviewer-profile", required=True)
     handoff.set_defaults(func=_handoff_command)
+
+    routed = sub.add_parser(
+        "routed-handoff",
+        help="Validate same-card handoff using implementer/reviewer derived from live task.body",
+    )
+    routed.add_argument("--actual-json", required=True)
+    routed.set_defaults(func=_routed_handoff_command)
     return parser
 
 
