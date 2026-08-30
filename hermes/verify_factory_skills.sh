@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Verification must be source-tree read-only. Propagate this to every Python
+# subprocess, including nested installer/adversarial tests.
+export PYTHONDONTWRITEBYTECODE=1
+
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DEST="${HERMES_SKILLS_DIR:-$HOME/.hermes/skills}"
 INSTALLED_ONLY="${FACTORY_SKILLS_INSTALLED_ONLY:-0}"
