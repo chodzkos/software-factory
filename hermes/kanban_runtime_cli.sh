@@ -14,7 +14,7 @@ Usage:
   kanban_runtime_cli.sh complete <task-id> <summary...>
   kanban_runtime_cli.sh validate-runtime <validator-runtime-args...>
   kanban_runtime_cli.sh validate-handoff <validator-handoff-args...>
-  kanban_runtime_cli.sh validate-routed-handoff --actual-json <live-task-json>
+  kanban_runtime_cli.sh validate-routed-handoff --actual-json <live-json>
   kanban_runtime_cli.sh validate-routing <model-routing-args...>
 
 This wrapper intentionally exposes only the Kanban/runtime-contract operations
@@ -53,7 +53,7 @@ case "${op}" in
       [[ "${reason_part}" != -* ]] || { echo "ERROR: block reason must not contain flag-shaped operands" >&2; exit 2; }
     done
     reason="$*"
-    exec hermes kanban block --kind needs_input "${task_id}" "${reason}" 
+    exec hermes kanban block --kind needs_input "${task_id}" "${reason}"
     ;;
   complete)
     [[ $# -ge 2 ]] || usage
