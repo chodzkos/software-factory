@@ -17,16 +17,13 @@ command -v hermes >/dev/null 2>&1 || { echo "ERROR: hermes not found in PATH" >&
 test -f "${INSTALLER}" || { echo "ERROR: missing plugin installer: ${INSTALLER}" >&2; exit 1; }
 test -d "${PROFILE_HOME}" || { echo "ERROR: profile ${PROFILE} does not exist; run bootstrap_profiles.sh first" >&2; exit 1; }
 
-# Named Hermes profiles are separate HERMES_HOME roots. Publish the reviewed
-# plugin into the repository-analyst profile itself so dispatcher-spawned
-# `-p repository-analyst` workers can discover it.
-HERMES_PLUGINS_DIR="${DEST_ROOT}" bash "${INSTALLER}" --plugin "${PLUGIN}"
+# Profile plugins are reviewed/pinned. Re-running bootstrap may encounter only
+# runtime Python cache or older reviewed bytes; controlled replacement restores
+# the exact manifest-pinned tree without manual deletion.
+HERMES_PLUGINS_DIR="${DEST_ROOT}" PYTHONDONTWRITEBYTECODE=1 bash "${INSTALLER}" --plugin "${PLUGIN}" --replace-reviewed
 
 test -d "${TARGET}" && ! test -L "${TARGET}" || { echo "ERROR: installed plugin target missing or symlinked" >&2; exit 1; }
 
-# Runtime imports may create __pycache__. Treat only Python bytecode cache as
-# ignorable runtime noise; every reviewed regular file must remain byte-identical
-# and no other file/directory/symlink is permitted in the installed tree.
 python3 - "${SOURCE}" "${TARGET}" <<'PY'
 from pathlib import Path
 import hashlib, sys
@@ -43,82 +40,46 @@ for p in dst.rglob("*"):
     if len(rel.parts) == 1 and rel.name in expected:
         continue
     if rel.parts[0] == "__pycache__":
-        if p.is_symlink():
-            raise SystemExit(f"ERROR: symlink in runtime cache: {rel}")
+        if p.is_symlink(): raise SystemExit(f"ERROR: symlink in runtime cache: {rel}")
         if p.is_dir():
-            if len(rel.parts) != 1:
-                raise SystemExit(f"ERROR: nested runtime cache directory: {rel}")
+            if len(rel.parts) != 1: raise SystemExit(f"ERROR: nested runtime cache directory: {rel}")
             continue
-        if p.is_file() and len(rel.parts) == 2 and p.suffix == ".pyc":
-            continue
+        if p.is_file() and len(rel.parts) == 2 and p.suffix == ".pyc": continue
     raise SystemExit(f"ERROR: unexpected installed plugin entry: {rel}")
 print("OK: installed reviewed files exact; only __pycache__/*.pyc ignored")
 PY
 
-# User plugins are opt-in per profile. Use the explicit non-override flag rather
-# than relying on EOF/prompt behaviour for this privileged capability.
 hermes -p "${PROFILE}" plugins enable "${PLUGIN}" --no-allow-tool-override
 PYTHONDONTWRITEBYTECODE=1 hermes -p "${PROFILE}" plugins doctor "${TARGET}" --ci
 
-# Worker-authoritative capability cutover. Hermes dispatcher resolves CLI worker
-# tools from platform_toolsets.cli and adds enabled MCP servers. Pin the CLI list
-# to the reviewed plugin plus no_mcp and clear profile MCP definitions. The broad
-# deny-list remains defense-in-depth, not the primary isolation mechanism.
 hermes -p "${PROFILE}" config set platform_toolsets.cli "${EXPECTED_CLI_TOOLSETS}"
 hermes -p "${PROFILE}" config set --force mcp_servers '{}'
 hermes -p "${PROFILE}" config set toolsets "${EXPECTED_TOOLSETS}"
 hermes -p "${PROFILE}" config set agent.disabled_toolsets "${EXPECTED_DISABLED}"
-# The profile has only three small plugin tools. Disable progressive-disclosure
-# bridges so the model sees the reviewed tools directly and no generic tool_call
-# broker is present in the repository-analysis capability surface.
 hermes -p "${PROFILE}" config set tools.tool_search.enabled off
 hermes -p "${PROFILE}" config set fallback_providers '[]'
 hermes -p "${PROFILE}" config set worktree false
 hermes -p "${PROFILE}" config set worktree_sync false
 
-get_config_scalar() {
-  hermes -p "${PROFILE}" config get "$1" 2>/dev/null | tail -n 1 | tr -d '\r'
-}
-
+get_config_scalar() { hermes -p "${PROFILE}" config get "$1" 2>/dev/null | tail -n 1 | tr -d '\r'; }
 expect_scalar() {
   local key="$1" expected="$2" actual
   actual="$(get_config_scalar "${key}")"
-  [[ "${actual}" == "${expected}" ]] || {
-    echo "ERROR: ${PROFILE}:${key} expected '${expected}', got '${actual}'" >&2
-    exit 1
-  }
+  [[ "${actual}" == "${expected}" ]] || { echo "ERROR: ${PROFILE}:${key} expected '${expected}', got '${actual}'" >&2; exit 1; }
 }
-
 expect_list_exact() {
   local key="$1"; shift
   local -a expected=("$@") actual=()
-  mapfile -t actual < <(
-    hermes -p "${PROFILE}" config get "${key}" 2>/dev/null \
-      | tr -d '\r' \
-      | sed -n 's/^- //p'
-  )
-  if [[ ${#actual[@]} -ne ${#expected[@]} ]]; then
-    echo "ERROR: ${PROFILE}:${key} expected ${#expected[@]} list items, got ${#actual[@]}" >&2
-    exit 1
-  fi
+  mapfile -t actual < <(hermes -p "${PROFILE}" config get "${key}" 2>/dev/null | tr -d '\r' | sed -n 's/^- //p')
+  [[ ${#actual[@]} -eq ${#expected[@]} ]] || { echo "ERROR: ${PROFILE}:${key} list length mismatch" >&2; exit 1; }
   local i
-  for i in "${!expected[@]}"; do
-    [[ "${actual[$i]}" == "${expected[$i]}" ]] || {
-      echo "ERROR: ${PROFILE}:${key} item $i expected '${expected[$i]}', got '${actual[$i]}'" >&2
-      exit 1
-    }
-  done
+  for i in "${!expected[@]}"; do [[ "${actual[$i]}" == "${expected[$i]}" ]] || { echo "ERROR: ${PROFILE}:${key} item $i mismatch" >&2; exit 1; }; done
 }
-
 expect_profile_list_contains() {
   local key="$1" expected="$2"
-  hermes -p "${PROFILE}" config get "${key}" 2>/dev/null \
-    | tr -d '\r' \
-    | sed -n 's/^- //p' \
-    | grep -Fxq -- "${expected}" || {
-      echo "ERROR: ${PROFILE}:${key} does not contain '${expected}'" >&2
-      exit 1
-    }
+  hermes -p "${PROFILE}" config get "${key}" 2>/dev/null | tr -d '\r' | sed -n 's/^- //p' | grep -Fxq -- "${expected}" || {
+    echo "ERROR: ${PROFILE}:${key} does not contain '${expected}'" >&2; exit 1;
+  }
 }
 
 expect_profile_list_contains plugins.enabled "${PLUGIN}"
