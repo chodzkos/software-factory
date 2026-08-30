@@ -7,6 +7,7 @@ import os
 import secrets
 import shlex
 import shutil
+import stat
 import subprocess
 import time
 from pathlib import Path
@@ -26,8 +27,6 @@ CLAUDE_ALLOWED_TOOLS = {
 }
 
 CODER_CLAUDE_TOOLS = "Read,Write,Edit,Glob,Grep,Bash(git status *),Bash(git diff *),Bash(git rev-parse *),Bash(python3 *)"
-# No Bash at all for review/architecture. This removes git --output, external
-# diff/pager and similar write-capable escape hatches from Claude review runs.
 READONLY_CLAUDE_TOOLS = "Read,Glob,Grep"
 EVIDENCE_ROOT = Path.home() / ".hermes" / "factory-evidence" / "claude-code"
 SHELL_OPERATORS = frozenset({";", "&&", "||", "|", "&", ">", ">>", "<", "<<", "(", ")"})
@@ -38,8 +37,6 @@ FORBIDDEN_CLAUDE_FLAGS = frozenset({
 })
 VALUE_FLAGS = frozenset({"-p", "--print", "--model", "--output-format", "--allowedTools", "--max-turns", "--effort"})
 
-# Trusted-process-only attestation. A delegated subprocess can write files but
-# cannot manufacture the nonce/completed state held inside this Hermes worker.
 _PENDING_ATTESTATIONS: dict[tuple[str, str, str], dict[str, str]] = {}
 _COMPLETED_ATTESTATIONS: dict[tuple[str, str, str], dict[str, str]] = {}
 
@@ -53,8 +50,7 @@ def _profile() -> str:
 
 
 def _task_id(explicit: str = "") -> str:
-    kanban_task = os.environ.get("HERMES_KANBAN_TASK", "").strip()
-    return kanban_task or explicit.strip()
+    return os.environ.get("HERMES_KANBAN_TASK", "").strip() or explicit.strip()
 
 
 def _run_id() -> str:
@@ -87,36 +83,64 @@ def _canonical_claude_identity() -> tuple[str, str] | None:
         return None
     try:
         resolved = Path(located).resolve(strict=True)
-        if not resolved.is_file() or resolved.is_symlink():
+        if not resolved.is_file():
             return None
         return str(resolved), _sha256_file(resolved)
     except OSError:
         return None
 
 
-def _git_workspace_state(workspace: str) -> tuple[str, str] | None:
-    """Return trusted HEAD + status digest without invoking a shell or diff driver."""
+def _run_git(workspace: str, args: list[str], *, text: bool = False) -> str | bytes:
+    return subprocess.run(
+        ["git", "-C", workspace, *args],
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=text,
+        timeout=15,
+    ).stdout
+
+
+def _workspace_content_state(workspace: str) -> tuple[str, str] | None:
+    """Return HEAD + digest covering staged state and raw changed/untracked bytes."""
     try:
-        head = subprocess.run(
-            ["git", "-C", workspace, "rev-parse", "HEAD"],
-            check=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            text=True,
-            timeout=10,
-        ).stdout.strip()
-        status = subprocess.run(
-            ["git", "-C", workspace, "status", "--porcelain=v1", "-z", "--untracked-files=all"],
-            check=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            timeout=10,
-        ).stdout
+        head = str(_run_git(workspace, ["rev-parse", "HEAD"], text=True)).strip()
+        staged = bytes(_run_git(
+            workspace,
+            ["diff", "--cached", "--binary", "--no-ext-diff", "--no-textconv", "HEAD", "--"],
+        ))
+        raw_paths = bytes(_run_git(workspace, ["ls-files", "-m", "-d", "-o", "--exclude-standard", "-z"]))
     except (OSError, subprocess.SubprocessError):
         return None
     if len(head) != 40 or any(ch not in "0123456789abcdef" for ch in head.lower()):
         return None
-    return head, hashlib.sha256(status).hexdigest()
+
+    root = Path(workspace)
+    h = hashlib.sha256()
+    h.update(b"HEAD\0" + head.encode("ascii") + b"\0STAGED\0" + staged + b"\0FILES\0")
+    for raw in sorted(path for path in raw_paths.split(b"\0") if path):
+        rel = Path(os.fsdecode(raw))
+        if rel.is_absolute() or ".." in rel.parts:
+            return None
+        path = root / rel
+        h.update(raw + b"\0")
+        try:
+            st = path.lstat()
+        except FileNotFoundError:
+            h.update(b"DELETED\0")
+            continue
+        h.update(f"MODE:{stat.S_IFMT(st.st_mode):o}:{stat.S_IMODE(st.st_mode):o}\0".encode("ascii"))
+        if stat.S_ISLNK(st.st_mode):
+            h.update(b"SYMLINK\0" + os.fsencode(os.readlink(path)) + b"\0")
+        elif stat.S_ISREG(st.st_mode):
+            h.update(b"FILE\0")
+            with path.open("rb") as handle:
+                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                    h.update(chunk)
+            h.update(b"\0")
+        else:
+            return None
+    return head, h.hexdigest()
 
 
 def _command_from_args(args: Any) -> str:
@@ -214,11 +238,11 @@ def _start_attestation(profile: str, command: str, task_id: str) -> bool:
     run_id = _run_id()
     workspace = _workspace()
     identity = _canonical_claude_identity()
-    git_state = _git_workspace_state(workspace) if workspace else None
-    if not task_id or not run_id or not workspace or identity is None or git_state is None:
+    state = _workspace_content_state(workspace) if workspace else None
+    if not task_id or not run_id or not workspace or identity is None or state is None:
         return False
     binary_path, binary_sha256 = identity
-    git_head, status_before = git_state
+    git_head, content_before = state
     key = _attestation_key(profile, task_id, run_id)
     _COMPLETED_ATTESTATIONS.pop(key, None)
     _PENDING_ATTESTATIONS[key] = {
@@ -228,7 +252,7 @@ def _start_attestation(profile: str, command: str, task_id: str) -> bool:
         "claude_binary": binary_path,
         "claude_binary_sha256": binary_sha256,
         "git_head_before": git_head,
-        "workspace_state_before_sha256": status_before,
+        "workspace_content_state_before_sha256": content_before,
     }
     return True
 
@@ -237,22 +261,20 @@ def _evidence_exists(profile: str, task_id: str) -> bool:
     run_id = _run_id()
     workspace = _workspace()
     identity = _canonical_claude_identity()
-    git_state = _git_workspace_state(workspace) if workspace else None
-    if not task_id or not run_id or not workspace or identity is None or git_state is None:
+    state = _workspace_content_state(workspace) if workspace else None
+    if not task_id or not run_id or not workspace or identity is None or state is None:
         return False
-    key = _attestation_key(profile, task_id, run_id)
-    completed = _COMPLETED_ATTESTATIONS.get(key)
+    completed = _COMPLETED_ATTESTATIONS.get(_attestation_key(profile, task_id, run_id))
     if not completed:
         return False
     binary_path, binary_sha256 = identity
-    current_head, current_status = git_state
-    path = _evidence_path(task_id, run_id, profile)
+    current_head, current_content_state = state
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(_evidence_path(task_id, run_id, profile).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return False
     return (
-        data.get("schema") == 4
+        data.get("schema") == 5
         and data.get("profile") == profile
         and data.get("task_id") == task_id
         and data.get("run_id") == run_id
@@ -261,7 +283,7 @@ def _evidence_exists(profile: str, task_id: str) -> bool:
         and data.get("claude_binary") == binary_path
         and data.get("claude_binary_sha256") == binary_sha256
         and data.get("git_head_after") == current_head
-        and data.get("workspace_state_after_sha256") == current_status
+        and data.get("workspace_content_state_after_sha256") == current_content_state
         and data.get("command_sha256") == completed.get("command_sha256")
         and data.get("attestation_id") == completed.get("attestation_id")
         and isinstance(data.get("session_id"), str)
@@ -315,11 +337,11 @@ def on_post_tool_call(tool_name: str = "", args: Any = None, result: str = "", t
             return None
         workspace = _workspace()
         identity = _canonical_claude_identity()
-        git_state = _git_workspace_state(workspace) if workspace else None
-        if not tid or not rid or not workspace or identity is None or git_state is None:
+        state = _workspace_content_state(workspace) if workspace else None
+        if not tid or not rid or not workspace or identity is None or state is None:
             return None
         binary_path, binary_sha256 = identity
-        git_head_after, status_after = git_state
+        git_head_after, content_after = state
         if (
             pending.get("workspace") != workspace
             or pending.get("claude_binary") != binary_path
@@ -329,7 +351,7 @@ def on_post_tool_call(tool_name: str = "", args: Any = None, result: str = "", t
         attestation_id = hashlib.sha256(pending["nonce"].encode("ascii")).hexdigest()
         EVIDENCE_ROOT.mkdir(parents=True, exist_ok=True)
         payload = {
-            "schema": 4,
+            "schema": 5,
             "profile": profile,
             "task_id": tid,
             "run_id": rid,
@@ -343,8 +365,8 @@ def on_post_tool_call(tool_name: str = "", args: Any = None, result: str = "", t
             "attestation_id": attestation_id,
             "git_head_before": pending["git_head_before"],
             "git_head_after": git_head_after,
-            "workspace_state_before_sha256": pending["workspace_state_before_sha256"],
-            "workspace_state_after_sha256": status_after,
+            "workspace_content_state_before_sha256": pending["workspace_content_state_before_sha256"],
+            "workspace_content_state_after_sha256": content_after,
             "recorded_at": int(time.time()),
         }
         path = _evidence_path(tid, rid, profile)
