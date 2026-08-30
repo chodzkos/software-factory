@@ -69,7 +69,7 @@ grep -Fq 'validate-routed-handoff' "${GUARD}"
 if grep -Fq '"validate-handoff"' "${GUARD}"; then echo 'ERROR: legacy handoff remains in runtime allowlist' >&2; exit 1; fi
 
 printf '[check] sealed Claude execution/evidence boundary\n'
-grep -Fq 'version: 0.3.0' "${GUARD_MANIFEST}"
+grep -Fq 'version: 0.4.0' "${GUARD_MANIFEST}"
 grep -Fq 'tokens[0] != "claude"' "${GUARD}"
 grep -Fq 'CODER_CLAUDE_TOOLS' "${GUARD}"
 grep -Fq 'READONLY_CLAUDE_TOOLS = "Read,Glob,Grep"' "${GUARD}"
@@ -79,8 +79,9 @@ grep -Fq '_PENDING_ATTESTATIONS' "${GUARD}"
 grep -Fq '_COMPLETED_ATTESTATIONS' "${GUARD}"
 grep -Fq 'attestation_id' "${GUARD}"
 grep -Fq 'claude_binary_sha256' "${GUARD}"
-grep -Fq '_git_workspace_state' "${GUARD}"
-grep -Fq 'workspace_state_after_sha256' "${GUARD}"
+grep -Fq '_workspace_content_state' "${GUARD}"
+grep -Fq 'workspace_content_state_after_sha256' "${GUARD}"
+grep -Fq 'data.get("schema") == 5' "${GUARD}"
 grep -Fq 'HERMES_KANBAN_TASK' "${GUARD}"
 grep -Fq 'requires successful in-process attested Claude Code evidence' "${GUARD}"
 
