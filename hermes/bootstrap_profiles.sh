@@ -161,13 +161,22 @@ for profile in coder-claude reviewer-claude architect-claude-opus; do
   hermes -p "${profile}" config set model.default "${primary_model}"
   hermes -p "${profile}" config set factory.execution_backend "${CLAUDE_SKILL}"
 done
-hermes -p coder-claude config set factory.claude_model "${CLAUDE_NORMAL_MODEL}"
-hermes -p reviewer-claude config set factory.claude_model "${CLAUDE_NORMAL_MODEL}"
-hermes -p architect-claude-opus config set factory.claude_model "${CLAUDE_DEEP_MODEL}"
+hermes -p coder-claude config set factory.claude_model_class "${CLAUDE_NORMAL_MODEL}"
+hermes -p reviewer-claude config set factory.claude_model_class "${CLAUDE_NORMAL_MODEL}"
+hermes -p architect-claude-opus config set factory.claude_model_class "${CLAUDE_DEEP_MODEL}"
 
 # Natywne profile OpenAI mają jawny backend dla runtime routing evidence.
 hermes -p coder config set factory.execution_backend native-openai
 hermes -p reviewer-gpt config set factory.execution_backend native-openai
+
+# Legacy auditor-ox może istnieć lokalnie po starszej konfiguracji. Nie kasujemy
+# automatycznie katalogu użytkownika, ale neutralizujemy profil fail-closed.
+if profile_exists auditor-ox; then
+  echo "[legacy] quarantining auditor-ox"
+  hermes -p auditor-ox config set factory.execution_backend disabled-legacy
+  hermes -p auditor-ox config set fallback_providers '[]'
+  hermes -p auditor-ox config set agent.disabled_toolsets '["terminal","file","code_execution","web","browser","image_gen","delegation","computer_use","cronjob","skills","vision","todo","memory","session_search","clarify","messaging","tts","moa"]'
+fi
 
 # Role Groka są jawnie przypięte do providera i modelu.
 for profile in critic auditor-grok; do
@@ -211,11 +220,15 @@ expect_config reviewer-gpt model.default "${primary_model}"
 expect_config reviewer-gpt factory.execution_backend native-openai
 expect_config coder factory.execution_backend native-openai
 expect_config coder-claude factory.execution_backend "${CLAUDE_SKILL}"
-expect_config coder-claude factory.claude_model "${CLAUDE_NORMAL_MODEL}"
+expect_config coder-claude factory.claude_model_class "${CLAUDE_NORMAL_MODEL}"
 expect_config reviewer-claude factory.execution_backend "${CLAUDE_SKILL}"
-expect_config reviewer-claude factory.claude_model "${CLAUDE_NORMAL_MODEL}"
+expect_config reviewer-claude factory.claude_model_class "${CLAUDE_NORMAL_MODEL}"
 expect_config architect-claude-opus factory.execution_backend "${CLAUDE_SKILL}"
-expect_config architect-claude-opus factory.claude_model "${CLAUDE_DEEP_MODEL}"
+expect_config architect-claude-opus factory.claude_model_class "${CLAUDE_DEEP_MODEL}"
+if profile_exists auditor-ox; then
+  expect_config auditor-ox factory.execution_backend disabled-legacy
+  expect_config auditor-ox fallback_providers '[]'
+fi
 expect_config critic model.provider "${GROK_PROVIDER}"
 expect_config critic model.default "${GROK_MODEL}"
 expect_config auditor-grok model.provider "${GROK_PROVIDER}"
@@ -252,5 +265,5 @@ hermes profile list
 
 echo
 echo "Bootstrap profili zakończony."
-echo "Uruchom 'hermes doctor' i sprawdź modele/backend przez 'hermes -p <name> config get model' oraz 'factory.execution_backend'."
+echo "Uruchom 'hermes doctor' i sprawdź modele/backend przez 'hermes -p <name> config get model', 'factory.execution_backend' i 'factory.claude_model_class'."
 echo "Następnie zainicjalizuj/zweryfikuj Kanban przez 'hermes kanban init' i uruchom dokładnie jeden gateway/dispatcher."
