@@ -5,13 +5,8 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MANIFEST="$ROOT_DIR/hermes/plugins/manifest.json"
 DEST="${HERMES_PLUGINS_DIR:-$HOME/.hermes/plugins}"
 
-usage() {
-  echo "usage: bash hermes/install_factory_plugins.sh --plugin NAME [--dry-run]" >&2
-  exit 2
-}
-
-plugin=""
-dry=0
+usage() { echo "usage: bash hermes/install_factory_plugins.sh --plugin NAME [--dry-run]" >&2; exit 2; }
+plugin=""; dry=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --plugin) [[ $# -ge 2 ]] || usage; plugin="$2"; shift 2 ;;
@@ -21,7 +16,7 @@ while [[ $# -gt 0 ]]; do
 done
 [[ -n "$plugin" ]] || usage
 
-selection="$(python3 - "$ROOT_DIR" "$MANIFEST" "$plugin" <<'PY'
+selection="$(PYTHONDONTWRITEBYTECODE=1 python3 - "$ROOT_DIR" "$MANIFEST" "$plugin" <<'PY'
 import hashlib,json,pathlib,re,sys
 root=pathlib.Path(sys.argv[1]); manifest=json.load(open(sys.argv[2])); name=sys.argv[3]
 if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", name): raise SystemExit("ERROR: invalid plugin name")
@@ -34,8 +29,13 @@ if spec.get("source") != expected: raise SystemExit(f"ERROR: plugin source path 
 src=root/spec["source"]
 if src.is_symlink() or not src.is_dir(): raise SystemExit(f"ERROR: invalid plugin source root: {name}")
 pins=spec.get("files")
-if not isinstance(pins,dict) or set(pins) != {"plugin.yaml","__init__.py","repo_map.py","repository_tools.py","kanban_guard.py"}:
-    raise SystemExit(f"ERROR: invalid plugin pin set: {name}")
+if not isinstance(pins,dict) or not pins: raise SystemExit(f"ERROR: invalid plugin pin set: {name}")
+for rel,sha in pins.items():
+    p=pathlib.PurePosixPath(rel)
+    if p.is_absolute() or ".." in p.parts or "." in p.parts or not p.parts:
+        raise SystemExit(f"ERROR: invalid plugin relative path: {rel}")
+    if not re.fullmatch(r"[0-9a-f]{40}", str(sha)):
+        raise SystemExit(f"ERROR: invalid plugin blob pin: {rel}")
 actual_files=[]; actual_dirs=[]
 for path in src.rglob("*"):
     rel=path.relative_to(src).as_posix()
@@ -43,70 +43,52 @@ for path in src.rglob("*"):
     if path.is_file(): actual_files.append(rel)
     elif path.is_dir(): actual_dirs.append(rel)
     else: raise SystemExit(f"ERROR: non-regular plugin source refused: {rel}")
-if sorted(actual_files) != sorted(pins): raise SystemExit(f"ERROR: plugin source tree mismatch: {name}")
-if actual_dirs: raise SystemExit(f"ERROR: plugin source contains unexpected directories: {name}: {sorted(actual_dirs)}")
+expected_dirs=set()
+for rel in pins:
+    for parent in pathlib.PurePosixPath(rel).parents:
+        if str(parent) != ".": expected_dirs.add(parent.as_posix())
+if sorted(actual_files) != sorted(pins) or sorted(actual_dirs) != sorted(expected_dirs):
+    raise SystemExit(f"ERROR: plugin source tree mismatch: {name}")
 def blob_sha(data): return hashlib.sha1(b"blob "+str(len(data)).encode()+b"\0"+data).hexdigest()
 for rel,expected_sha in sorted(pins.items()):
-    if not re.fullmatch(r"[0-9a-f]{40}", str(expected_sha)): raise SystemExit(f"ERROR: invalid plugin blob pin: {rel}")
     got=blob_sha((src/rel).read_bytes())
     if got != expected_sha: raise SystemExit(f"ERROR: plugin blob mismatch: {rel}: {got} != {expected_sha}")
 print(spec["source"])
 PY
 )"
 
-src="$ROOT_DIR/$selection"
-target="$DEST/$plugin"
-
+src="$ROOT_DIR/$selection"; target="$DEST/$plugin"
 check_existing_target() {
-  if [[ ! -e "$target" ]]; then
-    return 2
-  fi
+  if [[ ! -e "$target" ]]; then return 2; fi
   [[ -d "$target" && ! -L "$target" ]] || { echo "ERROR: invalid installed plugin target: $target" >&2; exit 1; }
-  if find "$target" -type l -print -quit | grep -q .; then
-    echo "ERROR: installed plugin contains symlink: $target" >&2
-    exit 1
-  fi
+  if find "$target" -type l -print -quit | grep -q .; then echo "ERROR: installed plugin contains symlink: $target" >&2; exit 1; fi
   if diff -qr "$src" "$target" >/dev/null; then
-    echo "OK unchanged: $plugin"
-    echo "FACTORY_PLUGIN_INSTALL_OK"
-    exit 0
+    echo "OK unchanged: $plugin"; echo "FACTORY_PLUGIN_INSTALL_OK"; exit 0
   fi
-  echo "ERROR: existing installed plugin differs: $target" >&2
-  exit 1
+  echo "ERROR: existing installed plugin differs: $target" >&2; exit 1
 }
-
-# A dry run is strictly no-write, so it performs the target check without
-# creating the destination or lock file.
 if [[ $dry -eq 1 ]]; then
-  if [[ -e "$target" ]]; then
-    check_existing_target
-  fi
-  echo "WOULD_INSTALL: $plugin -> $target"
-  echo "FACTORY_PLUGIN_INSTALL_OK"
-  exit 0
+  if [[ -e "$target" ]]; then check_existing_target; fi
+  echo "WOULD_INSTALL: $plugin -> $target"; echo "FACTORY_PLUGIN_INSTALL_OK"; exit 0
 fi
 
 mkdir -p "$DEST"
 command -v flock >/dev/null 2>&1 || { echo "ERROR: flock is required for serialized plugin installation" >&2; exit 1; }
-lock_file="$DEST/.factory-plugin.lock.$plugin"
-exec 9>"$lock_file"
-flock 9
+lock_file="$DEST/.factory-plugin.lock.$plugin"; exec 9>"$lock_file"; flock 9
+if [[ -e "$target" ]]; then check_existing_target; fi
 
-# Re-check only after acquiring the lock. Two concurrent installers can both
-# observe an absent target before locking; exactly one may create it.
-if [[ -e "$target" ]]; then
-  check_existing_target
-fi
-
-tmp="$(mktemp -d "$DEST/.factory-plugin.tmp.XXXXXX")"
-trap 'rm -rf -- "$tmp"' EXIT
-for rel in plugin.yaml __init__.py repo_map.py repository_tools.py kanban_guard.py; do
+tmp="$(mktemp -d "$DEST/.factory-plugin.tmp.XXXXXX")"; trap 'rm -rf -- "$tmp"' EXIT
+mapfile -t rels < <(PYTHONDONTWRITEBYTECODE=1 python3 - "$MANIFEST" "$plugin" <<'PY'
+import json,sys
+m=json.load(open(sys.argv[1])); print(*sorted(m["plugins"][sys.argv[2]]["files"]), sep="\n")
+PY
+)
+for rel in "${rels[@]}"; do
+  mkdir -p "$tmp/$(dirname "$rel")"
   cp -- "$src/$rel" "$tmp/$rel"
 done
 
-# Re-hash the copied bytes before publication. This closes source-copy TOCTOU
-# and ensures the tree that will be renamed is exactly what the manifest pins.
-python3 - "$MANIFEST" "$plugin" "$tmp" <<'PY'
+PYTHONDONTWRITEBYTECODE=1 python3 - "$MANIFEST" "$plugin" "$tmp" <<'PY'
 import hashlib,json,pathlib,sys
 manifest=json.load(open(sys.argv[1])); name=sys.argv[2]; root=pathlib.Path(sys.argv[3]); pins=manifest["plugins"][name]["files"]
 def blob_sha(data): return hashlib.sha1(b"blob "+str(len(data)).encode()+b"\0"+data).hexdigest()
@@ -116,19 +98,17 @@ for path in root.rglob("*"):
     if path.is_symlink(): raise SystemExit(f"ERROR: copied plugin contains symlink: {rel}")
     if path.is_file(): actual_files.append(rel)
     elif path.is_dir(): actual_dirs.append(rel)
-    else: raise SystemExit(f"ERROR: copied plugin contains non-regular entry: {rel}")
-if sorted(actual_files) != sorted(pins) or actual_dirs:
+expected_dirs=set()
+for rel in pins:
+    for parent in pathlib.PurePosixPath(rel).parents:
+        if str(parent) != ".": expected_dirs.add(parent.as_posix())
+if sorted(actual_files) != sorted(pins) or sorted(actual_dirs) != sorted(expected_dirs):
     raise SystemExit("ERROR: copied plugin tree mismatch")
 for rel,expected in sorted(pins.items()):
     got=blob_sha((root/rel).read_bytes())
     if got != expected: raise SystemExit(f"ERROR: copied plugin blob mismatch: {rel}: {got} != {expected}")
 PY
 
-mv -- "$tmp" "$target"
-trap - EXIT
-
-# Lock is still held here; verify the published tree exactly before success.
+mv -- "$tmp" "$target"; trap - EXIT
 diff -qr "$src" "$target" >/dev/null || { echo "ERROR: published plugin differs from reviewed source" >&2; exit 1; }
-
-echo "INSTALLED: $plugin"
-echo "FACTORY_PLUGIN_INSTALL_OK"
+echo "INSTALLED: $plugin"; echo "FACTORY_PLUGIN_INSTALL_OK"
