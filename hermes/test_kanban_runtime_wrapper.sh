@@ -35,11 +35,14 @@ set -e
 [[ "${rc}" -eq 2 ]] || { echo "ERROR: flag-shaped block reason expected exit 2, got ${rc}" >&2; exit 1; }
 [[ ! -e "${HERMES_FAKE_LOG}" ]] || { echo "ERROR: rejected block reason must not invoke hermes" >&2; exit 1; }
 
-routing_ok="$(bash "${WRAPPER}" validate-routing --implementer coder --reviewer reviewer-claude --security-sensitive no)"
+NORMAL_BODY=$'## Task Contract\nTYPE: feature\nRISK: medium\nSECURITY_SENSITIVE: no\nASSIGNEE: coder\nREPOSITORY: owner/repo\nWORKSPACE: worktree:/repo\nIMPLEMENTER: coder\nREQUIRED_REVIEWERS: reviewer-claude\nOPTIONAL_REVIEWERS: none\nREQUIRED_EVIDENCE: tests\nACCEPTANCE_CRITERIA:\n- works\n'
+NORMAL_JSON="$(python3 -c 'import json,sys; print(json.dumps({"task":{"body":sys.argv[1]}}))' "${NORMAL_BODY}")"
+routing_ok="$(bash "${WRAPPER}" validate-routing --actual-json "${NORMAL_JSON}")"
 [[ "${routing_ok}" == "MODEL_ROUTING_OK" ]] || { echo "ERROR: expected MODEL_ROUTING_OK, got ${routing_ok}" >&2; exit 1; }
 
+SECURITY_BAD_BODY=$'## Task Contract\nTYPE: review\nRISK: high\nSECURITY_SENSITIVE: yes\nASSIGNEE: reviewer-claude\nREPOSITORY: owner/repo\nWORKSPACE: worktree:/repo\nIMPLEMENTER: coder-claude\nREQUIRED_REVIEWERS: reviewer-gpt,reviewer-claude\nOPTIONAL_REVIEWERS: none\nREQUIRED_EVIDENCE: security review\nACCEPTANCE_CRITERIA:\n- reviewed\n'
 set +e
-routing_bad="$(bash "${WRAPPER}" validate-routing --implementer coder-claude --reviewer reviewer-claude --security-sensitive yes 2>&1)"
+routing_bad="$(bash "${WRAPPER}" validate-routing --task-body "${SECURITY_BAD_BODY}" 2>&1)"
 rc=$?
 set -e
 [[ "${rc}" -eq 2 ]] || { echo "ERROR: forbidden Claude security reviewer expected exit 2, got ${rc}" >&2; exit 1; }
@@ -48,4 +51,4 @@ set -e
   exit 1
 }
 
-printf 'OK: scoped runtime wrapper block and model-routing hardening\n'
+printf 'OK: scoped runtime wrapper block and body-bound model-routing hardening\n'
