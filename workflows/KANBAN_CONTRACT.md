@@ -70,7 +70,8 @@ Dlatego dla kart wymagających tych pól orchestrator deleguje mechaniczne utwor
 - ma osobny minimalny profil runtime,
 - używa terminala wyłącznie do repozytoryjnego wrappera `hermes/kanban_runtime_cli.sh`, walidatora `hermes/kanban_runtime_contract.py` i wykonywalnej polityki `hermes/model_routing_policy.py`,
 - wrapper whitelistuje tylko operacje `create`, `show`, `block`, `complete`, `validate-runtime`, `validate-handoff`, `validate-routing` i przekazuje argumenty bez `eval`,
-- przed utworzeniem albo zwolnieniem gate dla implementacji/review uruchamia `validate-routing --implementer ... --reviewer ... --security-sensitive yes|no`,
+- przed create może sprawdzić proponowane body przez `validate-routing --task-body <exact-task-body>`,
+- po create/readback i przed zwolnieniem gate albo dispatch review obowiązkowo uruchamia `validate-routing --actual-json <live-show-json>`; rzeczywiste body karty jest source of truth dla `IMPLEMENTER`, `REQUIRED_REVIEWERS` i `SECURITY_SENSITIVE`,
 - `MODEL_ROUTING_DRIFT` pozostawia gate zablokowany tak samo jak `RUNTIME_CONTRACT_DRIFT`,
 - nie wykonuje Git, curl, package managerów ani dowolnych poleceń projektu.
 
@@ -115,7 +116,7 @@ Mechaniczny gate waliduje co najmniej:
 - `branch_name`, jeżeli jest wymagany,
 - `max_retries`, jeżeli jest wymagany,
 - `parents` przez znormalizowany odczyt taska,
-- model/reviewer route przez `hermes/model_routing_policy.py`.
+- model/reviewer route przez `hermes/model_routing_policy.py` na actual task body z live readback JSON.
 
 `max_runtime` musi być jawnie ustawiony przy create, ale Hermes 0.20.4 nie wystawia go w stabilnym JSON readback używanym przez ten validator. Software Factory **nie twierdzi**, że `max_runtime` jest obecnie mechanicznie potwierdzony przez ten gate. To jawne ograniczenie pozostaje fail-visible do czasu dodania stabilnego readbacku w Hermesie.
 
@@ -137,7 +138,7 @@ Dla zmiany wykonywanej w worktree reviewer musi czytać dokładnie artefakt impl
 - `metadata.workspace_path` w runie jest dodatkowym corroboration: jeśli istnieje, musi zgadzać się z live `task.workspace_path`; jego brak nie blokuje poprawnego natywnego handoffu,
 - dispatcher uruchamia reviewera na tej samej karcie i w tym samym worktree; nie wolno tworzyć drugiego worktree ani osobnej karty tylko po to, aby przekazać workspace.
 
-Przed dispatch review należy obowiązkowo zlecić `runtime-controller validate-handoff` na live JSON tej samej karty oraz `validate-routing` dla implementera/reviewera i `SECURITY_SENSITIVE`. Brak obu pozytywnych wyników `RUNTIME_CONTRACT_OK` i `MODEL_ROUTING_OK` oznacza fail-closed i reviewer nie może zostać dispatchowany.
+Przed dispatch review należy obowiązkowo zlecić `runtime-controller validate-handoff` na live JSON tej samej karty oraz `validate-routing --actual-json <live-task-json>`. Brak obu pozytywnych wyników `RUNTIME_CONTRACT_OK` i `MODEL_ROUTING_OK` oznacza fail-closed i reviewer nie może zostać dispatchowany.
 
 Validator handoff wymaga co najmniej:
 
