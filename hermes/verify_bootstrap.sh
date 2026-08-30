@@ -45,7 +45,7 @@ grep -Fq 'GEMINI_MODEL="${GEMINI_MODEL:-gemini-3.5-flash-lite}"' "${BOOTSTRAP}"
 grep -Fq 'CLAUDE_SKILL="${CLAUDE_SKILL:-claude-code}"' "${BOOTSTRAP}"
 grep -Fq 'CLAUDE_NORMAL_MODEL="${CLAUDE_NORMAL_MODEL:-sonnet}"' "${BOOTSTRAP}"
 grep -Fq 'CLAUDE_DEEP_MODEL="${CLAUDE_DEEP_MODEL:-opus}"' "${BOOTSTRAP}"
-if grep -Eqi 'OX_PROVIDER|OX_MODEL|stealth/ox-alpha|auditor-ox' "${BOOTSTRAP}"; then
+if grep -Eqi 'OX_PROVIDER|OX_MODEL|stealth/ox-alpha' "${BOOTSTRAP}"; then
   echo "ERROR: bootstrap nadal zawiera aktywny routing Ox" >&2
   exit 1
 fi
@@ -58,11 +58,18 @@ grep -Fq 'reviewer-claude' "${BOOTSTRAP}"
 grep -Fq 'for profile in orchestrator architect repository-analyst coder reviewer-gpt auditor-gpt release-manager routing-sink; do' "${BOOTSTRAP}"
 grep -Fq 'for profile in coder-claude reviewer-claude architect-claude-opus; do' "${BOOTSTRAP}"
 grep -Fq 'config set factory.execution_backend "${CLAUDE_SKILL}"' "${BOOTSTRAP}"
-grep -Fq 'coder-claude config set factory.claude_model "${CLAUDE_NORMAL_MODEL}"' "${BOOTSTRAP}"
-grep -Fq 'reviewer-claude config set factory.claude_model "${CLAUDE_NORMAL_MODEL}"' "${BOOTSTRAP}"
-grep -Fq 'architect-claude-opus config set factory.claude_model "${CLAUDE_DEEP_MODEL}"' "${BOOTSTRAP}"
+grep -Fq 'coder-claude config set factory.claude_model_class "${CLAUDE_NORMAL_MODEL}"' "${BOOTSTRAP}"
+grep -Fq 'reviewer-claude config set factory.claude_model_class "${CLAUDE_NORMAL_MODEL}"' "${BOOTSTRAP}"
+grep -Fq 'architect-claude-opus config set factory.claude_model_class "${CLAUDE_DEEP_MODEL}"' "${BOOTSTRAP}"
 grep -Fq 'coder config set factory.execution_backend native-openai' "${BOOTSTRAP}"
 grep -Fq 'reviewer-gpt config set factory.execution_backend native-openai' "${BOOTSTRAP}"
+
+echo "[check] legacy Ox profile is quarantined if present"
+grep -Fq 'if profile_exists auditor-ox; then' "${BOOTSTRAP}"
+grep -Fq 'auditor-ox config set factory.execution_backend disabled-legacy' "${BOOTSTRAP}"
+grep -Fq "auditor-ox config set fallback_providers '[]'" "${BOOTSTRAP}"
+grep -Fq 'auditor-ox config set agent.disabled_toolsets' "${BOOTSTRAP}"
+grep -Fq 'expect_config auditor-ox factory.execution_backend disabled-legacy' "${BOOTSTRAP}"
 
 echo "[check] hidden model fallbacks disabled"
 grep -Fq 'for profile in "${profiles[@]}"; do' "${BOOTSTRAP}"
@@ -123,9 +130,9 @@ grep -Fq 'expect_config coder factory.execution_backend native-openai' "${BOOTST
 grep -Fq 'expect_config coder-claude factory.execution_backend "${CLAUDE_SKILL}"' "${BOOTSTRAP}"
 grep -Fq 'expect_config reviewer-claude factory.execution_backend "${CLAUDE_SKILL}"' "${BOOTSTRAP}"
 grep -Fq 'expect_config architect-claude-opus factory.execution_backend "${CLAUDE_SKILL}"' "${BOOTSTRAP}"
-grep -Fq 'expect_config coder-claude factory.claude_model "${CLAUDE_NORMAL_MODEL}"' "${BOOTSTRAP}"
-grep -Fq 'expect_config reviewer-claude factory.claude_model "${CLAUDE_NORMAL_MODEL}"' "${BOOTSTRAP}"
-grep -Fq 'expect_config architect-claude-opus factory.claude_model "${CLAUDE_DEEP_MODEL}"' "${BOOTSTRAP}"
+grep -Fq 'expect_config coder-claude factory.claude_model_class "${CLAUDE_NORMAL_MODEL}"' "${BOOTSTRAP}"
+grep -Fq 'expect_config reviewer-claude factory.claude_model_class "${CLAUDE_NORMAL_MODEL}"' "${BOOTSTRAP}"
+grep -Fq 'expect_config architect-claude-opus factory.claude_model_class "${CLAUDE_DEEP_MODEL}"' "${BOOTSTRAP}"
 grep -Fq 'expect_config task-decomposer model.default "${GEMINI_MODEL}"' "${BOOTSTRAP}"
 grep -Fq 'expect_config quick-reviewer model.default "${GEMINI_MODEL}"' "${BOOTSTRAP}"
 grep -Fq 'expect_config docs model.default "${GEMINI_MODEL}"' "${BOOTSTRAP}"
