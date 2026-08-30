@@ -63,15 +63,7 @@ Body nie potwierdza pól runtime. Każda niezgodność runtime kończy się `RUN
 ~/.hermes/profiles/runtime-controller/kanban_runtime_cli.sh <allowlisted-op> ...
 ```
 
-Allowlist:
-
-- `create`
-- `show`
-- `block`
-- `complete`
-- `validate-runtime`
-- `validate-routed-handoff`
-- `validate-routing`
+Allowlist: `create`, `show`, `block`, `complete`, `validate-runtime`, `validate-routed-handoff`, `validate-routing`.
 
 Body-independent `validate-handoff` nie istnieje. Bezpośrednie `hermes`, Git, Python, curl, file/code tools, shell operators, pipe/chaining i command substitution są mechanicznie blokowane.
 
@@ -89,7 +81,7 @@ Gate waliduje co najmniej `assignee`, `workspace_kind`, create-time `workspace_p
 
 Po claimie Hermes materializuje worktree. Implementer kończy run przez native `review_requested`; karta przechodzi do `status=review`, reviewer assignee i zachowuje ten sam resolved worktree.
 
-Przed dispatch review runtime-controller wykonuje na **tym samym live `show --json`**:
+Przed dispatch review runtime-controller wykonuje na tym samym live `show --json`:
 
 ```text
 validate-routing --actual-json <live-json>
@@ -98,25 +90,15 @@ validate-routed-handoff --actual-json <live-json>
 
 Oba wejścia używają wspólnego strict JSON decodera odrzucającego duplicate keys na każdym poziomie.
 
-`validate-routed-handoff`:
-
-1. wyprowadza implementera/reviewera wyłącznie z live body,
-2. sprawdza exact routing matrix,
-3. wymaga dokładnie jednego reviewera,
-4. wymaga `status=review` i właściwego `task.assignee`,
-5. parsuje dokładnie jeden `WORKSPACE: worktree:<base-repo>` z body,
-6. wymaga live workspace dokładnie `<base-repo>/.worktrees/<task-id>`, canonical absolute, bez `.`/`..` i symlink escape gdy path istnieje,
-7. wymaga najnowszego `review_requested` z właściwymi profilami i obowiązkowym integer `run_id`,
-8. wymaga latest implementer run `outcome=review_requested` z tym samym run ID,
-9. wymaga run metadata zawierającej exact `task_id` i exact resolved workspace.
+`validate-routed-handoff` wyprowadza implementera/reviewera wyłącznie z live body i wymaga: dokładnie jednego reviewera, `status=review`, właściwego `task.assignee`, dokładnie jednego `WORKSPACE: worktree:<base-repo>`, live workspace dokładnie `<base-repo>/.worktrees/<task-id>` bez `.`/`..`/symlink escape, najnowszego `review_requested` z mandatory integer `run_id`, latest implementer run `outcome=review_requested` z tym samym ID oraz run metadata zawierającej exact `task_id` i exact resolved workspace.
 
 Summary ani profile names przekazane osobno nie są security inputem. Przy `CHANGES_REQUIRED` reviewer używa native same-card `kanban_request_changes`.
 
 ## 7. Claude Code execution boundary
 
-`coder-claude`, `reviewer-claude`, `architect-claude-opus` mają profile-scoped `factory-execution-guards` v0.3.0.
+`coder-claude`, `reviewer-claude`, `architect-claude-opus` mają profile-scoped `factory-execution-guards` v0.4.0.
 
-Outer GPT nie może używać terminala do `find`, Git, Python, grep ani innych helperów. Terminal przyjmuje wyłącznie literalne argv0 `claude`; `./claude`, `/tmp/claude` i alternatywne ścieżki są blokowane. Guard rozwiązuje PATH-selected binary do realnego pliku i wiąże evidence z jego path + SHA-256.
+Outer GPT nie może używać terminala do `find`, Git, Python, grep ani innych helperów. Terminal przyjmuje wyłącznie literalne argv0 `claude`; `./claude`, `/tmp/claude` i alternatywne ścieżki są blokowane. Guard wiąże attestation z resolved Claude binary path + SHA-256.
 
 Claude command schema jest zamknięty: dokładnie jedno print prompt, exact model, JSON output, exact profile-specific `--allowedTools`, opcjonalny bounded `--max-turns`/`--effort`. Duplicate/unknown flags, permission bypass, settings/MCP/plugin/resume/worktree/debug/fallback są odrzucane. Prompt musi zawierać exact bieżący task ID, run ID i resolved worktree.
 
@@ -129,21 +111,22 @@ Read,Write,Edit,Glob,Grep,Bash(git status *),Bash(git diff *),Bash(git rev-parse
 Reviewer/architect exact read-only tools:
 
 ```text
-Read,Glob,Grep,Bash(git status --short --untracked-files=all),Bash(git diff --no-ext-diff --no-textconv --),Bash(git diff --cached --no-ext-diff --no-textconv --),Bash(git rev-parse HEAD),Bash(git rev-parse --show-toplevel)
+Read,Glob,Grep
 ```
 
-### 7.1 In-process attestation i evidence schema v4
+Reviewer/architect Claude nie otrzymuje żadnego `Bash`.
 
-Przed canonical Claude run `pre_tool_call` tworzy losowy nonce wyłącznie w pamięci worker process i wiąże go z task/run/profile, resolved workspace, command hash, Claude binary path+SHA-256 oraz trusted Git HEAD/workspace-state digest przed wykonaniem.
+### 7.1 In-process attestation i evidence schema v5
 
-`post_tool_call` wystawia evidence tylko dla matching pending attestation i successful Claude JSON result. Evidence schema v4 zapisuje także Git HEAD/workspace-state po wykonaniu oraz attestation ID wyprowadzony z in-memory nonce.
+Przed canonical Claude run `pre_tool_call` tworzy losowy nonce wyłącznie w pamięci worker process i wiąże go z task/run/profile, resolved workspace, command hash, Claude binary path+SHA-256, Git HEAD oraz content-state digest przed wykonaniem.
 
-Sam durable JSON **nie odblokowuje lifecycle**. `kanban_request_review` albo Claude-backed completion wymaga jednocześnie:
+Content-state digest obejmuje staged diff oraz raw bytes/mode/symlink target wszystkich modified/deleted/untracked paths. Zmiana treści pliku jest więc wykrywana nawet jeśli `git status` nadal pokazuje ten sam status class.
 
-- matching schema-v4 file,
-- matching completed attestation nadal obecnego w pamięci tego samego worker process.
+`post_tool_call` wystawia evidence tylko dla matching pending attestation i successful Claude JSON result. Evidence schema v5 zapisuje także Git HEAD/content-state po wykonaniu oraz attestation ID wyprowadzony z in-memory nonce.
 
-Przed transition guard ponownie sprawdza current Claude binary identity, resolved workspace, Git HEAD i workspace-state digest. Każda zmiana workspace po evidence unieważnia handoff/completion. Rozpoczęcie kolejnego Claude command unieważnia poprzedni completed attestation.
+Sam durable JSON nie odblokowuje lifecycle. `kanban_request_review` albo Claude-backed completion wymaga jednocześnie matching schema-v5 file oraz matching completed attestation nadal obecnego w pamięci tego samego worker process.
+
+Przed transition guard ponownie sprawdza current Claude binary identity, resolved workspace, Git HEAD i content-state digest. Każda późniejsza zmiana zawartości workspace albo rozpoczęcie kolejnego Claude command unieważnia poprzedni attestation.
 
 ## 8. Plugin supply chain
 
@@ -151,14 +134,7 @@ Installer tworzy jeden immutable snapshot source/pin set po początkowej walidac
 
 ## 9. Repository analyst fresh deployment
 
-Canonical `bootstrap_profiles.sh` po konfiguracji profili wykonuje:
-
-```text
-bootstrap_repository_analyst_isolation.sh
-verify_repository_analyst_isolation.sh --live
-```
-
-Fresh deployment nie może pozostawić `repository-analyst` na odziedziczonych szerokich toolach. Re-run analyst bootstrap używa controlled reviewed replacement, więc runtime `__pycache__` albo starsze reviewed bytes nie blokują odtworzenia exact pinned tree.
+Canonical `bootstrap_profiles.sh` po konfiguracji profili wykonuje `bootstrap_repository_analyst_isolation.sh` oraz `verify_repository_analyst_isolation.sh --live`. Re-run analyst bootstrap używa controlled reviewed replacement, więc runtime `__pycache__` albo starsze reviewed bytes nie blokują odtworzenia exact pinned tree.
 
 ## 10. Integrity skills
 
