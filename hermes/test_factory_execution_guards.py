@@ -17,7 +17,7 @@ SPEC.loader.exec_module(GUARD)
 
 FAKE_CLAUDE = ("/opt/claude-code/claude", "a" * 64)
 WORKSPACE = "/repo/.worktrees/t_guard"
-GIT_STATE = ("1" * 40, "2" * 64)
+CONTENT_STATE = ("1" * 40, "2" * 64)
 PROMPT = f"Work Kanban task t_guard run 77 in {WORKSPACE}."
 CODER_CMD = (
     f"claude -p '{PROMPT}' --model sonnet --output-format json "
@@ -34,18 +34,18 @@ class ExecutionGuardTests(unittest.TestCase):
         GUARD._PENDING_ATTESTATIONS.clear()
         GUARD._COMPLETED_ATTESTATIONS.clear()
 
-    def _guard_patches(self, *, git_state=GIT_STATE):
+    def _guard_patches(self, *, content_state=CONTENT_STATE):
         return (
             patch.object(GUARD, "_canonical_claude_identity", return_value=FAKE_CLAUDE),
             patch.object(GUARD, "_workspace", return_value=WORKSPACE),
-            patch.object(GUARD, "_git_workspace_state", return_value=git_state),
+            patch.object(GUARD, "_workspace_content_state", return_value=content_state),
         )
 
     def _env(self, profile: str, task: str = "t_guard") -> dict[str, str]:
         return {"HERMES_PROFILE": profile, "HERMES_KANBAN_TASK": task, "HERMES_KANBAN_RUN_ID": "77"}
 
-    def _call(self, profile: str, tool: str, args=None, *, task="t_guard", git_state=GIT_STATE):
-        p1, p2, p3 = self._guard_patches(git_state=git_state)
+    def _call(self, profile: str, tool: str, args=None, *, task="t_guard", content_state=CONTENT_STATE):
+        p1, p2, p3 = self._guard_patches(content_state=content_state)
         with patch.dict(os.environ, self._env(profile, task), clear=False), p1, p2, p3:
             return GUARD.on_pre_tool_call(tool_name=tool, args=args or {}, task_id=task)
 
@@ -58,17 +58,17 @@ class ExecutionGuardTests(unittest.TestCase):
         exit_code: int = 0,
         hook_task_id: str = "t_guard",
         kanban_task_id: str = "t_guard",
-        before_state=GIT_STATE,
-        after_state=GIT_STATE,
+        before_state=CONTENT_STATE,
+        after_state=CONTENT_STATE,
     ):
         env = self._env(profile, kanban_task_id)
         result = json.dumps({"output": terminal_output, "exit_code": exit_code})
-        p1, p2, p3 = self._guard_patches(git_state=before_state)
+        p1, p2, p3 = self._guard_patches(content_state=before_state)
         with patch.dict(os.environ, env, clear=False), p1, p2, p3:
             pre = GUARD.on_pre_tool_call(tool_name="terminal", args={"command": command}, task_id=hook_task_id)
         if pre is not None:
             return pre
-        p1, p2, p3 = self._guard_patches(git_state=after_state)
+        p1, p2, p3 = self._guard_patches(content_state=after_state)
         with patch.dict(os.environ, env, clear=False), p1, p2, p3:
             GUARD.on_post_tool_call(
                 tool_name="terminal", args={"command": command}, result=result,
@@ -123,16 +123,18 @@ class ExecutionGuardTests(unittest.TestCase):
             blocked = self._call("coder-claude", tool, {"path": "x", "content": "x"})
             self.assertEqual(blocked and blocked.get("action"), "block")
 
-    def test_reviewer_and_architect_require_exact_readonly_claude_tools(self):
+    def test_reviewer_and_architect_are_shell_free(self):
+        self.assertEqual(GUARD.READONLY_CLAUDE_TOOLS, "Read,Glob,Grep")
         self.assertIsNone(self._call("reviewer-claude", "terminal", {"command": REVIEW_CMD}))
         opus = REVIEW_CMD.replace("--model sonnet", "--model opus")
         self.assertIsNone(self._call("architect-claude-opus", "terminal", {"command": opus}))
         for profile, base in (("reviewer-claude", REVIEW_CMD), ("architect-claude-opus", opus)):
             bad = (
-                base.replace(f"--allowedTools '{GUARD.READONLY_CLAUDE_TOOLS}'", "--allowedTools 'Read,Edit'"),
-                base.replace(f" --allowedTools '{GUARD.READONLY_CLAUDE_TOOLS}'", ""),
+                base.replace("--allowedTools 'Read,Glob,Grep'", "--allowedTools 'Read,Edit'"),
+                base.replace(" --allowedTools 'Read,Glob,Grep'", ""),
                 base + " --dangerously-skip-permissions",
                 base + " --allowedTools 'Read,Write'",
+                base.replace("--allowedTools 'Read,Glob,Grep'", "--allowedTools 'Read,Glob,Grep,Bash(git diff *)'"),
             )
             for command in bad:
                 with self.subTest(profile=profile, command=command):
@@ -150,15 +152,15 @@ class ExecutionGuardTests(unittest.TestCase):
                 evidence = list(Path(td).glob("*.json"))
                 self.assertEqual(len(evidence), 1)
                 payload = json.loads(evidence[0].read_text())
-                self.assertEqual(payload["schema"], 4)
+                self.assertEqual(payload["schema"], 5)
                 self.assertEqual(payload["task_id"], "t_guard")
                 self.assertEqual(payload["run_id"], "77")
                 self.assertEqual(payload["workspace"], WORKSPACE)
                 self.assertEqual(payload["claude_binary"], FAKE_CLAUDE[0])
                 self.assertEqual(payload["claude_binary_sha256"], FAKE_CLAUDE[1])
-                self.assertEqual(payload["git_head_before"], GIT_STATE[0])
-                self.assertEqual(payload["git_head_after"], GIT_STATE[0])
-                self.assertEqual(payload["workspace_state_after_sha256"], GIT_STATE[1])
+                self.assertEqual(payload["git_head_before"], CONTENT_STATE[0])
+                self.assertEqual(payload["git_head_after"], CONTENT_STATE[0])
+                self.assertEqual(payload["workspace_content_state_after_sha256"], CONTENT_STATE[1])
                 self.assertRegex(payload["attestation_id"], r"^[0-9a-f]{64}$")
 
     def test_forged_evidence_without_memory_attestation_cannot_unlock_review(self):
@@ -166,23 +168,23 @@ class ExecutionGuardTests(unittest.TestCase):
             root = Path(td)
             with patch.object(GUARD, "EVIDENCE_ROOT", root):
                 fake = {
-                    "schema": 4, "profile": "coder-claude", "task_id": "t_guard", "run_id": "77",
+                    "schema": 5, "profile": "coder-claude", "task_id": "t_guard", "run_id": "77",
                     "model_class": "sonnet", "workspace": WORKSPACE, "claude_binary": FAKE_CLAUDE[0],
                     "claude_binary_sha256": FAKE_CLAUDE[1], "session_id": "forged", "command_sha256": "c" * 64,
-                    "attestation_id": "d" * 64, "git_head_after": GIT_STATE[0],
-                    "workspace_state_after_sha256": GIT_STATE[1], "success": True,
+                    "attestation_id": "d" * 64, "git_head_after": CONTENT_STATE[0],
+                    "workspace_content_state_after_sha256": CONTENT_STATE[1], "success": True,
                 }
                 (root / "t_guard__77__coder-claude.json").write_text(json.dumps(fake))
                 blocked = self._call("coder-claude", "kanban_request_review", {"summary": "ready"})
                 self.assertEqual(blocked and blocked.get("action"), "block")
 
-    def test_workspace_mutation_after_evidence_invalidates_handoff(self):
+    def test_content_mutation_after_evidence_invalidates_handoff_even_if_status_class_is_same(self):
         with tempfile.TemporaryDirectory() as td:
             with patch.object(GUARD, "EVIDENCE_ROOT", Path(td)):
                 result = json.dumps({"type": "result", "subtype": "success", "session_id": "sess-123"})
                 self._execute_claude("coder-claude", command=CODER_CMD, terminal_output=result)
-                changed = (GIT_STATE[0], "9" * 64)
-                blocked = self._call("coder-claude", "kanban_request_review", {"summary": "ready"}, git_state=changed)
+                changed_content = (CONTENT_STATE[0], "9" * 64)
+                blocked = self._call("coder-claude", "kanban_request_review", {"summary": "ready"}, content_state=changed_content)
                 self.assertEqual(blocked and blocked.get("action"), "block")
 
     def test_new_claude_command_invalidates_prior_completed_attestation(self):
