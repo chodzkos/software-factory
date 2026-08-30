@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import json
+import re
 from dataclasses import dataclass
-from typing import Sequence
+from typing import Any, Mapping, Sequence
 
 
 OPENAI_IMPLEMENTER = "coder"
@@ -20,9 +22,12 @@ REVIEWER_VENDOR = {
     OPENAI_REVIEWER: "openai",
     CLAUDE_REVIEWER: "anthropic",
     GROK_REVIEWER: "xai",
+    "quick-reviewer": "google",
     "auditor-gpt": "openai",
     "auditor-grok": "xai",
 }
+
+_CONTRACT_LINE_RE = re.compile(r"^([A-Z][A-Z0-9_]*):\s*(.*?)\s*$")
 
 
 @dataclass(frozen=True)
@@ -87,6 +92,78 @@ def validate_review_route(
     return errors
 
 
+def parse_task_contract(body: str) -> tuple[ReviewRoute | None, list[str]]:
+    """Parse routing fields from the actual Markdown task body, fail-closed."""
+    if not isinstance(body, str) or not body.strip():
+        return None, ["task_body_missing"]
+
+    fields: dict[str, str] = {}
+    for raw_line in body.splitlines():
+        match = _CONTRACT_LINE_RE.match(raw_line.strip())
+        if not match:
+            continue
+        key, value = match.groups()
+        if key in fields:
+            return None, [f"duplicate_contract_field:{key}"]
+        fields[key] = value
+
+    missing = [
+        key
+        for key in ("IMPLEMENTER", "REQUIRED_REVIEWERS", "SECURITY_SENSITIVE")
+        if key not in fields or not fields[key]
+    ]
+    if missing:
+        return None, [f"missing_contract_fields:{','.join(missing)}"]
+
+    security_raw = fields["SECURITY_SENSITIVE"].lower()
+    if security_raw not in {"yes", "no"}:
+        return None, ["invalid_security_sensitive"]
+
+    implementer = fields["IMPLEMENTER"]
+    reviewers_raw = fields["REQUIRED_REVIEWERS"]
+    reviewers = tuple(
+        value.strip() for value in reviewers_raw.split(",") if value.strip() and value.strip() != "none"
+    )
+    if not reviewers:
+        return None, ["required_reviewers_empty"]
+
+    return ReviewRoute(
+        implementer=implementer,
+        security_sensitive=security_raw == "yes",
+        required_reviewers=reviewers,
+    ), []
+
+
+def _task_body_from_json(raw: str) -> tuple[str | None, list[str]]:
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        return None, [f"actual_json_invalid:{exc.msg}"]
+    if not isinstance(payload, Mapping):
+        return None, ["actual_json_not_object"]
+    task: Mapping[str, Any]
+    nested = payload.get("task")
+    if isinstance(nested, Mapping):
+        task = nested
+    else:
+        task = payload
+    body = task.get("body")
+    if not isinstance(body, str):
+        return None, ["task_body_missing"]
+    return body, []
+
+
+def validate_task_body(body: str) -> list[str]:
+    route, errors = parse_task_contract(body)
+    if errors or route is None:
+        return errors or ["task_contract_unparseable"]
+    return validate_review_route(
+        route.implementer,
+        route.required_reviewers,
+        security_sensitive=route.security_sensitive,
+    )
+
+
 def format_route(errors: Sequence[str]) -> str:
     if not errors:
         return "MODEL_ROUTING_OK"
@@ -95,19 +172,20 @@ def format_route(errors: Sequence[str]) -> str:
 
 def build_cli_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Software Factory model/reviewer routing policy")
-    parser.add_argument("--implementer", required=True, choices=sorted(IMPLEMENTER_VENDOR))
-    parser.add_argument("--reviewer", action="append", required=True)
-    parser.add_argument("--security-sensitive", choices=("yes", "no"), required=True)
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--task-body")
+    source.add_argument("--actual-json")
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_cli_parser().parse_args(argv)
-    errors = validate_review_route(
-        args.implementer,
-        args.reviewer,
-        security_sensitive=args.security_sensitive == "yes",
-    )
+    if args.actual_json is not None:
+        body, errors = _task_body_from_json(args.actual_json)
+        if not errors and body is not None:
+            errors = validate_task_body(body)
+    else:
+        errors = validate_task_body(args.task_body)
     print(format_route(errors))
     return 0 if not errors else 2
 
