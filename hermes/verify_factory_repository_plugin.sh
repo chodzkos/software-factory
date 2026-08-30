@@ -43,13 +43,13 @@ echo '[check] reviewed mapper bytes retained'
 cmp -s "$PLUGIN/repo_map.py" "$ROOT_DIR/skills/custom/factory-repo-map/scripts/repo_map.py"
 echo 'OK: plugin mapper byte-identical to reviewed helper'
 
-echo '[check] production plugin remains disabled'
+echo '[check] production plugin is reviewed-ready'
 python3 - "$ROOT_DIR/hermes/plugins/manifest.json" <<'PY'
 import json,sys
 m=json.load(open(sys.argv[1])); s=m["plugins"]["factory-repository-readonly"]
-assert s["installable"] is False
-assert s["activation_status"] == "pending-independent-review"
-print("OK: readonly plugin is review-only")
+assert s["installable"] is True
+assert s["activation_status"] == "reviewed-ready"
+print("OK: readonly plugin is reviewed-ready")
 PY
 
 if command -v hermes >/dev/null 2>&1; then
