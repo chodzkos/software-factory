@@ -35,4 +35,17 @@ set -e
 [[ "${rc}" -eq 2 ]] || { echo "ERROR: flag-shaped block reason expected exit 2, got ${rc}" >&2; exit 1; }
 [[ ! -e "${HERMES_FAKE_LOG}" ]] || { echo "ERROR: rejected block reason must not invoke hermes" >&2; exit 1; }
 
-printf 'OK: scoped runtime wrapper block hardening\n'
+routing_ok="$(bash "${WRAPPER}" validate-routing --implementer coder --reviewer reviewer-claude --security-sensitive no)"
+[[ "${routing_ok}" == "MODEL_ROUTING_OK" ]] || { echo "ERROR: expected MODEL_ROUTING_OK, got ${routing_ok}" >&2; exit 1; }
+
+set +e
+routing_bad="$(bash "${WRAPPER}" validate-routing --implementer coder-claude --reviewer reviewer-claude --security-sensitive yes 2>&1)"
+rc=$?
+set -e
+[[ "${rc}" -eq 2 ]] || { echo "ERROR: forbidden Claude security reviewer expected exit 2, got ${rc}" >&2; exit 1; }
+[[ "${routing_bad}" == MODEL_ROUTING_DRIFT:*anthropic_security_reviewer_forbidden* ]] || {
+  echo "ERROR: expected anthropic security-review block, got ${routing_bad}" >&2
+  exit 1
+}
+
+printf 'OK: scoped runtime wrapper block and model-routing hardening\n'
