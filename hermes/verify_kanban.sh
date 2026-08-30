@@ -23,7 +23,7 @@ grep -Fq 'config set kanban.default_assignee routing-sink' "${CONFIGURE}"
 
 printf '[check] task contract baseline\n'
 grep -Fq 'SECURITY_SENSITIVE: yes|no' "${CONTRACT}"
-grep -Fq 'worktree:<absolute-repo-path>' "${CONTRACT}"
+grep -Fq 'worktree:<absolute-base-repository>' "${CONTRACT}"
 grep -Fq 'IMPLEMENTED != VERIFIED' "${CONTRACT}"
 grep -Fq 'RUNTIME_CONTRACT_DRIFT' "${CONTRACT}"
 grep -Fq 'MODEL_ROUTING_DRIFT' "${CONTRACT}"
