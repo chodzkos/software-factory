@@ -3,6 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VALIDATOR="${SCRIPT_DIR}/kanban_runtime_contract.py"
+MODEL_ROUTING_VALIDATOR="${SCRIPT_DIR}/model_routing_policy.py"
 
 usage() {
   cat >&2 <<'EOF'
@@ -13,6 +14,7 @@ Usage:
   kanban_runtime_cli.sh complete <task-id> <summary...>
   kanban_runtime_cli.sh validate-runtime <validator-runtime-args...>
   kanban_runtime_cli.sh validate-handoff <validator-handoff-args...>
+  kanban_runtime_cli.sh validate-routing <model-routing-args...>
 
 This wrapper intentionally exposes only the Kanban/runtime-contract operations
 required by the Software Factory runtime-controller. It never evals input and
@@ -66,6 +68,10 @@ case "${op}" in
   validate-handoff)
     [[ -f "${VALIDATOR}" ]] || { echo "ERROR: missing ${VALIDATOR}" >&2; exit 2; }
     exec python3 "${VALIDATOR}" handoff "$@"
+    ;;
+  validate-routing)
+    [[ -f "${MODEL_ROUTING_VALIDATOR}" ]] || { echo "ERROR: missing ${MODEL_ROUTING_VALIDATOR}" >&2; exit 2; }
+    exec python3 "${MODEL_ROUTING_VALIDATOR}" "$@"
     ;;
   *)
     usage
