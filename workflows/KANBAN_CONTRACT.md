@@ -27,7 +27,7 @@ RISK: low|medium|high|critical
 SECURITY_SENSITIVE: yes|no
 ASSIGNEE: <profile>
 REPOSITORY: <owner/repo lub path>
-WORKSPACE: none|repo|worktree:<absolute-repo-path>
+WORKSPACE: none|repo|worktree:<absolute-base-repository>
 IMPLEMENTER: <profile|none>
 REQUIRED_REVIEWERS: <exact reviewer profile|none for non-code tasks>
 OPTIONAL_REVIEWERS: <comma-separated profiles|none>
@@ -36,7 +36,7 @@ ACCEPTANCE_CRITERIA:
 - ...
 ```
 
-Dla code-changing task/review `SECURITY_SENSITIVE`, `IMPLEMENTER` i `REQUIRED_REVIEWERS` są obowiązkowe dokładnie raz. `WORKSPACE` musi być `worktree:<absolute-repo-path>`.
+Dla code-changing task/review `SECURITY_SENSITIVE`, `IMPLEMENTER`, `REQUIRED_REVIEWERS` i `WORKSPACE` są obowiązkowe dokładnie raz. `WORKSPACE` musi być `worktree:<absolute-base-repository>`.
 
 ## 4. Exact model routing
 
@@ -96,7 +96,7 @@ validate-routing --actual-json <live-json>
 validate-routed-handoff --actual-json <live-json>
 ```
 
-Oba wejścia są parsowane strict JSON decoderem, który odrzuca duplicate keys na każdym poziomie.
+Oba wejścia używają wspólnego strict JSON decodera odrzucającego duplicate keys na każdym poziomie.
 
 `validate-routed-handoff`:
 
@@ -104,38 +104,50 @@ Oba wejścia są parsowane strict JSON decoderem, który odrzuca duplicate keys 
 2. sprawdza exact routing matrix,
 3. wymaga dokładnie jednego reviewera,
 4. wymaga `status=review` i właściwego `task.assignee`,
-5. wymaga canonical absolute `.../.worktrees/<task-id>` bez `.`/`..` i symlink escape gdy path istnieje,
-6. wymaga najnowszego `review_requested` z właściwymi profilami i obowiązkowym integer `run_id`,
-7. wymaga latest implementer run `outcome=review_requested` z tym samym run ID,
-8. wymaga run metadata zawierającej dokładnie ten resolved workspace.
+5. parsuje dokładnie jeden `WORKSPACE: worktree:<base-repo>` z body,
+6. wymaga live workspace dokładnie `<base-repo>/.worktrees/<task-id>`, canonical absolute, bez `.`/`..` i symlink escape gdy path istnieje,
+7. wymaga najnowszego `review_requested` z właściwymi profilami i obowiązkowym integer `run_id`,
+8. wymaga latest implementer run `outcome=review_requested` z tym samym run ID,
+9. wymaga run metadata zawierającej exact `task_id` i exact resolved workspace.
 
 Summary ani profile names przekazane osobno nie są security inputem. Przy `CHANGES_REQUIRED` reviewer używa native same-card `kanban_request_changes`.
 
 ## 7. Claude Code execution boundary
 
-`coder-claude`, `reviewer-claude`, `architect-claude-opus` mają profile-scoped `factory-execution-guards` v0.2.0.
+`coder-claude`, `reviewer-claude`, `architect-claude-opus` mają profile-scoped `factory-execution-guards` v0.3.0.
 
-Outer GPT nie może używać terminala do `find`, Git, Python, grep ani innych helperów. Terminal przyjmuje wyłącznie literalne argv0 `claude`; `./claude`, `/tmp/claude` i alternatywne ścieżki są blokowane. Guard sam rozwiązuje PATH-selected binary i wiąże evidence z jego real path + SHA-256.
+Outer GPT nie może używać terminala do `find`, Git, Python, grep ani innych helperów. Terminal przyjmuje wyłącznie literalne argv0 `claude`; `./claude`, `/tmp/claude` i alternatywne ścieżki są blokowane. Guard rozwiązuje PATH-selected binary do realnego pliku i wiąże evidence z jego path + SHA-256.
 
-Claude command schema jest zamknięty: dokładnie jedno print prompt, exact model, JSON output, exact profile-specific `--allowedTools`, opcjonalny bounded `--max-turns`/`--effort`. Duplicate/unknown flags, permission bypass, settings/MCP/plugin/resume/worktree/debug/fallback są odrzucane.
+Claude command schema jest zamknięty: dokładnie jedno print prompt, exact model, JSON output, exact profile-specific `--allowedTools`, opcjonalny bounded `--max-turns`/`--effort`. Duplicate/unknown flags, permission bypass, settings/MCP/plugin/resume/worktree/debug/fallback są odrzucane. Prompt musi zawierać exact bieżący task ID, run ID i resolved worktree.
 
 Coder tools:
 
 ```text
-Read,Write,Edit,Bash(git status *),Bash(git diff *),Bash(git rev-parse *),Bash(python3 *)
+Read,Write,Edit,Glob,Grep,Bash(git status *),Bash(git diff *),Bash(git rev-parse *),Bash(python3 *)
 ```
 
-Reviewer/architect read-only tools:
+Reviewer/architect exact read-only tools:
 
 ```text
-Read,Bash(git status *),Bash(git diff *),Bash(git rev-parse *),Bash(git show *),Bash(git log *)
+Read,Glob,Grep,Bash(git status --short --untracked-files=all),Bash(git diff --no-ext-diff --no-textconv --),Bash(git diff --cached --no-ext-diff --no-textconv --),Bash(git rev-parse HEAD),Bash(git rev-parse --show-toplevel)
 ```
 
-Evidence schema v2 wiąże `task_id`, `run_id`, profile, model class, resolved workspace, Claude session, command SHA-256, resolved Claude binary path i binary SHA-256. Lifecycle transition revaliduje workspace i binary identity.
+### 7.1 In-process attestation i evidence schema v4
+
+Przed canonical Claude run `pre_tool_call` tworzy losowy nonce wyłącznie w pamięci worker process i wiąże go z task/run/profile, resolved workspace, command hash, Claude binary path+SHA-256 oraz trusted Git HEAD/workspace-state digest przed wykonaniem.
+
+`post_tool_call` wystawia evidence tylko dla matching pending attestation i successful Claude JSON result. Evidence schema v4 zapisuje także Git HEAD/workspace-state po wykonaniu oraz attestation ID wyprowadzony z in-memory nonce.
+
+Sam durable JSON **nie odblokowuje lifecycle**. `kanban_request_review` albo Claude-backed completion wymaga jednocześnie:
+
+- matching schema-v4 file,
+- matching completed attestation nadal obecnego w pamięci tego samego worker process.
+
+Przed transition guard ponownie sprawdza current Claude binary identity, resolved workspace, Git HEAD i workspace-state digest. Każda zmiana workspace po evidence unieważnia handoff/completion. Rozpoczęcie kolejnego Claude command unieważnia poprzedni completed attestation.
 
 ## 8. Plugin supply chain
 
-Installer tworzy jeden immutable snapshot source/pin set po początkowej walidacji manifestu. Późniejsza transakcja nie otwiera ponownie mutable manifestu. `--replace-reviewed` jest explicit opt-in, publikacja jest serializowana `flock`, stage jest rehashowany z frozen snapshot, rollback jest uzbrojony przed ruszeniem starego targetu, a failure po publikacji usuwa nowy target i obowiązkowo przywraca backup.
+Installer tworzy jeden immutable snapshot source/pin set po początkowej walidacji manifestu. Późniejsza transakcja nie otwiera ponownie mutable manifestu. `--replace-reviewed` jest explicit opt-in, publikacja jest serializowana `flock`, stage jest rehashowany z frozen snapshot, rollback jest uzbrojony przed ruszeniem starego targetu, a failure po publikacji usuwa nowy target i obowiązkowo przywraca backup. Adversarial test wymusza post-publish corruption i sprawdza exact restore starego targetu.
 
 ## 9. Repository analyst fresh deployment
 
@@ -146,17 +158,21 @@ bootstrap_repository_analyst_isolation.sh
 verify_repository_analyst_isolation.sh --live
 ```
 
-Fresh deployment nie może więc zostawić `repository-analyst` na odziedziczonych szerokich toolach.
+Fresh deployment nie może pozostawić `repository-analyst` na odziedziczonych szerokich toolach. Re-run analyst bootstrap używa controlled reviewed replacement, więc runtime `__pycache__` albo starsze reviewed bytes nie blokują odtworzenia exact pinned tree.
 
-## 10. Legacy Ox
+## 10. Integrity skills
+
+`coder-claude`, `reviewer-gpt`, `reviewer-claude` i `architect-claude-opus` są jawnie zadeklarowane w `skills/profiles.yaml`; SHA/workspace/evidence contracts nie kończą się dla nich `unknown profile`.
+
+## 11. Legacy Ox
 
 Ox Alpha nie jest aktywnym backendem. Existing `auditor-ox` dostaje `model.provider=model.default=disabled-legacy`, `factory.execution_backend=disabled-legacy`, empty fallback/toolsets, disabled tool search i broad denylist.
 
-## 11. Review/audit decision contract
+## 12. Review/audit decision contract
 
 Reviewer kończy dokładnie jedną linią `DECISION: APPROVE` albo `DECISION: CHANGES_REQUIRED`. HIGH/CRITICAL zawsze blokuje merge/release. Brak jednej parsowalnej decyzji oznacza `REVIEW_PENDING`.
 
-## 12. Minimal lifecycle
+## 13. Minimal lifecycle
 
 Normal feature:
 
@@ -166,7 +182,7 @@ Security-sensitive feature:
 
 `repository-analyst → architect? → task-decomposer → runtime-controller gate → coder-claude → pinned reviewer-gpt → required security evidence/audits → release-manager → done`
 
-## 13. Deployment
+## 14. Deployment
 
 Canonical profile bootstrap zawiera repository-analyst isolation. Po merge:
 
