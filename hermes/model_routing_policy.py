@@ -37,17 +37,30 @@ class ReviewRoute:
     required_reviewers: tuple[str, ...]
 
 
+class DuplicateJsonKey(ValueError):
+    pass
+
+
+def _strict_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise DuplicateJsonKey(key)
+        result[key] = value
+    return result
+
+
 def required_reviewers(implementer: str, *, security_sensitive: bool) -> tuple[str, ...]:
-    """Return the fail-closed required reviewer set for one implementation profile."""
+    """Return the exact allowed same-card reviewer set for an implementation profile."""
     if implementer not in IMPLEMENTER_VENDOR:
         raise ValueError(f"unknown implementer profile: {implementer}")
 
     if security_sensitive:
-        # Deep security review is always OpenAI. If OpenAI implemented the change,
-        # add Grok as a second independent cross-vendor reviewer; Claude is never
-        # used as the security reviewer.
+        # Security review is always OpenAI and must remain cross-vendor. Hermes
+        # 0.20.4 has one same-card reviewer lifecycle, so OpenAI implementation
+        # is refused instead of pretending a second reviewer is mechanically gated.
         if implementer == OPENAI_IMPLEMENTER:
-            return (OPENAI_REVIEWER, GROK_REVIEWER)
+            raise ValueError("security_sensitive_openai_implementer_forbidden")
         return (OPENAI_REVIEWER,)
 
     if implementer == OPENAI_IMPLEMENTER:
@@ -62,15 +75,7 @@ def validate_review_route(
     security_sensitive: bool,
 ) -> list[str]:
     errors: list[str] = []
-    try:
-        required = required_reviewers(implementer, security_sensitive=security_sensitive)
-    except ValueError as exc:
-        return [str(exc)]
-
     actual = tuple(reviewers)
-    missing = [reviewer for reviewer in required if reviewer not in actual]
-    if missing:
-        errors.append(f"missing_required_reviewers:{','.join(missing)}")
 
     if len(set(actual)) != len(actual):
         errors.append("duplicate_reviewers")
@@ -82,14 +87,35 @@ def validate_review_route(
     if security_sensitive and CLAUDE_REVIEWER in actual:
         errors.append("anthropic_security_reviewer_forbidden")
 
-    if not security_sensitive and len(actual) == 1 and actual:
-        reviewer = actual[0]
-        reviewer_vendor = REVIEWER_VENDOR.get(reviewer)
+    try:
+        required = required_reviewers(implementer, security_sensitive=security_sensitive)
+    except ValueError as exc:
+        errors.append(str(exc))
+        return errors
+
+    if actual != required:
+        errors.append(
+            "reviewer_set_mismatch:"
+            f"expected={','.join(required)} actual={','.join(actual)}"
+        )
+
+    if not security_sensitive and actual:
+        reviewer_vendor = REVIEWER_VENDOR.get(actual[0])
         implementer_vendor = IMPLEMENTER_VENDOR[implementer]
         if reviewer_vendor == implementer_vendor:
             errors.append("normal_review_must_be_cross_vendor")
 
     return errors
+
+
+def _parse_reviewers(raw: str) -> tuple[tuple[str, ...] | None, list[str]]:
+    parts = raw.split(",")
+    if any(not part.strip() for part in parts):
+        return None, ["malformed_required_reviewers_csv"]
+    values = tuple(part.strip() for part in parts)
+    if "none" in values:
+        return None, ["required_reviewers_none_forbidden"]
+    return values, []
 
 
 def parse_task_contract(body: str) -> tuple[ReviewRoute | None, list[str]]:
@@ -119,16 +145,12 @@ def parse_task_contract(body: str) -> tuple[ReviewRoute | None, list[str]]:
     if security_raw not in {"yes", "no"}:
         return None, ["invalid_security_sensitive"]
 
-    implementer = fields["IMPLEMENTER"]
-    reviewers_raw = fields["REQUIRED_REVIEWERS"]
-    reviewers = tuple(
-        value.strip() for value in reviewers_raw.split(",") if value.strip() and value.strip() != "none"
-    )
-    if not reviewers:
-        return None, ["required_reviewers_empty"]
+    reviewers, reviewer_errors = _parse_reviewers(fields["REQUIRED_REVIEWERS"])
+    if reviewer_errors or reviewers is None:
+        return None, reviewer_errors or ["required_reviewers_unparseable"]
 
     return ReviewRoute(
-        implementer=implementer,
+        implementer=fields["IMPLEMENTER"],
         security_sensitive=security_raw == "yes",
         required_reviewers=reviewers,
     ), []
@@ -136,21 +158,49 @@ def parse_task_contract(body: str) -> tuple[ReviewRoute | None, list[str]]:
 
 def _task_body_from_json(raw: str) -> tuple[str | None, list[str]]:
     try:
-        payload = json.loads(raw)
+        payload = json.loads(raw, object_pairs_hook=_strict_object)
+    except DuplicateJsonKey as exc:
+        return None, [f"actual_json_duplicate_key:{exc}"]
     except json.JSONDecodeError as exc:
         return None, [f"actual_json_invalid:{exc.msg}"]
     if not isinstance(payload, Mapping):
         return None, ["actual_json_not_object"]
-    task: Mapping[str, Any]
-    nested = payload.get("task")
-    if isinstance(nested, Mapping):
+
+    if "task" in payload:
+        nested = payload["task"]
+        if not isinstance(nested, Mapping):
+            return None, ["actual_json_task_not_object"]
+        task: Mapping[str, Any] = nested
+    else:
+        task = payload
+
+    body = task.get("body")
+    if not isinstance(body, str):
+        return None, ["task_body_missing"]
+    return body, []
+
+
+def route_from_payload(payload: Mapping[str, Any]) -> tuple[ReviewRoute | None, list[str]]:
+    """Extract and validate routing directly from a normalized live task payload."""
+    if "task" in payload:
+        nested = payload.get("task")
+        if not isinstance(nested, Mapping):
+            return None, ["actual_json_task_not_object"]
         task = nested
     else:
         task = payload
     body = task.get("body")
     if not isinstance(body, str):
         return None, ["task_body_missing"]
-    return body, []
+    route, errors = parse_task_contract(body)
+    if errors or route is None:
+        return route, errors or ["task_contract_unparseable"]
+    route_errors = validate_review_route(
+        route.implementer,
+        route.required_reviewers,
+        security_sensitive=route.security_sensitive,
+    )
+    return route, route_errors
 
 
 def validate_task_body(body: str) -> list[str]:
