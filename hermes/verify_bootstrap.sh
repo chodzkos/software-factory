@@ -44,11 +44,11 @@ grep -Fq 'trap rollback EXIT' "${PLUGIN_INSTALLER}"
 grep -Fq 'rm -rf -- "$target"' "${PLUGIN_INSTALLER}"
 grep -Fq 'mv -- "$backup" "$target"' "${PLUGIN_INSTALLER}"
 if grep -Fq '|| true' "${PLUGIN_INSTALLER}"; then echo 'ERROR: plugin rollback must not suppress restoration failures' >&2; exit 1; fi
-# After the initial snapshot is frozen, publication code must not reopen MANIFEST.
 count="$(grep -c '"$MANIFEST"' "${PLUGIN_INSTALLER}")"
 [[ "$count" -eq 1 ]] || { echo "ERROR: installer reopens mutable manifest after snapshot (count=$count)" >&2; exit 1; }
 grep -Fq -- '--plugin "${EXECUTION_GUARD}" --replace-reviewed' "${BOOTSTRAP}"
 grep -Fq -- '--plugin "${EXECUTION_GUARD}" --replace-reviewed' "${RUNTIME_BOOTSTRAP}"
+grep -Fq -- '--plugin "${PLUGIN}" --replace-reviewed' "${ANALYST_BOOTSTRAP}"
 
 printf '[check] legacy Ox inference kill switch\n'
 grep -Fq 'if profile_exists auditor-ox; then' "${BOOTSTRAP}"
@@ -72,10 +72,14 @@ grep -Fq 'tokens[0] != "claude"' "${GUARD}"
 grep -Fq 'CODER_CLAUDE_TOOLS' "${GUARD}"
 grep -Fq 'READONLY_CLAUDE_TOOLS' "${GUARD}"
 grep -Fq 'FORBIDDEN_CLAUDE_FLAGS' "${GUARD}"
+grep -Fq '_PENDING_ATTESTATIONS' "${GUARD}"
+grep -Fq '_COMPLETED_ATTESTATIONS' "${GUARD}"
+grep -Fq 'attestation_id' "${GUARD}"
 grep -Fq 'claude_binary_sha256' "${GUARD}"
-grep -Fq 'workspace' "${GUARD}"
+grep -Fq '_git_workspace_state' "${GUARD}"
+grep -Fq 'workspace_state_after_sha256' "${GUARD}"
 grep -Fq 'HERMES_KANBAN_TASK' "${GUARD}"
-grep -Fq 'requires successful canonical Claude Code evidence' "${GUARD}"
+grep -Fq 'requires successful in-process attested Claude Code evidence' "${GUARD}"
 
 printf '[check] fresh bootstrap activates repository-analyst isolation\n'
 grep -Fq 'ANALYST_BOOTSTRAP=' "${BOOTSTRAP}"
