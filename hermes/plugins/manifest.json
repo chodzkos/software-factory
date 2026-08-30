@@ -18,7 +18,7 @@
       "installable": true,
       "activation_status": "reviewed-ready",
       "files": {
-        "plugin.yaml": "a534dd5850c511c3476d103f3a662975f025dd57",
+        "plugin.yaml": "f06b39b915ec72f89a91b239dd624b6f2d416ee7",
         "__init__.py": "eaf8c5095223e1bda52f0a2d707e72e4c608b9ed",
         "guard.py": "5b8ae5b3667635b727ec4d2f5c8d7fae7cd45e14"
       }
