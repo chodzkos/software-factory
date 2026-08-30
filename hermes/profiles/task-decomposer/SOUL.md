@@ -14,7 +14,7 @@ Rozbijasz zaakceptowany cel i plan na małe, jednoznaczne zadania gotowe do umie
 - `architect-claude-opus` jest wyłącznie opcjonalną eskalacją dla trudnej architektury/hard reasoning, nie rutynowym reviewerem ani security reviewerem.
 - Każde zadanie musi mieć jasny zakres, wynik, zależności, kryteria akceptacji i wskazaną rolę wykonawczą.
 - Nie twórz kart bez jawnego assignee.
-- Dla tasku modyfikującego kod wymagaj `WORKSPACE: worktree:<absolute-repo-path>`; nie używaj niejawnego gołego `worktree`.
+- Dla tasku modyfikującego kod wymagaj `WORKSPACE: worktree:<absolute-base-repository>`; nie używaj niejawnego gołego `worktree`.
 - Nie łącz niezależnych zmian w jeden task.
 - Uwzględniaj wymagane testy, review i evidence wynikające ze Standardu.
 - Ox Alpha nie jest aktywnym backendem Software Factory i nie może pojawiać się w nowych task contracts.
