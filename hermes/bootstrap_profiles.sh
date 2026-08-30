@@ -10,18 +10,22 @@ GROK_PROVIDER="${GROK_PROVIDER:-xai-oauth}"
 GROK_MODEL="${GROK_MODEL:-grok-4.6}"
 GEMINI_PROVIDER="${GEMINI_PROVIDER:-gemini}"
 GEMINI_MODEL="${GEMINI_MODEL:-gemini-3.5-flash-lite}"
-OX_PROVIDER="${OX_PROVIDER:-openrouter}"
-# Ustaw OX_MODEL="", aby świadomie wyłączyć opcjonalne role Ox.
-OX_MODEL="${OX_MODEL-stealth/ox-alpha}"
+CLAUDE_SKILL="${CLAUDE_SKILL:-claude-code}"
+CLAUDE_NORMAL_MODEL="${CLAUDE_NORMAL_MODEL:-sonnet}"
+CLAUDE_DEEP_MODEL="${CLAUDE_DEEP_MODEL:-opus}"
 ALLOW_NON_GPT_PRIMARY="${ALLOW_NON_GPT_PRIMARY:-0}"
 
 profiles=(
   orchestrator
   architect
+  architect-claude-opus
   repository-analyst
   task-decomposer
   coder
+  coder-claude
   quick-reviewer
+  reviewer-gpt
+  reviewer-claude
   critic
   auditor-gpt
   auditor-grok
@@ -30,21 +34,20 @@ profiles=(
   routing-sink
 )
 
-if [[ -n "${OX_MODEL}" ]]; then
-  profiles+=(auditor-ox)
-fi
-
 declare -A descriptions=(
   [orchestrator]="Coordinates Kanban routing, ownership and gates; delegates decomposition and implementation to specialist profiles."
   [architect]="Produces requirements, architecture and project plans; resolves boundaries and dependencies."
+  [architect-claude-opus]="Optional Claude Code Opus escalation for hard architecture/reasoning; never a security reviewer."
   [repository-analyst]="Analyzes repository structure, contracts, dependencies, tests and risks before planning changes."
   [task-decomposer]="Turns accepted plans into small Kanban-ready tasks with explicit ownership and acceptance criteria."
-  [coder]="Implements one logical change in an isolated workspace and verifies it."
+  [coder]="Native OpenAI/GPT implementer for one logical change in an isolated workspace."
+  [coder-claude]="Implementation coordinator that delegates the actual coding task to Claude Code CLI through the bundled claude-code skill."
   [quick-reviewer]="Performs cheap first-pass review, CI triage and obvious defect detection."
-  [critic]="Independent deep reviewer; challenges design, security, tests and verification evidence."
+  [reviewer-gpt]="Independent native OpenAI reviewer and the only deep security-review profile."
+  [reviewer-claude]="Independent reviewer that delegates read-only review to Claude Code CLI; forbidden for security-sensitive review."
+  [critic]="Independent deep reviewer using Grok; challenges design, tests and verification evidence."
   [auditor-gpt]="Independent final auditor using the primary GPT model."
   [auditor-grok]="Independent final auditor using Grok; searches for missed blockers and security findings."
-  [auditor-ox]="Optional third independent auditor using Ox Alpha."
   [docs]="Produces project and user documentation from accepted, verified changes."
   [release-manager]="Evaluates release gate and refuses publication when evidence or required controls are missing."
   [routing-sink]="Fail-closed sink for unroutable Kanban tasks; blocks the task and requests explicit reassignment."
@@ -94,8 +97,6 @@ install_profile_soul() {
     return 0
   fi
 
-  # Orchestrator nie ma narzędzi plikowych, więc kanoniczny Standard jest wstrzykiwany do jego kontekstu runtime.
-  # Kopia poniżej nie staje się drugim source of truth; przy każdym bootstrapie jest odtwarzana z pliku kanonicznego.
   local tmp
   tmp="$(mktemp)"
   {
@@ -128,11 +129,8 @@ fi
 echo "Primary profile: ${PRIMARY_PROFILE} -> ${primary_provider}/${primary_model}"
 echo "Dispatcher profile: ${DISPATCHER_PROFILE}"
 echo "Gemini policy: ${GEMINI_PROVIDER}/${GEMINI_MODEL}"
-if [[ -n "${OX_MODEL}" ]]; then
-  echo "Ox policy: ${OX_PROVIDER}/${OX_MODEL}"
-else
-  echo "Ox policy: disabled; repository-analyst falls back to ${primary_provider}/${primary_model}"
-fi
+echo "Claude Code policy: skill=${CLAUDE_SKILL}, normal=${CLAUDE_NORMAL_MODEL}, deep=${CLAUDE_DEEP_MODEL}"
+echo "Ox policy: disabled and removed from active Software Factory routing"
 echo
 
 for profile in "${profiles[@]}"; do
@@ -146,17 +144,30 @@ for profile in "${profiles[@]}"; do
   fi
 
   install_profile_soul "${profile}"
-
-  # Worker bez nadzoru ma zatrzymać się po powtarzających się pętlach bez postępu.
   hermes -p "${profile}" config set tool_loop_guardrails.hard_stop_enabled true
   hermes -p "${profile}" config set agent.tool_use_enforcement auto
 done
 
-# Role korzystające z głównego GPT są deterministycznie synchronizowane z PRIMARY_PROFILE.
-for profile in orchestrator architect coder auditor-gpt release-manager routing-sink; do
+# Natywne role GPT są deterministycznie synchronizowane z PRIMARY_PROFILE.
+for profile in orchestrator architect repository-analyst coder reviewer-gpt auditor-gpt release-manager routing-sink; do
   hermes -p "${profile}" config set model.provider "${primary_provider}"
   hermes -p "${profile}" config set model.default "${primary_model}"
 done
+
+# Profile Claude są koordynatorami Hermesa na głównym GPT, ale właściwa praca
+# musi być wykonana przez bundlowany skill claude-code / Claude Code CLI.
+for profile in coder-claude reviewer-claude architect-claude-opus; do
+  hermes -p "${profile}" config set model.provider "${primary_provider}"
+  hermes -p "${profile}" config set model.default "${primary_model}"
+  hermes -p "${profile}" config set factory.execution_backend "${CLAUDE_SKILL}"
+done
+hermes -p coder-claude config set factory.claude_model "${CLAUDE_NORMAL_MODEL}"
+hermes -p reviewer-claude config set factory.claude_model "${CLAUDE_NORMAL_MODEL}"
+hermes -p architect-claude-opus config set factory.claude_model "${CLAUDE_DEEP_MODEL}"
+
+# Natywne profile OpenAI mają jawny backend dla runtime routing evidence.
+hermes -p coder config set factory.execution_backend native-openai
+hermes -p reviewer-gpt config set factory.execution_backend native-openai
 
 # Role Groka są jawnie przypięte do providera i modelu.
 for profile in critic auditor-grok; do
@@ -164,53 +175,47 @@ for profile in critic auditor-grok; do
   hermes -p "${profile}" config set model.default "${GROK_MODEL}"
 done
 
-# Częste, tańsze role są deterministycznie przypięte do jawnego modelu Gemini.
+# Częste, tańsze role pozostają na Gemini.
 for profile in task-decomposer quick-reviewer docs; do
   hermes -p "${profile}" config set model.provider "${GEMINI_PROVIDER}"
   hermes -p "${profile}" config set model.default "${GEMINI_MODEL}"
 done
 
-# Ox Alpha jest opcjonalny. Gdy jest wyłączony, analiza repozytorium pozostaje dostępna przez primary GPT,
-# a trzeci audyt Ox nie jest tworzony ani wymagany do podstawowego gate GPT+Grok.
-if [[ -n "${OX_MODEL}" ]]; then
-  for profile in repository-analyst auditor-ox; do
-    hermes -p "${profile}" config set model.provider "${OX_PROVIDER}"
-    hermes -p "${profile}" config set model.default "${OX_MODEL}"
-  done
-else
-  hermes -p repository-analyst config set model.provider "${primary_provider}"
-  hermes -p repository-analyst config set model.default "${primary_model}"
-  echo "[warning] Ox wyłączony; repository-analyst używa ${primary_provider}/${primary_model}, a auditor-ox nie jest wymagany."
-fi
-
 # Profile factory nie dziedziczą ukrytych fallbacków modelu z PRIMARY_PROFILE.
-# Awaria providera ma być widoczna i obsłużona jawnie przez workflow/task contract, aby zachować audytowalność i niezależność modeli.
 for profile in "${profiles[@]}"; do
   hermes -p "${profile}" config set fallback_providers '[]'
 done
 
 # Izolacją tasków kodujących zarządza Kanban przez workspace=worktree:<repo>.
-# Jawnie wyłączamy odziedziczone ustawienia worktree z PRIMARY_PROFILE, aby uniknąć nested worktree.
 hermes -p coder config set worktree false
 hermes -p coder config set worktree_sync false
+hermes -p coder-claude config set worktree false
+hermes -p coder-claude config set worktree_sync false
 
-# Orchestrator koordynuje wyłącznie przez Kanban. Runtime gate Hermesa czyta top-level `toolsets`,
-# dlatego ustawiamy go jawnie zamiast polegać na platformowej konfiguracji toolsetów CLI.
+# Orchestrator koordynuje wyłącznie przez Kanban.
 hermes -p orchestrator config set toolsets '["hermes-cli","kanban"]'
 hermes -p orchestrator config set agent.disabled_toolsets '["terminal","file","code_execution","web","browser","image_gen","delegation","computer_use","cronjob"]'
 
 # Routing-sink ma być kontrolowanym końcem dla kart, których decomposer nie umie przypisać.
-# Po dispatchu Hermes doda mu lifecycle Kanban, ale nie dostanie narzędzi implementacyjnych ani zdalnego sterowania/schedulera.
 hermes -p routing-sink config set agent.disabled_toolsets '["terminal","file","code_execution","web","browser","image_gen","delegation","computer_use","cronjob"]'
 
-# Routing Kanban zapisujemy w profilu, z którego uruchamiany jest gateway/dispatcher.
-# Nie używamy pustego default_assignee: Hermes traktuje pustą wartość jako fallback do aktywnego profilu.
+# Routing Kanban zapisujemy w profilu gateway/dispatcher.
 hermes -p "${DISPATCHER_PROFILE}" config set kanban.orchestrator_profile orchestrator
 hermes -p "${DISPATCHER_PROFILE}" config set kanban.default_assignee routing-sink
 
 # Walidacja krytycznych ustawień po bootstrapie.
 expect_config auditor-gpt model.provider "${primary_provider}"
 expect_config auditor-gpt model.default "${primary_model}"
+expect_config reviewer-gpt model.provider "${primary_provider}"
+expect_config reviewer-gpt model.default "${primary_model}"
+expect_config reviewer-gpt factory.execution_backend native-openai
+expect_config coder factory.execution_backend native-openai
+expect_config coder-claude factory.execution_backend "${CLAUDE_SKILL}"
+expect_config coder-claude factory.claude_model "${CLAUDE_NORMAL_MODEL}"
+expect_config reviewer-claude factory.execution_backend "${CLAUDE_SKILL}"
+expect_config reviewer-claude factory.claude_model "${CLAUDE_NORMAL_MODEL}"
+expect_config architect-claude-opus factory.execution_backend "${CLAUDE_SKILL}"
+expect_config architect-claude-opus factory.claude_model "${CLAUDE_DEEP_MODEL}"
 expect_config critic model.provider "${GROK_PROVIDER}"
 expect_config critic model.default "${GROK_MODEL}"
 expect_config auditor-grok model.provider "${GROK_PROVIDER}"
@@ -221,19 +226,14 @@ expect_config quick-reviewer model.provider "${GEMINI_PROVIDER}"
 expect_config quick-reviewer model.default "${GEMINI_MODEL}"
 expect_config docs model.provider "${GEMINI_PROVIDER}"
 expect_config docs model.default "${GEMINI_MODEL}"
-if [[ -n "${OX_MODEL}" ]]; then
-  expect_config repository-analyst model.provider "${OX_PROVIDER}"
-  expect_config repository-analyst model.default "${OX_MODEL}"
-  expect_config auditor-ox model.provider "${OX_PROVIDER}"
-  expect_config auditor-ox model.default "${OX_MODEL}"
-else
-  expect_config repository-analyst model.provider "${primary_provider}"
-  expect_config repository-analyst model.default "${primary_model}"
-fi
+expect_config repository-analyst model.provider "${primary_provider}"
+expect_config repository-analyst model.default "${primary_model}"
 expect_config orchestrator tool_loop_guardrails.hard_stop_enabled "true"
 expect_config routing-sink tool_loop_guardrails.hard_stop_enabled "true"
 expect_config coder worktree "false"
 expect_config coder worktree_sync "false"
+expect_config coder-claude worktree "false"
+expect_config coder-claude worktree_sync "false"
 expect_config "${DISPATCHER_PROFILE}" kanban.orchestrator_profile "orchestrator"
 expect_config "${DISPATCHER_PROFILE}" kanban.default_assignee routing-sink
 
@@ -252,5 +252,5 @@ hermes profile list
 
 echo
 echo "Bootstrap profili zakończony."
-echo "Uruchom 'hermes doctor' i sprawdź modele przez 'hermes -p <name> config get model'."
+echo "Uruchom 'hermes doctor' i sprawdź modele/backend przez 'hermes -p <name> config get model' oraz 'factory.execution_backend'."
 echo "Następnie zainicjalizuj/zweryfikuj Kanban przez 'hermes kanban init' i uruchom dokładnie jeden gateway/dispatcher."
