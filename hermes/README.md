@@ -44,18 +44,19 @@ Reviewer set musi być dokładny. Security reviewer jest przypięty do OpenAI i 
 
 Profile Claude nie udają natywnego Anthropica w Hermesie. Outer Hermes koordynuje, ale właściwa praca musi przejść przez `claude-code`.
 
-`factory-execution-guards` v0.3.0:
+`factory-execution-guards` v0.4.0:
 
 - blokuje direct outer-GPT write/patch/code execution,
-- terminal pozwala wyłącznie na literalne `claude`; żaden `find`, Git, Python, grep ani inny helper binary nie jest dopuszczony dla outer GPT,
+- terminal outer GPT pozwala wyłącznie na literalne `claude`; żaden `find`, Git, Python, grep ani inny helper binary nie jest dopuszczony,
 - odrzuca `./claude`, `/tmp/claude`, duplicate/unknown flags, permission bypass, settings/MCP/plugin/resume/worktree/debug/fallback,
 - wymaga exact model + JSON + exact profile-specific `--allowedTools`,
 - prompt musi zawierać exact task ID, run ID i resolved worktree,
-- reviewer/architect używają wyłącznie exact read-only Claude tool set,
-- przed Claude runem guard tworzy losowy in-process attestation i zapisuje trusted Git HEAD + workspace-state digest,
-- evidence schema v4 wiąże task/run/profile, resolved workspace, Claude session, command hash, Claude binary path+SHA-256, Git HEAD/state before/after oraz attestation ID,
-- sam plik evidence nie odblokowuje lifecycle: wymagany jest również completed attestation w pamięci tego samego worker process,
-- zmiana workspace albo Claude binary po evidence unieważnia handoff/completion.
+- `reviewer-claude` i `architect-claude-opus` są shell-free w delegated Claude: dokładny `--allowedTools` to `Read,Glob,Grep`,
+- przed Claude runem guard tworzy losowy in-process attestation i zapisuje Git HEAD + content-state digest,
+- content-state digest obejmuje staged diff oraz raw bytes/mode/symlink target wszystkich modified/deleted/untracked paths,
+- evidence schema v5 wiąże task/run/profile, resolved workspace, Claude session, command hash, Claude binary path+SHA-256, Git HEAD/content-state before/after oraz attestation ID,
+- sam plik evidence nie odblokowuje lifecycle: wymagany jest też completed attestation nadal obecny w pamięci tego samego worker process,
+- zmiana zawartości workspace, HEAD, resolved workspace albo Claude binary po evidence unieważnia handoff/completion; rozpoczęcie kolejnego Claude command również unieważnia poprzedni attestation.
 
 Brak Claude CLI/OAuth/skilla/evidence oznacza blocked; nie ma hidden fallbacku.
 
@@ -69,7 +70,7 @@ Brak Claude CLI/OAuth/skilla/evidence oznacza blocked; nie ma hidden fallbacku.
 
 Operacje: `create`, `show`, `block`, `complete`, `validate-runtime`, `validate-routed-handoff`, `validate-routing`.
 
-Body-independent `validate-handoff` został usunięty. Routed handoff jest jedynym production handoff gate, używa strict duplicate-key JSON i wiąże live body z assignee/event/run/worktree. `WORKSPACE: worktree:<base-repo>` z body musi odpowiadać dokładnie live `<base-repo>/.worktrees/<task-id>`, a implementer-run metadata musi zawierać exact `task_id` i workspace.
+Body-independent `validate-handoff` został usunięty. Routed handoff jest jedynym production handoff gate, używa strict duplicate-key JSON i wiąże live body z assignee/event/run/worktree. `WORKSPACE: worktree:<base-repo>` z body musi odpowiadać dokładnie live `<base-repo>/.worktrees/<task-id>`, a implementer-run metadata musi zawierać exact `task_id` i exact resolved workspace.
 
 ## Repository analyst
 
@@ -80,7 +81,7 @@ bootstrap_repository_analyst_isolation.sh
 verify_repository_analyst_isolation.sh --live
 ```
 
-Fresh deployment nie może pozostawić `repository-analyst` z szerokim surface odziedziczonym z primary profile. Re-run bootstrapu używa kontrolowanego reviewed replacement, więc runtime `__pycache__` nie blokuje przywrócenia exact pinned plugin tree.
+Fresh deployment nie może pozostawić `repository-analyst` z szerokim surface odziedziczonym z primary profile. Re-run bootstrapu używa kontrolowanego reviewed replacement, więc runtime `__pycache__` albo starsze reviewed bytes nie blokują przywrócenia exact pinned plugin tree.
 
 ## Integrity skills
 
@@ -118,7 +119,7 @@ PRIMARY_PROFILE=default bash hermes/bootstrap_runtime_controller.sh
 DISPATCHER_PROFILE=default bash hermes/configure_kanban.sh
 ```
 
-`bootstrap_profiles.sh` zawiera już live repository-analyst isolation gate. Po bootstrapie nadal wymagane są live negative/positive probes execution guarda i routed handoffu przed VERIFIED.
+`bootstrap_profiles.sh` zawiera live repository-analyst isolation gate. Po bootstrapie nadal wymagane są live negative/positive probes execution guarda i routed handoffu przed VERIFIED.
 
 ## Założenia procesu
 
