@@ -62,7 +62,7 @@ Powody:
 
 ## 5. Fail-closed runtime gate
 
-Body samo w sobie nie potwierdza pól runtime. Przed `ready` `runtime-controller` porównuje kontrakt z faktycznym create/show JSON.
+Body samo w sobie nie potwierdza pól runtime. Przed `ready` `runtime-controller` porównuje kontrakt z faktycznym create/show JSON. Każda niezgodność pól runtime kończy się `RUNTIME_CONTRACT_DRIFT`; każda niezgodność model/reviewer route kończy się `MODEL_ROUTING_DRIFT`. Oba stany są fail-closed i nie mogą zostać przykryte poprawnym body, summary ani decyzją workera.
 
 ### 5.1 Runtime controller
 
@@ -95,7 +95,7 @@ Bezpośrednie `hermes`, Git, Python, curl, file/code tools, shell operators, pip
 
 Create-time `blocked` nie jest sticky quarantine w Hermes 0.20.4. Dla taska wymagającego runtime validation `runtime-controller` tworzy techniczny parent gate przypisany do `routing-sink`, natychmiast zapisuje sticky `kanban block --kind needs_input` z powodem `RUNTIME_CONTRACT_PENDING`, a worker task zależy od tego parenta.
 
-Drift pozostawia gate blocked. Zgodność pozwala zakończyć tylko techniczny gate i dopiero wtedy worker może przejść dalej.
+`RUNTIME_CONTRACT_DRIFT` lub `MODEL_ROUTING_DRIFT` pozostawia gate blocked. Zgodność pozwala zakończyć tylko techniczny gate i dopiero wtedy worker może przejść dalej.
 
 ### 5.3 Runtime fields
 
@@ -186,31 +186,26 @@ albo:
 DECISION: CHANGES_REQUIRED
 ```
 
-Każdy finding ma jawne `severity`, `location`, `evidence`, `impact`, `proposed fix`. Wiarygodny HIGH/CRITICAL wymusza `CHANGES_REQUIRED`. Brak/nieparsowalna/wielokrotna decyzja oznacza `REVIEW_PENDING`, nigdy APPROVE.
+HIGH/CRITICAL zawsze blokuje merge/release. Brak jednej parsowalnej decyzji oznacza `REVIEW_PENDING`.
 
-## 10. Routing ról
+## 10. Minimalny lifecycle
 
-- analiza repo → `repository-analyst`
-- architektura → `architect`; opcjonalna trudna eskalacja → `architect-claude-opus`
-- dekompozycja → `task-decomposer`
-- runtime/model gate → `runtime-controller`
-- non-security implementation → `coder` albo `coder-claude` zgodnie z kontraktem
-- security implementation → `coder-claude`
-- normal `coder` review → `reviewer-claude`
-- `coder-claude` review, w tym security → `reviewer-gpt`
-- deep/audit → `critic`, `auditor-gpt`, `auditor-grok` według osobnego task contract
-- docs → `docs`
-- release → `release-manager`
-- niebezpieczny/nieznany routing → `routing-sink`
+Normal feature:
 
-## 11. Obowiązkowy deployment
+`repository-analyst? → architect? → task-decomposer → runtime-controller gate → coder|coder-claude → exact cross-vendor reviewer → required audits/evidence → release-manager? → done`
 
-Po merge/synchronizacji:
+Security-sensitive feature:
+
+`repository-analyst → architect? → task-decomposer → runtime-controller gate → coder-claude → reviewer-gpt → required security evidence/audits → release-manager → done`
+
+## 11. Deployment
+
+Po merge zmian runtime:
 
 ```bash
-PRIMARY_PROFILE=default DISPATCHER_PROFILE=default bash hermes/bootstrap_profiles.sh
 PRIMARY_PROFILE=default bash hermes/bootstrap_runtime_controller.sh
+PRIMARY_PROFILE=default DISPATCHER_PROFILE=default bash hermes/bootstrap_profiles.sh
 DISPATCHER_PROFILE=default bash hermes/configure_kanban.sh
 ```
 
-Przed realnymi taskami wymagane są pozytywne static/regression/live guard probes. Software Factory nie jest gotowy do tasków wymagających runtime gate, dopóki guard plugin, routing validator i runtime-controller bootstrap nie są zweryfikowane.
+Przed pierwszym workerem wymagane są zielone `verify_bootstrap.sh`, `verify_kanban.sh`, execution-guard tests i live negative capability probes.
