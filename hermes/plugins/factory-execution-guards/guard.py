@@ -140,8 +140,7 @@ def _claude_terminal_allowed(profile: str, command: str) -> bool:
 
 
 def _evidence_path(task_id: str, run_id: str, profile: str) -> Path:
-    safe = f"{task_id}__{run_id}__{profile}.json"
-    return EVIDENCE_ROOT / safe
+    return EVIDENCE_ROOT / f"{task_id}__{run_id}__{profile}.json"
 
 
 def _evidence_exists(profile: str, task_id: str) -> bool:
@@ -178,27 +177,42 @@ def _parse_claude_result(output: str) -> dict[str, Any] | None:
     return value
 
 
-def on_transform_terminal_output(
-    command: str = "",
-    output: str = "",
-    exit_code: int = -1,
-    task_id: str | None = None,
+def _terminal_result_output(result: str) -> str | None:
+    """Extract raw command output only from a successful Hermes terminal result envelope."""
+    try:
+        payload = json.loads(result)
+    except (TypeError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    if payload.get("exit_code") != 0:
+        return None
+    output = payload.get("output")
+    return output if isinstance(output, str) else None
+
+
+def on_post_tool_call(
+    tool_name: str = "",
+    args: Any = None,
+    result: str = "",
+    task_id: str = "",
     **_: Any,
 ) -> None:
-    """Persist durable evidence only for a successful canonical Claude Code result."""
+    """Persist durable evidence only after a successful canonical Claude terminal call."""
     profile = _profile()
-    if profile not in CLAUDE_PROFILES or exit_code != 0:
+    if profile not in CLAUDE_PROFILES or tool_name != "terminal":
         return None
     try:
-        tokens = _shell_tokens(command)
-        if not tokens or not _claude_binary(tokens[0]):
-            return None
+        command = _command_from_args(args)
         if not _claude_terminal_allowed(profile, command):
+            return None
+        output = _terminal_result_output(result)
+        if output is None:
             return None
         parsed = _parse_claude_result(output)
         if parsed is None:
             return None
-        tid = _task_id(task_id or "")
+        tid = _task_id(task_id)
         rid = _run_id()
         if not tid or not rid:
             return None
