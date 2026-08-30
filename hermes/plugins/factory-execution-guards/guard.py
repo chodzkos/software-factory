@@ -52,7 +52,11 @@ def _profile() -> str:
 
 
 def _task_id(explicit: str = "") -> str:
-    return (explicit or os.environ.get("HERMES_KANBAN_TASK", "")).strip()
+    """Return the authoritative Kanban card id; hook ids are fallback only outside Kanban."""
+    kanban_task = os.environ.get("HERMES_KANBAN_TASK", "").strip()
+    if kanban_task:
+        return kanban_task
+    return explicit.strip()
 
 
 def _run_id() -> str:
