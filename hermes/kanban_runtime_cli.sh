@@ -13,7 +13,6 @@ Usage:
   kanban_runtime_cli.sh block <task-id> <reason...>
   kanban_runtime_cli.sh complete <task-id> <summary...>
   kanban_runtime_cli.sh validate-runtime <validator-runtime-args...>
-  kanban_runtime_cli.sh validate-handoff <validator-handoff-args...>
   kanban_runtime_cli.sh validate-routed-handoff --actual-json <live-json>
   kanban_runtime_cli.sh validate-routing <model-routing-args...>
 
@@ -65,10 +64,6 @@ case "${op}" in
   validate-runtime)
     [[ -f "${VALIDATOR}" ]] || { echo "ERROR: missing ${VALIDATOR}" >&2; exit 2; }
     exec python3 "${VALIDATOR}" runtime "$@"
-    ;;
-  validate-handoff)
-    [[ -f "${VALIDATOR}" ]] || { echo "ERROR: missing ${VALIDATOR}" >&2; exit 2; }
-    exec python3 "${VALIDATOR}" handoff "$@"
     ;;
   validate-routed-handoff)
     [[ -f "${VALIDATOR}" ]] || { echo "ERROR: missing ${VALIDATOR}" >&2; exit 2; }
