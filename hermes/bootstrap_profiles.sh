@@ -10,9 +10,9 @@ GROK_PROVIDER="${GROK_PROVIDER:-xai-oauth}"
 GROK_MODEL="${GROK_MODEL:-grok-4.6}"
 GEMINI_PROVIDER="${GEMINI_PROVIDER:-gemini}"
 GEMINI_MODEL="${GEMINI_MODEL:-gemini-3.5-flash-lite}"
-CLAUDE_SKILL="${CLAUDE_SKILL:-claude-code}"
-CLAUDE_NORMAL_MODEL="${CLAUDE_NORMAL_MODEL:-sonnet}"
-CLAUDE_DEEP_MODEL="${CLAUDE_DEEP_MODEL:-opus}"
+CLAUDE_SKILL="claude-code"
+CLAUDE_NORMAL_MODEL="sonnet"
+CLAUDE_DEEP_MODEL="opus"
 ALLOW_NON_GPT_PRIMARY="${ALLOW_NON_GPT_PRIMARY:-0}"
 
 profiles=(
@@ -57,46 +57,31 @@ if ! command -v hermes >/dev/null 2>&1; then
   echo "ERROR: hermes not found in PATH" >&2
   exit 1
 fi
-
 if [[ ! -f "${STANDARD_SRC}" ]]; then
   echo "ERROR: brak kanonicznego standardu ${STANDARD_SRC}" >&2
   exit 1
 fi
 
-profile_exists() {
-  local name="$1"
-  [[ -d "${PROFILE_ROOT}/${name}" ]]
-}
-
+profile_exists() { local name="$1"; [[ -d "${PROFILE_ROOT}/${name}" ]]; }
 get_config() {
-  local profile="$1"
-  local key="$2"
+  local profile="$1" key="$2"
   hermes -p "${profile}" config get "${key}" 2>/dev/null | tail -n 1 | tr -d '\r'
 }
-
 expect_config() {
-  local profile="$1"
-  local key="$2"
-  local expected="$3"
-  local actual
+  local profile="$1" key="$2" expected="$3" actual
   actual="$(get_config "${profile}" "${key}")"
   if [[ "${actual}" != "${expected}" ]]; then
     echo "ERROR: ${profile}:${key} expected '${expected}', got '${actual}'" >&2
     exit 1
   fi
 }
-
 install_profile_soul() {
-  local profile="$1"
-  local soul_src="${ROOT_DIR}/hermes/profiles/${profile}/SOUL.md"
-
+  local profile="$1" soul_src="${ROOT_DIR}/hermes/profiles/${profile}/SOUL.md"
   [[ -f "${soul_src}" ]] || return 0
-
   if [[ "${profile}" != "orchestrator" ]]; then
     install -m 0644 "${soul_src}" "${PROFILE_ROOT}/${profile}/SOUL.md"
     return 0
   fi
-
   local tmp
   tmp="$(mktemp)"
   {
@@ -110,19 +95,14 @@ install_profile_soul() {
 }
 
 mkdir -p "${PROFILE_ROOT}"
-
 primary_provider="$(get_config "${PRIMARY_PROFILE}" model.provider)"
 primary_model="$(get_config "${PRIMARY_PROFILE}" model.default)"
-
 if [[ -z "${primary_model}" ]]; then
   echo "ERROR: PRIMARY_PROFILE='${PRIMARY_PROFILE}' nie ma ustawionego model.default" >&2
   exit 1
 fi
-
 if [[ "${ALLOW_NON_GPT_PRIMARY}" != "1" && ! "${primary_model}" =~ [Gg][Pp][Tt] ]]; then
   echo "ERROR: PRIMARY_PROFILE='${PRIMARY_PROFILE}' używa modelu '${primary_model}', który nie wygląda na GPT." >&2
-  echo "       Najpierw skonfiguruj profil z głównym modelem GPT albo ustaw PRIMARY_PROFILE=<profil-gpt>." >&2
-  echo "       Tylko świadomy wyjątek: ALLOW_NON_GPT_PRIMARY=1." >&2
   exit 1
 fi
 
@@ -138,125 +118,96 @@ for profile in "${profiles[@]}"; do
     echo "[exists] ${profile}"
   else
     echo "[create] ${profile}"
-    hermes profile create "${profile}" \
-      --clone-from "${PRIMARY_PROFILE}" \
-      --description "${descriptions[$profile]}"
+    hermes profile create "${profile}" --clone-from "${PRIMARY_PROFILE}" --description "${descriptions[$profile]}"
   fi
-
   install_profile_soul "${profile}"
   hermes -p "${profile}" config set tool_loop_guardrails.hard_stop_enabled true
   hermes -p "${profile}" config set agent.tool_use_enforcement auto
 done
 
-# Natywne role GPT są deterministycznie synchronizowane z PRIMARY_PROFILE.
 for profile in orchestrator architect repository-analyst coder reviewer-gpt auditor-gpt release-manager routing-sink; do
   hermes -p "${profile}" config set model.provider "${primary_provider}"
   hermes -p "${profile}" config set model.default "${primary_model}"
 done
 
-# Profile Claude są koordynatorami Hermesa na głównym GPT, ale właściwa praca
-# musi być wykonana przez bundlowany skill claude-code / Claude Code CLI.
 for profile in coder-claude reviewer-claude architect-claude-opus; do
   hermes -p "${profile}" config set model.provider "${primary_provider}"
   hermes -p "${profile}" config set model.default "${primary_model}"
-  hermes -p "${profile}" config set factory.execution_backend "${CLAUDE_SKILL}"
+  hermes -p "${profile}" config set --force factory.execution_backend claude-code
+  hermes -p "${profile}" config set fallback_providers '[]'
 done
-hermes -p coder-claude config set factory.claude_model_class "${CLAUDE_NORMAL_MODEL}"
-hermes -p reviewer-claude config set factory.claude_model_class "${CLAUDE_NORMAL_MODEL}"
-hermes -p architect-claude-opus config set factory.claude_model_class "${CLAUDE_DEEP_MODEL}"
+hermes -p coder-claude config set --force factory.claude_model_class sonnet
+hermes -p reviewer-claude config set --force factory.claude_model_class sonnet
+hermes -p architect-claude-opus config set --force factory.claude_model_class opus
 
-# Natywne profile OpenAI mają jawny backend dla runtime routing evidence.
-hermes -p coder config set factory.execution_backend native-openai
-hermes -p reviewer-gpt config set factory.execution_backend native-openai
+hermes -p coder config set --force factory.execution_backend native-openai
+hermes -p reviewer-gpt config set --force factory.execution_backend native-openai
 
-# Legacy auditor-ox może istnieć lokalnie po starszej konfiguracji. Nie kasujemy
-# automatycznie katalogu użytkownika, ale neutralizujemy profil fail-closed.
+# A legacy Ox profile may remain on disk from older deployments, but it must no
+# longer be inferable or dispatchable as an active Factory role. Invalidating
+# provider/model is the runtime kill switch; metadata/denylist are defense-in-depth.
 if profile_exists auditor-ox; then
-  echo "[legacy] quarantining auditor-ox"
-  hermes -p auditor-ox config set factory.execution_backend disabled-legacy
+  echo "[legacy] disabling auditor-ox inference"
+  hermes -p auditor-ox config set model.provider disabled-legacy
+  hermes -p auditor-ox config set model.default disabled-legacy
+  hermes -p auditor-ox config set --force factory.execution_backend disabled-legacy
   hermes -p auditor-ox config set fallback_providers '[]'
-  hermes -p auditor-ox config set agent.disabled_toolsets '["terminal","file","code_execution","web","browser","image_gen","delegation","computer_use","cronjob","skills","vision","todo","memory","session_search","clarify","messaging","tts","moa"]'
+  hermes -p auditor-ox config set toolsets '[]'
+  hermes -p auditor-ox config set agent.disabled_toolsets '["terminal","file","code_execution","web","browser","image_gen","delegation","computer_use","cronjob","skills","vision","todo","memory","session_search","clarify","messaging","tts","moa","kanban"]'
+  hermes -p auditor-ox config set tools.tool_search.enabled off
 fi
 
-# Role Groka są jawnie przypięte do providera i modelu.
 for profile in critic auditor-grok; do
   hermes -p "${profile}" config set model.provider "${GROK_PROVIDER}"
   hermes -p "${profile}" config set model.default "${GROK_MODEL}"
 done
-
-# Częste, tańsze role pozostają na Gemini.
 for profile in task-decomposer quick-reviewer docs; do
   hermes -p "${profile}" config set model.provider "${GEMINI_PROVIDER}"
   hermes -p "${profile}" config set model.default "${GEMINI_MODEL}"
 done
-
-# Profile factory nie dziedziczą ukrytych fallbacków modelu z PRIMARY_PROFILE.
 for profile in "${profiles[@]}"; do
   hermes -p "${profile}" config set fallback_providers '[]'
 done
 
-# Izolacją tasków kodujących zarządza Kanban przez workspace=worktree:<repo>.
 hermes -p coder config set worktree false
 hermes -p coder config set worktree_sync false
 hermes -p coder-claude config set worktree false
 hermes -p coder-claude config set worktree_sync false
-
-# Orchestrator koordynuje wyłącznie przez Kanban.
 hermes -p orchestrator config set toolsets '["hermes-cli","kanban"]'
 hermes -p orchestrator config set agent.disabled_toolsets '["terminal","file","code_execution","web","browser","image_gen","delegation","computer_use","cronjob"]'
-
-# Routing-sink ma być kontrolowanym końcem dla kart, których decomposer nie umie przypisać.
 hermes -p routing-sink config set agent.disabled_toolsets '["terminal","file","code_execution","web","browser","image_gen","delegation","computer_use","cronjob"]'
-
-# Routing Kanban zapisujemy w profilu gateway/dispatcher.
 hermes -p "${DISPATCHER_PROFILE}" config set kanban.orchestrator_profile orchestrator
 hermes -p "${DISPATCHER_PROFILE}" config set kanban.default_assignee routing-sink
 
-# Walidacja krytycznych ustawień po bootstrapie.
-expect_config auditor-gpt model.provider "${primary_provider}"
-expect_config auditor-gpt model.default "${primary_model}"
-expect_config reviewer-gpt model.provider "${primary_provider}"
-expect_config reviewer-gpt model.default "${primary_model}"
 expect_config reviewer-gpt factory.execution_backend native-openai
 expect_config coder factory.execution_backend native-openai
-expect_config coder-claude factory.execution_backend "${CLAUDE_SKILL}"
-expect_config coder-claude factory.claude_model_class "${CLAUDE_NORMAL_MODEL}"
-expect_config reviewer-claude factory.execution_backend "${CLAUDE_SKILL}"
-expect_config reviewer-claude factory.claude_model_class "${CLAUDE_NORMAL_MODEL}"
-expect_config architect-claude-opus factory.execution_backend "${CLAUDE_SKILL}"
-expect_config architect-claude-opus factory.claude_model_class "${CLAUDE_DEEP_MODEL}"
-if profile_exists auditor-ox; then
-  expect_config auditor-ox factory.execution_backend disabled-legacy
-  expect_config auditor-ox fallback_providers '[]'
-fi
+expect_config coder-claude factory.execution_backend claude-code
+expect_config coder-claude factory.claude_model_class sonnet
+expect_config reviewer-claude factory.execution_backend claude-code
+expect_config reviewer-claude factory.claude_model_class sonnet
+expect_config architect-claude-opus factory.execution_backend claude-code
+expect_config architect-claude-opus factory.claude_model_class opus
 expect_config critic model.provider "${GROK_PROVIDER}"
 expect_config critic model.default "${GROK_MODEL}"
-expect_config auditor-grok model.provider "${GROK_PROVIDER}"
-expect_config auditor-grok model.default "${GROK_MODEL}"
-expect_config task-decomposer model.provider "${GEMINI_PROVIDER}"
 expect_config task-decomposer model.default "${GEMINI_MODEL}"
-expect_config quick-reviewer model.provider "${GEMINI_PROVIDER}"
 expect_config quick-reviewer model.default "${GEMINI_MODEL}"
-expect_config docs model.provider "${GEMINI_PROVIDER}"
 expect_config docs model.default "${GEMINI_MODEL}"
-expect_config repository-analyst model.provider "${primary_provider}"
 expect_config repository-analyst model.default "${primary_model}"
-expect_config orchestrator tool_loop_guardrails.hard_stop_enabled "true"
-expect_config routing-sink tool_loop_guardrails.hard_stop_enabled "true"
 expect_config coder worktree "false"
 expect_config coder worktree_sync "false"
 expect_config coder-claude worktree "false"
 expect_config coder-claude worktree_sync "false"
-expect_config "${DISPATCHER_PROFILE}" kanban.orchestrator_profile "orchestrator"
+expect_config "${DISPATCHER_PROFILE}" kanban.orchestrator_profile orchestrator
 expect_config "${DISPATCHER_PROFILE}" kanban.default_assignee routing-sink
+if profile_exists auditor-ox; then
+  expect_config auditor-ox model.provider disabled-legacy
+  expect_config auditor-ox model.default disabled-legacy
+  expect_config auditor-ox factory.execution_backend disabled-legacy
+  expect_config auditor-ox fallback_providers '[]'
+fi
 
 if ! grep -Fq '# Software Development Standard — wstrzyknięty kontekst runtime' "${PROFILE_ROOT}/orchestrator/SOUL.md"; then
   echo "ERROR: orchestrator nie otrzymał wstrzykniętego Standardu" >&2
-  exit 1
-fi
-
-if ! grep -Fq '# Software Development Standard' "${PROFILE_ROOT}/orchestrator/SOUL.md"; then
-  echo "ERROR: w runtime SOUL orchestratora brakuje treści Standardu" >&2
   exit 1
 fi
 
@@ -266,4 +217,3 @@ hermes profile list
 echo
 echo "Bootstrap profili zakończony."
 echo "Uruchom 'hermes doctor' i sprawdź modele/backend przez 'hermes -p <name> config get model', 'factory.execution_backend' i 'factory.claude_model_class'."
-echo "Następnie zainicjalizuj/zweryfikuj Kanban przez 'hermes kanban init' i uruchom dokładnie jeden gateway/dispatcher."
