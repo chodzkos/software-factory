@@ -16,6 +16,7 @@ GUARD = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(GUARD)
 
 FAKE_CLAUDE = ("/opt/claude-code/claude", "a" * 64)
+WORKSPACE = "/repo/.worktrees/t_guard"
 CODER_CMD = (
     "claude -p 'do work' --model sonnet --output-format json "
     f"--allowedTools '{GUARD.CODER_CLAUDE_TOOLS}' --max-turns 2"
@@ -27,23 +28,29 @@ REVIEW_CMD = (
 
 
 class ExecutionGuardTests(unittest.TestCase):
+    def setUp(self) -> None:
+        GUARD._PENDING_ATTESTATIONS.clear()
+        GUARD._COMPLETED_ATTESTATIONS.clear()
+
     def _guard_patches(self):
         return (
             patch.object(GUARD, "_canonical_claude_identity", return_value=FAKE_CLAUDE),
-            patch.object(GUARD, "_workspace", return_value="/repo/.worktrees/t_guard"),
+            patch.object(GUARD, "_workspace", return_value=WORKSPACE),
         )
 
-    def _call(self, profile: str, tool: str, args=None, *, task="t_guard"):
-        env = {
+    def _env(self, profile: str, task: str = "t_guard") -> dict[str, str]:
+        return {
             "HERMES_PROFILE": profile,
             "HERMES_KANBAN_TASK": task,
             "HERMES_KANBAN_RUN_ID": "77",
         }
+
+    def _call(self, profile: str, tool: str, args=None, *, task="t_guard"):
         p1, p2 = self._guard_patches()
-        with patch.dict(os.environ, env, clear=False), p1, p2:
+        with patch.dict(os.environ, self._env(profile, task), clear=False), p1, p2:
             return GUARD.on_pre_tool_call(tool_name=tool, args=args or {}, task_id=task)
 
-    def _post(
+    def _execute_claude(
         self,
         profile: str,
         *,
@@ -53,14 +60,17 @@ class ExecutionGuardTests(unittest.TestCase):
         hook_task_id: str = "t_guard",
         kanban_task_id: str = "t_guard",
     ):
-        env = {
-            "HERMES_PROFILE": profile,
-            "HERMES_KANBAN_TASK": kanban_task_id,
-            "HERMES_KANBAN_RUN_ID": "77",
-        }
+        env = self._env(profile, kanban_task_id)
         result = json.dumps({"output": terminal_output, "exit_code": exit_code})
         p1, p2 = self._guard_patches()
         with patch.dict(os.environ, env, clear=False), p1, p2:
+            pre = GUARD.on_pre_tool_call(
+                tool_name="terminal",
+                args={"command": command},
+                task_id=hook_task_id,
+            )
+            if pre is not None:
+                return pre
             GUARD.on_post_tool_call(
                 tool_name="terminal",
                 args={"command": command},
@@ -68,6 +78,7 @@ class ExecutionGuardTests(unittest.TestCase):
                 task_id=hook_task_id,
                 duration_ms=1,
             )
+        return None
 
     def test_runtime_controller_only_allows_exact_wrapper_operations(self):
         wrapper = str(Path.home() / ".hermes/profiles/runtime-controller/kanban_runtime_cli.sh")
@@ -137,42 +148,54 @@ class ExecutionGuardTests(unittest.TestCase):
                     blocked = self._call(profile, "terminal", {"command": command})
                     self.assertEqual(blocked and blocked.get("action"), "block")
 
-    def test_coder_review_request_requires_durable_success_evidence(self):
+    def test_coder_review_requires_successful_in_process_attestation(self):
         with tempfile.TemporaryDirectory() as td:
             with patch.object(GUARD, "EVIDENCE_ROOT", Path(td)):
                 blocked = self._call("coder-claude", "kanban_request_review", {"summary": "ready"})
                 self.assertEqual(blocked and blocked.get("action"), "block")
-                claude_result = json.dumps({"type": "result", "subtype": "success", "session_id": "sess-123", "result": "done"})
-                self._post("coder-claude", command=CODER_CMD, terminal_output=claude_result)
+                result = json.dumps({"type": "result", "subtype": "success", "session_id": "sess-123", "result": "done"})
+                self.assertIsNone(self._execute_claude("coder-claude", command=CODER_CMD, terminal_output=result))
                 self.assertIsNone(self._call("coder-claude", "kanban_request_review", {"summary": "ready"}))
                 evidence = list(Path(td).glob("*.json"))
                 self.assertEqual(len(evidence), 1)
                 payload = json.loads(evidence[0].read_text())
-                self.assertEqual(payload["schema"], 2)
+                self.assertEqual(payload["schema"], 3)
                 self.assertEqual(payload["task_id"], "t_guard")
                 self.assertEqual(payload["run_id"], "77")
-                self.assertEqual(payload["workspace"], "/repo/.worktrees/t_guard")
+                self.assertEqual(payload["workspace"], WORKSPACE)
                 self.assertEqual(payload["claude_binary"], FAKE_CLAUDE[0])
                 self.assertEqual(payload["claude_binary_sha256"], FAKE_CLAUDE[1])
+                self.assertRegex(payload["attestation_id"], r"^[0-9a-f]{64}$")
 
-    def test_forged_or_stale_evidence_cannot_unlock_review(self):
+    def test_forged_evidence_without_memory_attestation_cannot_unlock_review(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             with patch.object(GUARD, "EVIDENCE_ROOT", root):
                 fake = {
-                    "schema": 2,
+                    "schema": 3,
                     "profile": "coder-claude",
                     "task_id": "t_guard",
                     "run_id": "77",
                     "model_class": "sonnet",
-                    "workspace": "/repo/.worktrees/t_guard",
+                    "workspace": WORKSPACE,
                     "claude_binary": FAKE_CLAUDE[0],
-                    "claude_binary_sha256": "b" * 64,
+                    "claude_binary_sha256": FAKE_CLAUDE[1],
                     "session_id": "forged",
                     "command_sha256": "c" * 64,
+                    "attestation_id": "d" * 64,
                     "success": True,
                 }
                 (root / "t_guard__77__coder-claude.json").write_text(json.dumps(fake))
+                blocked = self._call("coder-claude", "kanban_request_review", {"summary": "ready"})
+                self.assertEqual(blocked and blocked.get("action"), "block")
+
+    def test_new_claude_command_invalidates_prior_completed_attestation(self):
+        with tempfile.TemporaryDirectory() as td:
+            with patch.object(GUARD, "EVIDENCE_ROOT", Path(td)):
+                result = json.dumps({"type": "result", "subtype": "success", "session_id": "sess-123"})
+                self._execute_claude("coder-claude", command=CODER_CMD, terminal_output=result)
+                self.assertIsNone(self._call("coder-claude", "kanban_request_review", {"summary": "ready"}))
+                self.assertIsNone(self._call("coder-claude", "terminal", {"command": CODER_CMD}))
                 blocked = self._call("coder-claude", "kanban_request_review", {"summary": "ready"})
                 self.assertEqual(blocked and blocked.get("action"), "block")
 
@@ -180,7 +203,7 @@ class ExecutionGuardTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             with patch.object(GUARD, "EVIDENCE_ROOT", Path(td)):
                 result = json.dumps({"type": "result", "subtype": "success", "session_id": "claude-session-456", "result": "done"})
-                self._post(
+                self._execute_claude(
                     "coder-claude",
                     command=CODER_CMD,
                     terminal_output=result,
@@ -196,17 +219,22 @@ class ExecutionGuardTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             with patch.object(GUARD, "EVIDENCE_ROOT", Path(td)):
                 failed = json.dumps({"type": "result", "subtype": "error_max_turns", "session_id": "sess-x"})
-                self._post("coder-claude", command=CODER_CMD, terminal_output=failed)
-                self._post("coder-claude", command=CODER_CMD, terminal_output="not-json")
+                self._execute_claude("coder-claude", command=CODER_CMD, terminal_output=failed)
+                self.assertEqual(list(Path(td).glob("*.json")), [])
+                GUARD._PENDING_ATTESTATIONS.clear()
+                self._execute_claude("coder-claude", command=CODER_CMD, terminal_output="not-json")
+                self.assertEqual(list(Path(td).glob("*.json")), [])
+                GUARD._PENDING_ATTESTATIONS.clear()
                 success = json.dumps({"type": "result", "subtype": "success", "session_id": "sess-ok"})
-                self._post("coder-claude", command=CODER_CMD, terminal_output=success, exit_code=1)
+                self._execute_claude("coder-claude", command=CODER_CMD, terminal_output=success, exit_code=1)
                 self.assertEqual(list(Path(td).glob("*.json")), [])
 
     def test_non_terminal_post_tool_result_cannot_forge_evidence(self):
         with tempfile.TemporaryDirectory() as td:
             with patch.object(GUARD, "EVIDENCE_ROOT", Path(td)):
-                env = {"HERMES_PROFILE": "coder-claude", "HERMES_KANBAN_TASK": "t_guard", "HERMES_KANBAN_RUN_ID": "77"}
-                with patch.dict(os.environ, env, clear=False):
+                env = self._env("coder-claude")
+                p1, p2 = self._guard_patches()
+                with patch.dict(os.environ, env, clear=False), p1, p2:
                     GUARD.on_post_tool_call(
                         tool_name="read_file",
                         args={"command": CODER_CMD},
