@@ -36,16 +36,20 @@ grep -Fq 'reviewer_set_mismatch:' "${MODEL_ROUTING}"
 grep -Fq 'malformed_required_reviewers_csv' "${MODEL_ROUTING}"
 grep -Fq 'required_reviewers_none_forbidden' "${MODEL_ROUTING}"
 grep -Fq 'actual_json_duplicate_key:' "${MODEL_ROUTING}"
-grep -Fq 'actual_json_task_not_object' "${MODEL_ROUTING}"
+grep -Fq 'strict_json_loads' "${MODEL_ROUTING}"
 grep -Fq '`coder` | `yes` | **forbidden**' "${MODEL_POLICY_DOC}"
 grep -Fq '`coder-claude` | `yes` | `reviewer-gpt`' "${MODEL_POLICY_DOC}"
 
-printf '[check] body-bound live handoff\n'
+printf '[check] body-bound live handoff is sole handoff gate\n'
 grep -Fq 'def validate_routed_review_handoff' "${RUNTIME_VALIDATOR}"
 grep -Fq 'route_from_payload(payload)' "${RUNTIME_VALIDATOR}"
-grep -Fq 'routed-handoff' "${RUNTIME_VALIDATOR}"
+grep -Fq 'strict_json_loads(value)' "${RUNTIME_VALIDATOR}"
+grep -Fq 'review_requested_event_run_id_required' "${RUNTIME_VALIDATOR}"
+grep -Fq 'implementer_review_run_metadata_required' "${RUNTIME_VALIDATOR}"
 grep -Fq 'validate-routed-handoff' "${RUNTIME_WRAPPER}"
 grep -Fq 'exec python3 "${VALIDATOR}" routed-handoff "$@"' "${RUNTIME_WRAPPER}"
+if grep -Fq 'validate-handoff' "${RUNTIME_WRAPPER}"; then echo 'ERROR: legacy body-independent validate-handoff remains exposed' >&2; exit 1; fi
+if grep -Fq 'sub.add_parser("handoff")' "${RUNTIME_VALIDATOR}"; then echo 'ERROR: legacy handoff CLI remains exposed' >&2; exit 1; fi
 
 printf '[check] scoped runtime wrapper\n'
 grep -Fq 'case "${op}" in' "${RUNTIME_WRAPPER}"
@@ -66,20 +70,15 @@ PY
 
 printf '[check] review decision tests\n'
 (cd "${ROOT_DIR}/hermes" && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -q test_review_decision.py)
-
 printf '[check] runtime contract tests\n'
 (cd "${ROOT_DIR}/hermes" && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -q test_kanban_runtime_contract.py)
-
-printf '[check] routed handoff regression\n'
+printf '[check] routed handoff adversarial regression\n'
 (cd "${ROOT_DIR}" && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -q hermes.test_routed_handoff_policy)
-
 printf '[check] model routing tests from repo root\n'
 (cd "${ROOT_DIR}" && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -q hermes.test_model_routing_policy)
-
-printf '[check] execution guard tests\n'
+printf '[check] execution guard adversarial tests\n'
 (cd "${ROOT_DIR}" && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -q hermes.test_factory_execution_guards)
-
 printf '[check] bootstrap compatibility\n'
 bash "${BOOTSTRAP_VERIFY}"
 
-printf 'OK: weryfikacja Kanban, routed handoff i execution guards zakończona\n'
+printf 'OK: weryfikacja Kanban, strict routed handoff i execution guards zakończona\n'
