@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 from dataclasses import dataclass
 from typing import Sequence
 
@@ -84,3 +85,32 @@ def validate_review_route(
             errors.append("normal_review_must_be_cross_vendor")
 
     return errors
+
+
+def format_route(errors: Sequence[str]) -> str:
+    if not errors:
+        return "MODEL_ROUTING_OK"
+    return "MODEL_ROUTING_DRIFT: " + "; ".join(errors)
+
+
+def build_cli_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Software Factory model/reviewer routing policy")
+    parser.add_argument("--implementer", required=True, choices=sorted(IMPLEMENTER_VENDOR))
+    parser.add_argument("--reviewer", action="append", required=True)
+    parser.add_argument("--security-sensitive", choices=("yes", "no"), required=True)
+    return parser
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = build_cli_parser().parse_args(argv)
+    errors = validate_review_route(
+        args.implementer,
+        args.reviewer,
+        security_sensitive=args.security_sensitive == "yes",
+    )
+    print(format_route(errors))
+    return 0 if not errors else 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
