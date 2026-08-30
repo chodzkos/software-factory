@@ -26,10 +26,19 @@ class ExecutionGuardTests(unittest.TestCase):
         with patch.dict(os.environ, env, clear=False):
             return GUARD.on_pre_tool_call(tool_name=tool, args=args or {}, task_id=task)
 
-    def _post(self, profile: str, *, command: str, terminal_output: str, exit_code: int = 0):
+    def _post(
+        self,
+        profile: str,
+        *,
+        command: str,
+        terminal_output: str,
+        exit_code: int = 0,
+        hook_task_id: str = "t_guard",
+        kanban_task_id: str = "t_guard",
+    ):
         env = {
             "HERMES_PROFILE": profile,
-            "HERMES_KANBAN_TASK": "t_guard",
+            "HERMES_KANBAN_TASK": kanban_task_id,
             "HERMES_KANBAN_RUN_ID": "77",
         }
         result = json.dumps({"output": terminal_output, "exit_code": exit_code})
@@ -38,7 +47,7 @@ class ExecutionGuardTests(unittest.TestCase):
                 tool_name="terminal",
                 args={"command": command},
                 result=result,
-                task_id="t_guard",
+                task_id=hook_task_id,
                 duration_ms=1,
             )
 
@@ -103,6 +112,32 @@ class ExecutionGuardTests(unittest.TestCase):
                 self.assertEqual(payload["task_id"], "t_guard")
                 self.assertEqual(payload["run_id"], "77")
 
+    def test_kanban_task_env_overrides_hook_session_id_for_evidence_binding(self):
+        with tempfile.TemporaryDirectory() as td:
+            with patch.object(GUARD, "EVIDENCE_ROOT", Path(td)):
+                claude_result = json.dumps({
+                    "type": "result",
+                    "subtype": "success",
+                    "session_id": "claude-session-456",
+                    "result": "done",
+                })
+                command = "claude -p 'do work' --model sonnet --output-format json --max-turns 2"
+                self._post(
+                    "coder-claude",
+                    command=command,
+                    terminal_output=claude_result,
+                    hook_task_id="20260830_worker_session",
+                    kanban_task_id="t_guard",
+                )
+                expected = Path(td) / "t_guard__77__coder-claude.json"
+                unexpected = Path(td) / "20260830_worker_session__77__coder-claude.json"
+                self.assertTrue(expected.is_file())
+                self.assertFalse(unexpected.exists())
+                payload = json.loads(expected.read_text())
+                self.assertEqual(payload["task_id"], "t_guard")
+                self.assertEqual(payload["run_id"], "77")
+                self.assertEqual(payload["session_id"], "claude-session-456")
+
     def test_failed_or_malformed_terminal_result_does_not_create_evidence(self):
         with tempfile.TemporaryDirectory() as td:
             with patch.object(GUARD, "EVIDENCE_ROOT", Path(td)):
@@ -127,7 +162,7 @@ class ExecutionGuardTests(unittest.TestCase):
                         tool_name="read_file",
                         args={"command": "claude -p x --model sonnet --output-format json"},
                         result=json.dumps({"output": json.dumps({"type":"result","subtype":"success","session_id":"x"}), "exit_code": 0}),
-                        task_id="t_guard",
+                        task_id="20260830_worker_session",
                     )
                 self.assertEqual(list(Path(td).glob("*.json")), [])
 
