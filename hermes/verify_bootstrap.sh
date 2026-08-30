@@ -11,12 +11,13 @@ STANDARD="${ROOT_DIR}/standards/SOFTWARE_DEVELOPMENT_STANDARD.md"
 MODEL_POLICY="${ROOT_DIR}/workflows/MODEL_ROUTING_POLICY.md"
 MODEL_ROUTING="${ROOT_DIR}/hermes/model_routing_policy.py"
 GUARD="${ROOT_DIR}/hermes/plugins/factory-execution-guards/guard.py"
+GUARD_MANIFEST="${ROOT_DIR}/hermes/plugins/factory-execution-guards/plugin.yaml"
 GUARD_TESTS="${ROOT_DIR}/hermes/test_factory_execution_guards.py"
 ORCHESTRATOR_SOUL="${ROOT_DIR}/hermes/profiles/orchestrator/SOUL.md"
 
 printf '[check] syntax and required sources\n'
 bash -n "${BOOTSTRAP}" "${RUNTIME_BOOTSTRAP}" "${PLUGIN_INSTALLER}" "${ANALYST_BOOTSTRAP}" "${ANALYST_VERIFY}"
-for path in "${STANDARD}" "${MODEL_POLICY}" "${MODEL_ROUTING}" "${GUARD}" "${GUARD_TESTS}" "${PLUGIN_INSTALLER}"; do test -f "${path}"; done
+for path in "${STANDARD}" "${MODEL_POLICY}" "${MODEL_ROUTING}" "${GUARD}" "${GUARD_MANIFEST}" "${GUARD_TESTS}" "${PLUGIN_INSTALLER}"; do test -f "${path}"; done
 
 printf '[check] pinned Claude policy\n'
 grep -Fq 'CLAUDE_SKILL="claude-code"' "${BOOTSTRAP}"
@@ -68,9 +69,11 @@ grep -Fq 'validate-routed-handoff' "${GUARD}"
 if grep -Fq '"validate-handoff"' "${GUARD}"; then echo 'ERROR: legacy handoff remains in runtime allowlist' >&2; exit 1; fi
 
 printf '[check] sealed Claude execution/evidence boundary\n'
+grep -Fq 'version: 0.3.0' "${GUARD_MANIFEST}"
 grep -Fq 'tokens[0] != "claude"' "${GUARD}"
 grep -Fq 'CODER_CLAUDE_TOOLS' "${GUARD}"
-grep -Fq 'READONLY_CLAUDE_TOOLS' "${GUARD}"
+grep -Fq 'READONLY_CLAUDE_TOOLS = "Read,Glob,Grep"' "${GUARD}"
+if grep -F 'READONLY_CLAUDE_TOOLS' "${GUARD}" | grep -Fq 'Bash('; then echo 'ERROR: reviewer/architect Claude tools must be shell-free' >&2; exit 1; fi
 grep -Fq 'FORBIDDEN_CLAUDE_FLAGS' "${GUARD}"
 grep -Fq '_PENDING_ATTESTATIONS' "${GUARD}"
 grep -Fq '_COMPLETED_ATTESTATIONS' "${GUARD}"
