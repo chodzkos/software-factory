@@ -9,7 +9,6 @@
     "critic": {"required":["sha-integrity-check","evidence-ledger"],"optional":["factory-ai-code-review"]},
     "auditor-gpt": {"required":["sha-integrity-check","evidence-ledger"],"optional":[]},
     "auditor-grok": {"required":["sha-integrity-check","evidence-ledger"],"optional":[]},
-    "auditor-ox": {"required":["sha-integrity-check","evidence-ledger"],"optional":[]},
     "docs": {"required":[],"optional":[]},
     "release-manager": {"required":["sha-integrity-check","evidence-ledger","pr-merge-gate"],"optional":[]},
     "routing-sink": {"required":[],"optional":[]},
