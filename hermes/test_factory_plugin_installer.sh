@@ -110,5 +110,32 @@ printf '[plugin-installer] target symlink refused\n'
 root="$TMP/target-link"; make_fixture "$root"; mkdir -p "$TMP/target-link-dest" "$TMP/elsewhere"
 ln -s "$TMP/elsewhere" "$TMP/target-link-dest/factory-repository-readonly"
 expect_fail "installed plugin target symlink" env HERMES_PLUGINS_DIR="$TMP/target-link-dest" bash "$root/hermes/install_factory_plugins.sh" --plugin factory-repository-readonly --replace-reviewed
+[[ -L "$TMP/target-link-dest/factory-repository-readonly" ]] || { echo 'ERROR: installed plugin target symlink was replaced' >&2; exit 1; }
+[[ "$(readlink "$TMP/target-link-dest/factory-repository-readonly")" == "$TMP/elsewhere" ]] || { echo 'ERROR: installed plugin target symlink was changed' >&2; exit 1; }
+
+printf '[plugin-installer] target symlinks refused in every install mode\n'
+for link_kind in valid dangling; do
+  for mode in normal replace dry-run; do
+    dest="$TMP/target-link-$link_kind-$mode"; mkdir -p "$dest"
+    if [[ "$link_kind" == valid ]]; then
+      link_target="$TMP/elsewhere"
+    else
+      link_target="$TMP/missing-target-$mode"
+    fi
+    ln -s "$link_target" "$dest/factory-repository-readonly"
+    case "$mode" in
+      normal) mode_args=() ;;
+      replace) mode_args=(--replace-reviewed) ;;
+      dry-run) mode_args=(--dry-run --replace-reviewed) ;;
+    esac
+    expect_fail "$link_kind target symlink in $mode mode" env HERMES_PLUGINS_DIR="$dest" bash "$root/hermes/install_factory_plugins.sh" --plugin factory-repository-readonly "${mode_args[@]}"
+    [[ -L "$dest/factory-repository-readonly" ]] || { echo "ERROR: $link_kind target symlink was replaced in $mode mode" >&2; exit 1; }
+    [[ "$(readlink "$dest/factory-repository-readonly")" == "$link_target" ]] || { echo "ERROR: $link_kind target symlink was changed in $mode mode" >&2; exit 1; }
+    if find "$dest" -maxdepth 1 -type d -name '.factory-plugin.backup.*' -print -quit | grep -q .; then
+      echo "ERROR: $link_kind target symlink was backed up in $mode mode" >&2
+      exit 1
+    fi
+  done
+done
 
 echo 'OK: factory plugin installer adversarial checks'

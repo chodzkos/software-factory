@@ -89,7 +89,15 @@ for rel,expected in sorted(pins.items()):
 PY
 }
 
+refuse_target_symlink() {
+  if [[ -L "$target" ]]; then
+    echo "ERROR: installed plugin target is a symlink: $target" >&2
+    exit 1
+  fi
+}
+
 if [[ $dry -eq 1 ]]; then
+  refuse_target_symlink
   if [[ -e "$target" ]]; then
     if verify_tree "$target" >/dev/null 2>&1; then
       echo "OK unchanged: $plugin"; echo "FACTORY_PLUGIN_INSTALL_OK"; exit 0
@@ -104,6 +112,7 @@ mkdir -p "$DEST"
 command -v flock >/dev/null 2>&1 || { echo "ERROR: flock is required for serialized plugin installation" >&2; exit 1; }
 lock_file="$DEST/.factory-plugin.lock.$plugin"; exec 9>"$lock_file"; flock 9
 
+refuse_target_symlink
 if [[ -e "$target" ]] && verify_tree "$target" >/dev/null 2>&1; then
   echo "OK unchanged: $plugin"; echo "FACTORY_PLUGIN_INSTALL_OK"; exit 0
 fi
