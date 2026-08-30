@@ -1,10 +1,11 @@
-"""Fail-closed tool and terminal guards for privileged Software Factory profiles."""
+"""Fail-closed tool and Claude-execution guards for privileged Software Factory profiles."""
 from __future__ import annotations
 
 import hashlib
 import json
 import os
 import shlex
+import shutil
 import time
 from pathlib import Path
 from typing import Any, Optional
@@ -16,7 +17,7 @@ CLAUDE_PROFILES = CLAUDE_NORMAL_PROFILES | CLAUDE_DEEP_PROFILES
 
 RUNTIME_OPS = frozenset({
     "create", "show", "block", "complete",
-    "validate-runtime", "validate-handoff", "validate-routed-handoff", "validate-routing",
+    "validate-runtime", "validate-routed-handoff", "validate-routing",
 })
 
 CLAUDE_ALLOWED_TOOLS = {
@@ -37,10 +38,18 @@ CLAUDE_ALLOWED_TOOLS = {
     }),
 }
 
-READONLY_PROGRAMS = frozenset({"pwd", "ls", "find", "grep", "wc", "od", "test"})
-READONLY_GIT_SUBCOMMANDS = frozenset({"status", "diff", "rev-parse", "show", "log"})
-SHELL_OPERATORS = frozenset({";", "&&", "||", "|", "&", ">", ">>", "<", "<<", "(", ")"})
+CODER_CLAUDE_TOOLS = "Read,Write,Edit,Bash(git status *),Bash(git diff *),Bash(git rev-parse *),Bash(python3 *)"
+READONLY_CLAUDE_TOOLS = "Read,Bash(git status *),Bash(git diff *),Bash(git rev-parse *),Bash(git show *),Bash(git log *)"
 EVIDENCE_ROOT = Path.home() / ".hermes" / "factory-evidence" / "claude-code"
+SHELL_OPERATORS = frozenset({";", "&&", "||", "|", "&", ">", ">>", "<", "<<", "(", ")"})
+FORBIDDEN_CLAUDE_FLAGS = frozenset({
+    "--dangerously-skip-permissions", "--settings", "--setting-sources",
+    "--mcp-config", "--strict-mcp-config", "--plugin-dir", "--resume", "--continue",
+    "--fork-session", "--worktree", "--tmux", "--debug", "--debug-file",
+    "--add-dir", "--permission-mode", "--permission-prompt-tool", "--fallback-model",
+})
+VALUE_FLAGS = frozenset({"-p", "--print", "--model", "--output-format", "--allowedTools", "--max-turns", "--effort"})
+SINGLETON_FLAGS = VALUE_FLAGS | FORBIDDEN_CLAUDE_FLAGS
 
 
 def _block(message: str) -> dict[str, str]:
@@ -52,7 +61,6 @@ def _profile() -> str:
 
 
 def _task_id(explicit: str = "") -> str:
-    """Return the authoritative Kanban card id; hook ids are fallback only outside Kanban."""
     kanban_task = os.environ.get("HERMES_KANBAN_TASK", "").strip()
     if kanban_task:
         return kanban_task
@@ -61,6 +69,35 @@ def _task_id(explicit: str = "") -> str:
 
 def _run_id() -> str:
     return os.environ.get("HERMES_KANBAN_RUN_ID", "").strip()
+
+
+def _workspace() -> str:
+    raw = os.environ.get("HERMES_KANBAN_WORKSPACE", "").strip() or os.getcwd()
+    try:
+        return str(Path(raw).resolve(strict=True))
+    except OSError:
+        return ""
+
+
+def _sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _canonical_claude_identity() -> tuple[str, str] | None:
+    located = shutil.which("claude")
+    if not located:
+        return None
+    try:
+        resolved = Path(located).resolve(strict=True)
+        if not resolved.is_file():
+            return None
+        return str(resolved), _sha256_file(resolved)
+    except OSError:
+        return None
 
 
 def _command_from_args(args: Any) -> str:
@@ -103,44 +140,60 @@ def _claude_model(profile: str) -> str:
     return "opus" if profile in CLAUDE_DEEP_PROFILES else "sonnet"
 
 
-def _claude_binary(token: str) -> bool:
-    return token == "claude" or Path(token).name == "claude"
+def _expected_claude_tools(profile: str) -> str:
+    return CODER_CLAUDE_TOOLS if profile == "coder-claude" else READONLY_CLAUDE_TOOLS
+
+
+def _parse_claude_argv(profile: str, command: str) -> dict[str, str] | None:
+    tokens = _shell_tokens(command)
+    # Only the literal PATH-resolved binary name is accepted. Relative and
+    # absolute alternate paths such as ./claude and /tmp/claude are refused.
+    if not tokens or tokens[0] != "claude" or _canonical_claude_identity() is None:
+        return None
+
+    values: dict[str, str] = {}
+    seen: set[str] = set()
+    index = 1
+    while index < len(tokens):
+        flag = tokens[index]
+        if not flag.startswith("-"):
+            return None
+        if flag in FORBIDDEN_CLAUDE_FLAGS:
+            return None
+        if flag not in VALUE_FLAGS or flag in seen:
+            return None
+        seen.add(flag)
+        if index + 1 >= len(tokens):
+            return None
+        value = tokens[index + 1]
+        if value.startswith("-"):
+            return None
+        values[flag] = value
+        index += 2
+
+    prompt_flags = [flag for flag in ("-p", "--print") if flag in values]
+    if len(prompt_flags) != 1:
+        return None
+    if values.get("--model") != _claude_model(profile):
+        return None
+    if values.get("--output-format") != "json":
+        return None
+    if values.get("--allowedTools") != _expected_claude_tools(profile):
+        return None
+    if "--max-turns" in values:
+        try:
+            turns = int(values["--max-turns"])
+        except ValueError:
+            return None
+        if not 1 <= turns <= 64:
+            return None
+    if "--effort" in values and values["--effort"] not in {"low", "medium", "high"}:
+        return None
+    return values
 
 
 def _claude_terminal_allowed(profile: str, command: str) -> bool:
-    tokens = _shell_tokens(command)
-    program = tokens[0]
-
-    if _claude_binary(program):
-        required_model = _claude_model(profile)
-        if "-p" not in tokens and "--print" not in tokens:
-            return False
-        if "--model" not in tokens:
-            return False
-        try:
-            model = tokens[tokens.index("--model") + 1]
-        except (ValueError, IndexError):
-            return False
-        if model != required_model:
-            return False
-        if "--output-format" not in tokens:
-            return False
-        try:
-            output_format = tokens[tokens.index("--output-format") + 1]
-        except (ValueError, IndexError):
-            return False
-        if output_format != "json":
-            return False
-        joined = " ".join(tokens)
-        if profile == "reviewer-claude" and "Write" in joined:
-            return False
-        return True
-
-    if program in READONLY_PROGRAMS:
-        return True
-    if program == "git" and len(tokens) >= 2 and tokens[1] in READONLY_GIT_SUBCOMMANDS:
-        return True
-    return False
+    return _parse_claude_argv(profile, command) is not None
 
 
 def _evidence_path(task_id: str, run_id: str, profile: str) -> Path:
@@ -149,8 +202,11 @@ def _evidence_path(task_id: str, run_id: str, profile: str) -> Path:
 
 def _evidence_exists(profile: str, task_id: str) -> bool:
     run_id = _run_id()
-    if not task_id or not run_id:
+    workspace = _workspace()
+    identity = _canonical_claude_identity()
+    if not task_id or not run_id or not workspace or identity is None:
         return False
+    binary_path, binary_sha256 = identity
     path = _evidence_path(task_id, run_id, profile)
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -161,8 +217,13 @@ def _evidence_exists(profile: str, task_id: str) -> bool:
         and data.get("task_id") == task_id
         and data.get("run_id") == run_id
         and data.get("model_class") == _claude_model(profile)
+        and data.get("workspace") == workspace
+        and data.get("claude_binary") == binary_path
+        and data.get("claude_binary_sha256") == binary_sha256
         and isinstance(data.get("session_id"), str)
         and bool(data.get("session_id"))
+        and isinstance(data.get("command_sha256"), str)
+        and len(data.get("command_sha256")) == 64
         and data.get("success") is True
     )
 
@@ -182,14 +243,11 @@ def _parse_claude_result(output: str) -> dict[str, Any] | None:
 
 
 def _terminal_result_output(result: str) -> str | None:
-    """Extract raw command output only from a successful Hermes terminal result envelope."""
     try:
         payload = json.loads(result)
     except (TypeError, json.JSONDecodeError):
         return None
-    if not isinstance(payload, dict):
-        return None
-    if payload.get("exit_code") != 0:
+    if not isinstance(payload, dict) or payload.get("exit_code") != 0:
         return None
     output = payload.get("output")
     return output if isinstance(output, str) else None
@@ -202,13 +260,12 @@ def on_post_tool_call(
     task_id: str = "",
     **_: Any,
 ) -> None:
-    """Persist durable evidence only after a successful canonical Claude terminal call."""
     profile = _profile()
     if profile not in CLAUDE_PROFILES or tool_name != "terminal":
         return None
     try:
         command = _command_from_args(args)
-        if not _claude_terminal_allowed(profile, command):
+        if _parse_claude_argv(profile, command) is None:
             return None
         output = _terminal_result_output(result)
         if output is None:
@@ -218,15 +275,21 @@ def on_post_tool_call(
             return None
         tid = _task_id(task_id)
         rid = _run_id()
-        if not tid or not rid:
+        workspace = _workspace()
+        identity = _canonical_claude_identity()
+        if not tid or not rid or not workspace or identity is None:
             return None
+        binary_path, binary_sha256 = identity
         EVIDENCE_ROOT.mkdir(parents=True, exist_ok=True)
         payload = {
-            "schema": 1,
+            "schema": 2,
             "profile": profile,
             "task_id": tid,
             "run_id": rid,
             "model_class": _claude_model(profile),
+            "workspace": workspace,
+            "claude_binary": binary_path,
+            "claude_binary_sha256": binary_sha256,
             "session_id": parsed["session_id"],
             "success": True,
             "command_sha256": hashlib.sha256(command.encode("utf-8")).hexdigest(),
@@ -276,10 +339,10 @@ def on_pre_tool_call(
         tid = _task_id(task_id)
         if profile == "coder-claude" and tool_name == "kanban_request_review":
             if not _evidence_exists(profile, tid):
-                return _block("coder-claude review request requires successful Claude Code run evidence")
+                return _block("coder-claude review request requires successful canonical Claude Code evidence")
         if profile in {"reviewer-claude", "architect-claude-opus"} and tool_name == "kanban_complete":
             if not _evidence_exists(profile, tid):
-                return _block(f"{profile} completion requires successful Claude Code run evidence")
+                return _block(f"{profile} completion requires successful canonical Claude Code evidence")
         return None
     except Exception:
         return _block("Software Factory execution guard refused tool call: security validation failed")
