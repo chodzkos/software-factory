@@ -27,7 +27,7 @@ install -m 0644 "${SOUL_SRC}" "${PROFILE_DIR}/SOUL.md"
 install -m 0755 "${WRAPPER_SRC}" "${PROFILE_DIR}/kanban_runtime_cli.sh"
 install -m 0644 "${VALIDATOR_SRC}" "${PROFILE_DIR}/kanban_runtime_contract.py"
 install -m 0644 "${MODEL_ROUTING_SRC}" "${PROFILE_DIR}/model_routing_policy.py"
-HERMES_PLUGINS_DIR="${PROFILE_DIR}/plugins" PYTHONDONTWRITEBYTECODE=1 bash "${PLUGIN_INSTALLER}" --plugin "${EXECUTION_GUARD}"
+HERMES_PLUGINS_DIR="${PROFILE_DIR}/plugins" PYTHONDONTWRITEBYTECODE=1 bash "${PLUGIN_INSTALLER}" --plugin "${EXECUTION_GUARD}" --replace-reviewed
 hermes -p "${PROFILE}" plugins enable "${EXECUTION_GUARD}" --no-allow-tool-override
 hermes -p "${PROFILE}" plugins doctor "${EXECUTION_GUARD}" >/dev/null
 
