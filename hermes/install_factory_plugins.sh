@@ -5,12 +5,13 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MANIFEST="$ROOT_DIR/hermes/plugins/manifest.json"
 DEST="${HERMES_PLUGINS_DIR:-$HOME/.hermes/plugins}"
 
-usage() { echo "usage: bash hermes/install_factory_plugins.sh --plugin NAME [--dry-run]" >&2; exit 2; }
-plugin=""; dry=0
+usage() { echo "usage: bash hermes/install_factory_plugins.sh --plugin NAME [--dry-run] [--replace-reviewed]" >&2; exit 2; }
+plugin=""; dry=0; replace_reviewed=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --plugin) [[ $# -ge 2 ]] || usage; plugin="$2"; shift 2 ;;
     --dry-run) dry=1; shift ;;
+    --replace-reviewed) replace_reviewed=1; shift ;;
     *) usage ;;
   esac
 done
@@ -58,26 +59,63 @@ PY
 )"
 
 src="$ROOT_DIR/$selection"; target="$DEST/$plugin"
-check_existing_target() {
-  if [[ ! -e "$target" ]]; then return 2; fi
+validate_installed_target() {
   [[ -d "$target" && ! -L "$target" ]] || { echo "ERROR: invalid installed plugin target: $target" >&2; exit 1; }
   if find "$target" -type l -print -quit | grep -q .; then echo "ERROR: installed plugin contains symlink: $target" >&2; exit 1; fi
-  if diff -qr "$src" "$target" >/dev/null; then
-    echo "OK unchanged: $plugin"; echo "FACTORY_PLUGIN_INSTALL_OK"; exit 0
-  fi
-  echo "ERROR: existing installed plugin differs: $target" >&2; exit 1
 }
+existing_is_identical() {
+  [[ -e "$target" ]] || return 1
+  validate_installed_target
+  diff -qr "$src" "$target" >/dev/null
+}
+
 if [[ $dry -eq 1 ]]; then
-  if [[ -e "$target" ]]; then check_existing_target; fi
+  if [[ -e "$target" ]]; then
+    validate_installed_target
+    if existing_is_identical; then
+      echo "OK unchanged: $plugin"; echo "FACTORY_PLUGIN_INSTALL_OK"; exit 0
+    fi
+    if [[ $replace_reviewed -ne 1 ]]; then
+      echo "ERROR: existing installed plugin differs: $target" >&2; exit 1
+    fi
+    echo "WOULD_REPLACE_REVIEWED: $plugin -> $target"
+    echo "FACTORY_PLUGIN_INSTALL_OK"
+    exit 0
+  fi
   echo "WOULD_INSTALL: $plugin -> $target"; echo "FACTORY_PLUGIN_INSTALL_OK"; exit 0
 fi
 
 mkdir -p "$DEST"
 command -v flock >/dev/null 2>&1 || { echo "ERROR: flock is required for serialized plugin installation" >&2; exit 1; }
 lock_file="$DEST/.factory-plugin.lock.$plugin"; exec 9>"$lock_file"; flock 9
-if [[ -e "$target" ]]; then check_existing_target; fi
 
-tmp="$(mktemp -d "$DEST/.factory-plugin.tmp.XXXXXX")"; trap 'rm -rf -- "$tmp"' EXIT
+backup=""
+if [[ -e "$target" ]]; then
+  validate_installed_target
+  if existing_is_identical; then
+    echo "OK unchanged: $plugin"; echo "FACTORY_PLUGIN_INSTALL_OK"; exit 0
+  fi
+  if [[ $replace_reviewed -ne 1 ]]; then
+    echo "ERROR: existing installed plugin differs: $target" >&2; exit 1
+  fi
+  backup="$(mktemp -d "$DEST/.factory-plugin.backup.XXXXXX")/$plugin"
+  mv -- "$target" "$backup"
+fi
+
+tmp="$(mktemp -d "$DEST/.factory-plugin.tmp.XXXXXX")"
+restore_on_failure() {
+  local rc=$?
+  rm -rf -- "$tmp"
+  if [[ -n "$backup" && -e "$backup" && ! -e "$target" ]]; then
+    mv -- "$backup" "$target" || true
+  fi
+  if [[ -n "$backup" ]]; then
+    rm -rf -- "$(dirname "$backup")"
+  fi
+  exit "$rc"
+}
+trap restore_on_failure EXIT
+
 mapfile -t rels < <(PYTHONDONTWRITEBYTECODE=1 python3 - "$MANIFEST" "$plugin" <<'PY'
 import json,sys
 m=json.load(open(sys.argv[1])); print(*sorted(m["plugins"][sys.argv[2]]["files"]), sep="\n")
@@ -109,6 +147,14 @@ for rel,expected in sorted(pins.items()):
     if got != expected: raise SystemExit(f"ERROR: copied plugin blob mismatch: {rel}: {got} != {expected}")
 PY
 
-mv -- "$tmp" "$target"; trap - EXIT
+mv -- "$tmp" "$target"
 diff -qr "$src" "$target" >/dev/null || { echo "ERROR: published plugin differs from reviewed source" >&2; exit 1; }
-echo "INSTALLED: $plugin"; echo "FACTORY_PLUGIN_INSTALL_OK"
+if [[ -n "$backup" ]]; then
+  rm -rf -- "$(dirname "$backup")"
+  backup=""
+  echo "REPLACED_REVIEWED: $plugin"
+else
+  echo "INSTALLED: $plugin"
+fi
+trap - EXIT
+echo "FACTORY_PLUGIN_INSTALL_OK"
