@@ -1,13 +1,14 @@
 from __future__ import annotations
 
+import json
 import unittest
 
-from model_routing_policy import (
+from hermes.model_routing_policy import (
     CLAUDE_IMPLEMENTER,
     CLAUDE_REVIEWER,
-    GROK_REVIEWER,
     OPENAI_IMPLEMENTER,
     OPENAI_REVIEWER,
+    _task_body_from_json,
     parse_task_contract,
     required_reviewers,
     validate_review_route,
@@ -33,7 +34,7 @@ ACCEPTANCE_CRITERIA:
 
 
 class ModelRoutingPolicyTests(unittest.TestCase):
-    def test_normal_openai_implementation_requires_claude_review(self):
+    def test_normal_openai_implementation_requires_exact_claude_review(self):
         self.assertEqual(
             required_reviewers(OPENAI_IMPLEMENTER, security_sensitive=False),
             (CLAUDE_REVIEWER,),
@@ -46,8 +47,15 @@ class ModelRoutingPolicyTests(unittest.TestCase):
             ),
             [],
         )
+        self.assertTrue(
+            validate_review_route(
+                OPENAI_IMPLEMENTER,
+                [CLAUDE_REVIEWER, OPENAI_REVIEWER],
+                security_sensitive=False,
+            )
+        )
 
-    def test_normal_claude_implementation_requires_openai_review(self):
+    def test_normal_claude_implementation_requires_exact_openai_review(self):
         self.assertEqual(
             required_reviewers(CLAUDE_IMPLEMENTER, security_sensitive=False),
             (OPENAI_REVIEWER,),
@@ -67,10 +75,10 @@ class ModelRoutingPolicyTests(unittest.TestCase):
             [OPENAI_REVIEWER],
             security_sensitive=False,
         )
-        self.assertIn("missing_required_reviewers:reviewer-claude", errors)
+        self.assertTrue(any(error.startswith("reviewer_set_mismatch:") for error in errors))
         self.assertIn("normal_review_must_be_cross_vendor", errors)
 
-    def test_security_sensitive_claude_implementation_requires_openai(self):
+    def test_security_sensitive_requires_claude_implementer_and_openai_reviewer(self):
         self.assertEqual(
             required_reviewers(CLAUDE_IMPLEMENTER, security_sensitive=True),
             (OPENAI_REVIEWER,),
@@ -83,25 +91,19 @@ class ModelRoutingPolicyTests(unittest.TestCase):
             ),
             [],
         )
-
-    def test_security_sensitive_openai_implementation_adds_grok_independence(self):
-        self.assertEqual(
-            required_reviewers(OPENAI_IMPLEMENTER, security_sensitive=True),
-            (OPENAI_REVIEWER, GROK_REVIEWER),
-        )
-        self.assertEqual(
+        self.assertIn(
+            "security_sensitive_openai_implementer_forbidden",
             validate_review_route(
                 OPENAI_IMPLEMENTER,
-                [OPENAI_REVIEWER, GROK_REVIEWER],
+                [OPENAI_REVIEWER],
                 security_sensitive=True,
             ),
-            [],
         )
 
     def test_claude_security_reviewer_is_forbidden(self):
         errors = validate_review_route(
             CLAUDE_IMPLEMENTER,
-            [OPENAI_REVIEWER, CLAUDE_REVIEWER],
+            [CLAUDE_REVIEWER],
             security_sensitive=True,
         )
         self.assertIn("anthropic_security_reviewer_forbidden", errors)
@@ -114,7 +116,7 @@ class ModelRoutingPolicyTests(unittest.TestCase):
             "unknown_reviewers:reviewer-unknown",
             validate_review_route(
                 CLAUDE_IMPLEMENTER,
-                [OPENAI_REVIEWER, "reviewer-unknown"],
+                ["reviewer-unknown"],
                 security_sensitive=False,
             ),
         )
@@ -136,26 +138,59 @@ class ModelRoutingPolicyTests(unittest.TestCase):
             reviewers=CLAUDE_REVIEWER,
             security="no",
         ).replace("SECURITY_SENSITIVE: no\n", "")
-        self.assertIn(
-            "missing_contract_fields:SECURITY_SENSITIVE",
-            validate_task_body(body),
-        )
+        self.assertIn("missing_contract_fields:SECURITY_SENSITIVE", validate_task_body(body))
 
-    def test_duplicate_routing_field_fails_closed(self):
-        body = task_body(
+    def test_all_duplicate_routing_fields_fail_closed(self):
+        base = task_body(
             implementer=OPENAI_IMPLEMENTER,
             reviewers=CLAUDE_REVIEWER,
             security="no",
-        ) + "IMPLEMENTER: coder-claude\n"
-        self.assertIn("duplicate_contract_field:IMPLEMENTER", validate_task_body(body))
+        )
+        for line, expected in (
+            ("IMPLEMENTER: coder-claude\n", "duplicate_contract_field:IMPLEMENTER"),
+            ("REQUIRED_REVIEWERS: reviewer-gpt\n", "duplicate_contract_field:REQUIRED_REVIEWERS"),
+            ("SECURITY_SENSITIVE: yes\n", "duplicate_contract_field:SECURITY_SENSITIVE"),
+        ):
+            with self.subTest(line=line):
+                self.assertIn(expected, validate_task_body(base + line))
 
-    def test_task_body_forbids_claude_security_reviewer(self):
+    def test_malformed_reviewer_csv_fails_closed(self):
+        for reviewers in (
+            ",,reviewer-gpt,,",
+            "reviewer-gpt, none",
+            "reviewer-gpt,critic",
+        ):
+            with self.subTest(reviewers=reviewers):
+                errors = validate_task_body(
+                    task_body(
+                        implementer=CLAUDE_IMPLEMENTER,
+                        reviewers=reviewers,
+                        security="yes",
+                    )
+                )
+                self.assertTrue(errors)
+
+    def test_nested_task_shape_is_authoritative(self):
         body = task_body(
             implementer=CLAUDE_IMPLEMENTER,
-            reviewers=f"{OPENAI_REVIEWER},{CLAUDE_REVIEWER}",
+            reviewers=OPENAI_REVIEWER,
             security="yes",
         )
-        self.assertIn("anthropic_security_reviewer_forbidden", validate_task_body(body))
+        raw = json.dumps({"task": None, "body": body})
+        parsed, errors = _task_body_from_json(raw)
+        self.assertIsNone(parsed)
+        self.assertEqual(errors, ["actual_json_task_not_object"])
+
+    def test_duplicate_json_keys_fail_closed(self):
+        body = task_body(
+            implementer=CLAUDE_IMPLEMENTER,
+            reviewers=OPENAI_REVIEWER,
+            security="yes",
+        )
+        raw = '{"task":{"body":"bad"},"task":{"body":' + json.dumps(body) + '}}'
+        parsed, errors = _task_body_from_json(raw)
+        self.assertIsNone(parsed)
+        self.assertTrue(errors and errors[0].startswith("actual_json_duplicate_key:"))
 
 
 if __name__ == "__main__":
