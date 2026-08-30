@@ -12,6 +12,16 @@
         "repository_tools.py": "93193e0db3453ef9b5d8f175c5fe4334ff5bf58a",
         "kanban_guard.py": "881dacf7715f8fd0c088df54c9e8d273b15a21da"
       }
+    },
+    "factory-execution-guards": {
+      "source": "hermes/plugins/factory-execution-guards",
+      "installable": true,
+      "activation_status": "reviewed-ready",
+      "files": {
+        "plugin.yaml": "a534dd5850c511c3476d103f3a662975f025dd57",
+        "__init__.py": "ef8db7ecd859cee1edc59eb936c2837b3d79ec57",
+        "guard.py": "e95913b9c9811c922bb3c164060ee7c35031d77c"
+      }
     }
   }
 }
