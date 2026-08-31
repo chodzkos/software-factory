@@ -35,8 +35,8 @@ if grep -Eq 'CLAUDE_(SKILL|NORMAL_MODEL|DEEP_MODEL)="\$\{' "${BOOTSTRAP}"; then 
 for profile in coder-claude reviewer-claude architect-claude-opus; do grep -Fq "install_execution_guard \"\${profile}\"" "${BOOTSTRAP}"; done
 for soul in "${CODER_CLAUDE_SOUL}" "${REVIEWER_CLAUDE_SOUL}" "${ARCHITECT_CLAUDE_SOUL}"; do grep -Fq -- '--safe-mode' "${soul}"; grep -Fq 'TASK_ID:' "${soul}"; grep -Fq 'RUN_ID:' "${soul}"; grep -Fq 'WORKSPACE:' "${soul}"; done
 grep -Fq -- '--permission-mode acceptEdits' "${CODER_CLAUDE_SOUL}"
-grep -Fq "--allowedTools 'Read,Write,Edit,Glob,Grep'" "${CODER_CLAUDE_SOUL}"
-for soul in "${REVIEWER_CLAUDE_SOUL}" "${ARCHITECT_CLAUDE_SOUL}"; do grep -Fq -- '--permission-mode plan' "${soul}"; grep -Fq "--allowedTools 'Read,Glob,Grep'" "${soul}"; done
+grep -Fq -- "--allowedTools 'Read,Write,Edit,Glob,Grep'" "${CODER_CLAUDE_SOUL}"
+for soul in "${REVIEWER_CLAUDE_SOUL}" "${ARCHITECT_CLAUDE_SOUL}"; do grep -Fq -- '--permission-mode plan' "${soul}"; grep -Fq -- "--allowedTools 'Read,Glob,Grep'" "${soul}"; done
 if grep -Fq 'Bash(' "${CODER_CLAUDE_SOUL}"; then echo 'ERROR: coder-claude must not receive Bash after hardening' >&2; exit 1; fi
 
 printf '[check] pinned OpenAI security reviewer and legacy fallback removal\n'
