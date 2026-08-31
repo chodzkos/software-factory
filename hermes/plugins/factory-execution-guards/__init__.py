@@ -1,7 +1,10 @@
 """Software Factory execution boundary guards for privileged profiles."""
 from __future__ import annotations
 
+import hashlib
 import os
+import stat
+import subprocess
 from pathlib import Path
 
 from . import guard as _guard
@@ -12,8 +15,15 @@ _PROTECTED_PROFILES = frozenset({
     "reviewer-claude",
     "architect-claude-opus",
 })
+_CLAUDE_PROFILES = frozenset({"coder-claude", "reviewer-claude", "architect-claude-opus"})
+_CODER_TOOLS = "Read,Write,Edit,Glob,Grep"
+_READONLY_TOOLS = "Read,Glob,Grep"
+_REQUIRED_BOOL_FLAGS = frozenset({"--safe-mode"})
+_VALUE_FLAGS = frozenset({
+    "-p", "--print", "--model", "--output-format", "--allowedTools", "--max-turns", "--effort", "--permission-mode",
+})
 
-# Keep the runtime allowlist synchronized with the provenance-bound wrapper.
+# Keep the underlying guard's constants synchronized with the hardened entrypoint.
 _guard.RUNTIME_OPS = frozenset({
     "create",
     "show",
@@ -24,14 +34,12 @@ _guard.RUNTIME_OPS = frozenset({
     "validate-routing-body",
     "validate-routing-live",
 })
+_guard.CODER_CLAUDE_TOOLS = _CODER_TOOLS
+_guard.READONLY_CLAUDE_TOOLS = _READONLY_TOOLS
 
 
 def _activate_profile_identity() -> None:
-    """Recover the logical protected profile slot used by ad-hoc `hermes -p` runs.
-
-    Classify the raw canonical profile slot, not the resolved child target. This
-    keeps the guard active even if a protected profile directory is a symlink.
-    """
+    """Recover the logical protected profile slot used by ad-hoc `hermes -p` runs."""
     if os.environ.get("HERMES_PROFILE", "").strip():
         return
     raw_home = os.environ.get("HERMES_HOME", "").strip()
@@ -57,6 +65,147 @@ def _reject_multiline_terminal(tool_name: str, args) -> dict[str, str] | None:
             "message": "Software Factory execution guard refused multiline terminal command",
         }
     return None
+
+
+def _run_git(workspace: str, args: list[str], *, text: bool = False) -> str | bytes:
+    return subprocess.run(
+        ["git", "-C", workspace, *args],
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=text,
+        timeout=20,
+    ).stdout
+
+
+def _hardened_workspace_content_state(workspace: str) -> tuple[str, str] | None:
+    """Hash HEAD, staged bytes, and every tracked/untracked worktree path.
+
+    `git ls-files -c` enumerates cached tracked paths even when assume-unchanged or
+    skip-worktree suppress normal status output, closing that attestation bypass.
+    """
+    try:
+        root = Path(workspace).resolve(strict=True)
+        head = str(_run_git(str(root), ["rev-parse", "HEAD"], text=True)).strip()
+        staged = bytes(_run_git(
+            str(root), ["diff", "--cached", "--binary", "--no-ext-diff", "--no-textconv", "HEAD", "--"]
+        ))
+        raw_paths = bytes(_run_git(
+            str(root), ["ls-files", "-c", "-o", "--exclude-standard", "-z"]
+        ))
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if len(head) != 40 or any(ch not in "0123456789abcdef" for ch in head.lower()):
+        return None
+
+    h = hashlib.sha256()
+    h.update(b"HEAD\0" + head.encode("ascii") + b"\0STAGED\0" + staged + b"\0FILES\0")
+    for raw in sorted(path for path in raw_paths.split(b"\0") if path):
+        rel = Path(os.fsdecode(raw))
+        if rel.is_absolute() or ".." in rel.parts:
+            return None
+        path = root / rel
+        h.update(raw + b"\0")
+        try:
+            st = path.lstat()
+        except FileNotFoundError:
+            h.update(b"DELETED\0")
+            continue
+        h.update(f"MODE:{stat.S_IFMT(st.st_mode):o}:{stat.S_IMODE(st.st_mode):o}\0".encode("ascii"))
+        if stat.S_ISLNK(st.st_mode):
+            h.update(b"SYMLINK\0" + os.fsencode(os.readlink(path)) + b"\0")
+        elif stat.S_ISREG(st.st_mode):
+            h.update(b"FILE\0")
+            with path.open("rb") as handle:
+                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                    h.update(chunk)
+            h.update(b"\0")
+        else:
+            return None
+    return head, h.hexdigest()
+
+
+def _exact_marker(prompt: str, name: str, value: str) -> bool:
+    target = f"{name}: {value}"
+    return sum(1 for line in prompt.splitlines() if line == target) == 1
+
+
+def _hardened_parse_claude_argv(profile: str, command: str) -> dict[str, str] | None:
+    try:
+        tokens = _guard._shell_tokens(command)
+    except ValueError:
+        return None
+    if not tokens or tokens[0] != "claude" or _guard._canonical_claude_identity() is None:
+        return None
+
+    values: dict[str, str] = {}
+    seen: set[str] = set()
+    bool_seen: set[str] = set()
+    index = 1
+    while index < len(tokens):
+        flag = tokens[index]
+        if flag in _REQUIRED_BOOL_FLAGS:
+            if flag in bool_seen:
+                return None
+            bool_seen.add(flag)
+            index += 1
+            continue
+        if not flag.startswith("-") or flag not in _VALUE_FLAGS or flag in seen:
+            return None
+        seen.add(flag)
+        if index + 1 >= len(tokens) or tokens[index + 1].startswith("-"):
+            return None
+        values[flag] = tokens[index + 1]
+        index += 2
+
+    if bool_seen != set(_REQUIRED_BOOL_FLAGS):
+        return None
+    prompt_flags = [flag for flag in ("-p", "--print") if flag in values]
+    if len(prompt_flags) != 1:
+        return None
+    expected_model = "opus" if profile == "architect-claude-opus" else "sonnet"
+    if values.get("--model") != expected_model or values.get("--output-format") != "json":
+        return None
+    expected_tools = _CODER_TOOLS if profile == "coder-claude" else _READONLY_TOOLS
+    if values.get("--allowedTools") != expected_tools:
+        return None
+    expected_mode = "acceptEdits" if profile == "coder-claude" else "plan"
+    if values.get("--permission-mode") != expected_mode:
+        return None
+
+    task_id = _guard._task_id()
+    run_id = _guard._run_id()
+    workspace = _guard._workspace()
+    if not task_id or not run_id or not workspace:
+        return None
+    try:
+        if str(Path.cwd().resolve(strict=True)) != workspace:
+            return None
+    except OSError:
+        return None
+    prompt = values[prompt_flags[0]]
+    if not _exact_marker(prompt, "TASK_ID", task_id):
+        return None
+    if not _exact_marker(prompt, "RUN_ID", run_id):
+        return None
+    if not _exact_marker(prompt, "WORKSPACE", workspace):
+        return None
+
+    if "--max-turns" in values:
+        try:
+            turns = int(values["--max-turns"])
+        except ValueError:
+            return None
+        if not 1 <= turns <= 64:
+            return None
+    if "--effort" in values and values["--effort"] not in {"low", "medium", "high"}:
+        return None
+    return values
+
+
+# Patch the implementation functions that all guard lifecycle checks resolve at runtime.
+_guard._workspace_content_state = _hardened_workspace_content_state
+_guard._parse_claude_argv = _hardened_parse_claude_argv
 
 
 def on_pre_tool_call(*args, **kwargs):
