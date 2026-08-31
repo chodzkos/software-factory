@@ -12,13 +12,20 @@ expect_fail() {
   echo "OK fail-closed: $label"
 }
 
+copy_regular_files() {
+  local src="$1" dst="$2"
+  while IFS= read -r -d '' file; do
+    cp -- "$file" "$dst/$(basename "$file")"
+  done < <(find "$src" -maxdepth 1 -type f -print0)
+}
+
 make_fixture() {
   local dst="$1"
   mkdir -p "$dst/hermes/plugins/factory-repository-readonly" "$dst/hermes/plugins/factory-execution-guards"
   cp "$INSTALLER" "$dst/hermes/install_factory_plugins.sh"
   cp "$ROOT_DIR/hermes/plugins/manifest.json" "$dst/hermes/plugins/manifest.json"
-  cp "$ROOT_DIR/hermes/plugins/factory-repository-readonly/"* "$dst/hermes/plugins/factory-repository-readonly/"
-  cp "$ROOT_DIR/hermes/plugins/factory-execution-guards/"* "$dst/hermes/plugins/factory-execution-guards/"
+  copy_regular_files "$ROOT_DIR/hermes/plugins/factory-repository-readonly" "$dst/hermes/plugins/factory-repository-readonly"
+  copy_regular_files "$ROOT_DIR/hermes/plugins/factory-execution-guards" "$dst/hermes/plugins/factory-execution-guards"
 }
 
 make_known_execution_guard_predecessor() {
