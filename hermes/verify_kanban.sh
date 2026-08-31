@@ -51,8 +51,8 @@ grep -Fq 'if not path.exists()' "${RUNTIME_VALIDATOR}"
 grep -Fq 'current.is_symlink()' "${RUNTIME_VALIDATOR}"
 grep -Fq 'validate-routed-handoff --task-id <task-id>' "${RUNTIME_WRAPPER}"
 grep -Fq 'validate-routing-live --task-id <task-id>' "${RUNTIME_WRAPPER}"
-if grep -F 'validate-routed-handoff)' -A4 "${RUNTIME_WRAPPER}" | grep -Fq -- '--actual-json'; then echo 'ERROR: routed handoff still accepts caller JSON' >&2; exit 1; fi
-if grep -F 'validate-routing-live)' -A4 "${RUNTIME_WRAPPER}" | grep -Fq -- '--actual-json'; then echo 'ERROR: live routing still accepts caller JSON' >&2; exit 1; fi
+if grep -F -A4 'validate-routed-handoff)' "${RUNTIME_WRAPPER}" | grep -Fq -- '--actual-json'; then echo 'ERROR: routed handoff still accepts caller JSON' >&2; exit 1; fi
+if grep -F -A4 'validate-routing-live)' "${RUNTIME_WRAPPER}" | grep -Fq -- '--actual-json'; then echo 'ERROR: live routing still accepts caller JSON' >&2; exit 1; fi
 if grep -Fq 'sub.add_parser("handoff")' "${RUNTIME_VALIDATOR}"; then echo 'ERROR: legacy handoff CLI remains exposed' >&2; exit 1; fi
 
 printf '[check] scoped runtime wrapper\n'
