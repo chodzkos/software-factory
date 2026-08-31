@@ -11,7 +11,7 @@ This policy supplements `standards/SOFTWARE_DEVELOPMENT_STANDARD.md` and `workfl
 - exact normal reviewer: `reviewer-claude`.
 
 ### `coder-claude`
-- Hermes coordination profile; actual coding is delegated through bundled `claude-code` to Claude Code CLI,
+- Hermes coordination profile; actual coding is delegated through `claude-code` to Claude Code CLI,
 - `factory.execution_backend=claude-code`, model class pinned to `sonnet`,
 - exact reviewer: `reviewer-gpt`,
 - required implementer for `SECURITY_SENSITIVE: yes` so mandatory OpenAI security review remains cross-vendor.
@@ -93,13 +93,13 @@ Routed handoff requires:
 
 ## 7. Claude Code mechanical execution boundary
 
-Claude-backed profiles use profile-scoped `factory-execution-guards` v0.5.0.
+Claude-backed profiles use profile-scoped `factory-execution-guards` v0.6.0.
 
 Outer GPT terminal access is **Claude-only**: no `find`, Git, Python, grep or other helper executable is permitted. Direct file/code mutation tools are blocked.
 
 Only literal argv0 `claude` is accepted. `./claude`, `/tmp/claude` and alternate paths are refused. Guard resolves the PATH-selected Claude binary itself and binds its resolved path + SHA-256 to the attestation.
 
-Every invocation requires `--safe-mode`, disabling project/user `CLAUDE.md`, hooks, plugins, skills and MCP. Coder uses `--permission-mode acceptEdits`; reviewer/architect use `--permission-mode plan`.
+Every invocation requires `--safe-mode`, disabling project/user `CLAUDE.md`, hooks, plugins, skills and MCP. Coder uses `--permission-mode dontAsk`; reviewer/architect use `--permission-mode plan`.
 
 Claude argv uses a closed schema:
 
@@ -122,13 +122,13 @@ WORKSPACE: <exact-resolved-worktree>
 
 Quoted multiline prompt arguments are allowed so those exact markers can remain separate lines; newline/CR outside shell quotes is rejected before execution as a command separator. The Claude process cwd must equal the resolved worktree.
 
-`coder-claude` exact tools:
+`coder-claude` receives read tools plus exactly one workspace-derived edit permission rule:
 
 ```text
-Read,Write,Edit,Glob,Grep
+Read,Glob,Grep,Edit(//<exact-resolved-worktree>/**)
 ```
 
-No general Bash/Python/Git capability is granted to coder Claude.
+The edit rule is computed by the execution guard from the resolved Kanban workspace, not supplied freely by the model. `dontAsk` means file modifications that do not match this exact scoped rule are denied rather than prompting for broader permission. Broad `Write`, broad `Edit`, Bash, Python and Git are not allowed.
 
 `reviewer-claude` and `architect-claude-opus` exact read-only tools:
 
@@ -142,7 +142,7 @@ Reviewer/architect additionally run in permission `plan` mode and receive no Bas
 
 Before canonical Claude execution, `pre_tool_call` creates a random nonce held only in the trusted Hermes worker process and captures task/run/profile, resolved workspace, command SHA-256, Claude binary path+SHA-256, Git HEAD, and a content-state digest.
 
-The content-state digest covers staged diff plus raw bytes/mode/symlink targets for **all cached tracked paths and all untracked paths**. It does not depend on `git status` visibility; `assume-unchanged` and `skip-worktree` therefore cannot hide a tracked path from attestation.
+The content-state digest covers staged diff plus raw bytes/mode/symlink targets for **all cached tracked paths and all untracked paths, including Git-ignored untracked paths**. It does not depend on `git status` visibility; `assume-unchanged`, `skip-worktree`, and `.gitignore` therefore cannot hide workspace content from attestation.
 
 `post_tool_call` may emit evidence only for the matching pending in-memory attestation and a successful Claude JSON result. Evidence schema v5 records before/after Git HEAD and content-state digests plus an attestation ID derived from the in-memory nonce.
 
