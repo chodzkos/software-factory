@@ -71,26 +71,29 @@ class ProfileResolutionTests(unittest.TestCase):
 
     def _canonical_command(self, profile: str, workspace: str) -> str:
         model="opus" if profile == "architect-claude-opus" else "sonnet"
-        tools=PLUGIN._CODER_TOOLS if profile == "coder-claude" else PLUGIN._READONLY_TOOLS
-        mode="acceptEdits" if profile == "coder-claude" else "plan"
+        tools=PLUGIN._coder_tools(workspace) if profile == "coder-claude" else PLUGIN._READONLY_TOOLS
+        mode="dontAsk" if profile == "coder-claude" else "plan"
         prompt=f"TASK_ID: t_guard\nRUN_ID: 77\nWORKSPACE: {workspace}\nPerform the assigned task."
         return (
             f"claude -p '{prompt}' --model {model} --output-format json --safe-mode "
             f"--permission-mode {mode} --allowedTools '{tools}' --max-turns 2"
         )
 
-    def test_hardened_claude_schema_requires_safe_mode_exact_markers_and_no_bash(self):
+    def test_hardened_claude_schema_requires_scoped_edit_safe_mode_exact_markers(self):
         with tempfile.TemporaryDirectory() as td:
             workspace=Path(td).resolve()
             command=self._canonical_command("coder-claude", str(workspace))
+            exact_tools=PLUGIN._coder_tools(str(workspace))
+            self.assertIn(f"Edit(/{workspace}/**)", exact_tools)
             with patch.dict(os.environ, {"HERMES_KANBAN_TASK":"t_guard","HERMES_KANBAN_RUN_ID":"77","HERMES_KANBAN_WORKSPACE":str(workspace)}, clear=False), \
                  patch.object(PLUGIN._guard, "_canonical_claude_identity", return_value=("/opt/claude","a"*64)), \
                  patch.object(PLUGIN.Path, "cwd", return_value=workspace):
                 self.assertIsNotNone(PLUGIN._hardened_parse_claude_argv("coder-claude", command))
                 self.assertIsNone(PLUGIN._hardened_parse_claude_argv("coder-claude", command.replace(" --safe-mode", "")))
                 self.assertIsNone(PLUGIN._hardened_parse_claude_argv("coder-claude", command.replace("TASK_ID: t_guard", "TASK_ID: t_guard_evil")))
-                self.assertIsNone(PLUGIN._hardened_parse_claude_argv("coder-claude", command.replace(PLUGIN._CODER_TOOLS, PLUGIN._CODER_TOOLS+",Bash")))
-                self.assertIsNone(PLUGIN._hardened_parse_claude_argv("coder-claude", command.replace("acceptEdits", "bypassPermissions")))
+                self.assertIsNone(PLUGIN._hardened_parse_claude_argv("coder-claude", command.replace(exact_tools, "Read,Write,Edit,Glob,Grep")))
+                self.assertIsNone(PLUGIN._hardened_parse_claude_argv("coder-claude", command.replace(exact_tools, exact_tools+",Bash")))
+                self.assertIsNone(PLUGIN._hardened_parse_claude_argv("coder-claude", command.replace("dontAsk", "acceptEdits")))
 
     def test_readonly_profiles_require_plan_mode(self):
         with tempfile.TemporaryDirectory() as td:
@@ -102,15 +105,18 @@ class ProfileResolutionTests(unittest.TestCase):
                 self.assertIsNotNone(PLUGIN._hardened_parse_claude_argv("reviewer-claude", command))
                 self.assertIsNone(PLUGIN._hardened_parse_claude_argv("reviewer-claude", command.replace("--permission-mode plan", "--permission-mode acceptEdits")))
 
+    def _init_repo(self, repo: Path) -> None:
+        subprocess.run(["git","init","-q",str(repo)],check=True)
+        subprocess.run(["git","-C",str(repo),"config","user.email","test@example.invalid"],check=True)
+        subprocess.run(["git","-C",str(repo),"config","user.name","Test"],check=True)
+        tracked=repo/"tracked.txt"; tracked.write_text("before\n")
+        subprocess.run(["git","-C",str(repo),"add","tracked.txt"],check=True)
+        subprocess.run(["git","-C",str(repo),"commit","-qm","init"],check=True)
+
     def test_content_state_detects_assume_unchanged_tracked_mutation(self):
         with tempfile.TemporaryDirectory() as td:
-            repo=Path(td)
-            subprocess.run(["git","init","-q",str(repo)],check=True)
-            subprocess.run(["git","-C",str(repo),"config","user.email","test@example.invalid"],check=True)
-            subprocess.run(["git","-C",str(repo),"config","user.name","Test"],check=True)
-            tracked=repo/"tracked.txt"; tracked.write_text("before\n")
-            subprocess.run(["git","-C",str(repo),"add","tracked.txt"],check=True)
-            subprocess.run(["git","-C",str(repo),"commit","-qm","init"],check=True)
+            repo=Path(td); self._init_repo(repo)
+            tracked=repo/"tracked.txt"
             before=PLUGIN._hardened_workspace_content_state(str(repo))
             subprocess.run(["git","-C",str(repo),"update-index","--assume-unchanged","tracked.txt"],check=True)
             tracked.write_text("after\n")
@@ -119,6 +125,21 @@ class ProfileResolutionTests(unittest.TestCase):
             after=PLUGIN._hardened_workspace_content_state(str(repo))
             self.assertIsNotNone(before); self.assertIsNotNone(after)
             self.assertNotEqual(before[1], after[1])
+
+    def test_content_state_detects_gitignored_untracked_mutation(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo=Path(td); self._init_repo(repo)
+            (repo/".gitignore").write_text("ignored.txt\n")
+            subprocess.run(["git","-C",str(repo),"add",".gitignore"],check=True)
+            subprocess.run(["git","-C",str(repo),"commit","-qm","ignore fixture"],check=True)
+            before=PLUGIN._hardened_workspace_content_state(str(repo))
+            (repo/"ignored.txt").write_text("secret-before\n")
+            hidden=PLUGIN._hardened_workspace_content_state(str(repo))
+            (repo/"ignored.txt").write_text("secret-after\n")
+            changed=PLUGIN._hardened_workspace_content_state(str(repo))
+            self.assertIsNotNone(before); self.assertIsNotNone(hidden); self.assertIsNotNone(changed)
+            self.assertNotEqual(before[1], hidden[1])
+            self.assertNotEqual(hidden[1], changed[1])
 
 
 if __name__ == "__main__":
