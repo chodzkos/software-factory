@@ -28,6 +28,7 @@ grep -Fq 'IMPLEMENTED != VERIFIED' "${CONTRACT}"
 grep -Fq 'RUNTIME_CONTRACT_DRIFT' "${CONTRACT}"
 grep -Fq 'MODEL_ROUTING_DRIFT' "${CONTRACT}"
 grep -Fq 'validate-routed-handoff' "${CONTRACT}"
+grep -Fq 'validate-routing-live' "${CONTRACT}"
 test -f "${MODEL_POLICY_DOC}"
 
 printf '[check] exact model routing\n'
@@ -40,21 +41,23 @@ grep -Fq 'strict_json_loads' "${MODEL_ROUTING}"
 grep -Fq '`coder` | `yes` | **forbidden**' "${MODEL_POLICY_DOC}"
 grep -Fq '`coder-claude` | `yes` | `reviewer-gpt`' "${MODEL_POLICY_DOC}"
 
-printf '[check] body-bound live handoff is sole handoff gate\n'
-grep -Fq 'def validate_routed_review_handoff' "${RUNTIME_VALIDATOR}"
-grep -Fq 'route_from_payload(payload)' "${RUNTIME_VALIDATOR}"
+printf '[check] provenance-bound live handoff\n'
+grep -Fq 'def _live_snapshot(task_id: str)' "${RUNTIME_VALIDATOR}"
+grep -Fq '["hermes", "kanban", "show", task_id, "--json"]' "${RUNTIME_VALIDATOR}"
 grep -Fq 'strict_json_loads(value)' "${RUNTIME_VALIDATOR}"
-grep -Fq 'review_requested_event_run_id_required' "${RUNTIME_VALIDATOR}"
-grep -Fq 'implementer_review_run_metadata_required' "${RUNTIME_VALIDATOR}"
-grep -Fq 'validate-routed-handoff' "${RUNTIME_WRAPPER}"
-grep -Fq 'exec python3 "${VALIDATOR}" routed-handoff "$@"' "${RUNTIME_WRAPPER}"
-if grep -Fq 'validate-handoff' "${RUNTIME_WRAPPER}"; then echo 'ERROR: legacy body-independent validate-handoff remains exposed' >&2; exit 1; fi
+grep -Fq 'type(raw_event_run_id) is not int' "${RUNTIME_VALIDATOR}"
+grep -Fq 'type(run_id) is not int' "${RUNTIME_VALIDATOR}"
+grep -Fq 'if not path.exists()' "${RUNTIME_VALIDATOR}"
+grep -Fq 'current.is_symlink()' "${RUNTIME_VALIDATOR}"
+grep -Fq 'validate-routed-handoff --task-id <task-id>' "${RUNTIME_WRAPPER}"
+grep -Fq 'validate-routing-live --task-id <task-id>' "${RUNTIME_WRAPPER}"
+if grep -F 'validate-routed-handoff)' -A4 "${RUNTIME_WRAPPER}" | grep -Fq -- '--actual-json'; then echo 'ERROR: routed handoff still accepts caller JSON' >&2; exit 1; fi
+if grep -F 'validate-routing-live)' -A4 "${RUNTIME_WRAPPER}" | grep -Fq -- '--actual-json'; then echo 'ERROR: live routing still accepts caller JSON' >&2; exit 1; fi
 if grep -Fq 'sub.add_parser("handoff")' "${RUNTIME_VALIDATOR}"; then echo 'ERROR: legacy handoff CLI remains exposed' >&2; exit 1; fi
 
 printf '[check] scoped runtime wrapper\n'
 grep -Fq 'case "${op}" in' "${RUNTIME_WRAPPER}"
 grep -Fq 'exec hermes kanban create "$@"' "${RUNTIME_WRAPPER}"
-grep -Fq 'exec hermes kanban show "${task_id}" --json' "${RUNTIME_WRAPPER}"
 grep -Fq 'block reason must not contain flag-shaped operands' "${RUNTIME_WRAPPER}"
 if grep -Fq 'eval ' "${RUNTIME_WRAPPER}"; then echo 'ERROR: runtime wrapper must not use eval' >&2; exit 1; fi
 PYTHONDONTWRITEBYTECODE=1 bash "${RUNTIME_WRAPPER_TEST}"
@@ -76,9 +79,9 @@ printf '[check] routed handoff adversarial regression\n'
 (cd "${ROOT_DIR}" && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -q hermes.test_routed_handoff_policy)
 printf '[check] model routing tests from repo root\n'
 (cd "${ROOT_DIR}" && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -q hermes.test_model_routing_policy)
-printf '[check] execution guard adversarial tests\n'
-(cd "${ROOT_DIR}" && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -q hermes.test_factory_execution_guards)
+printf '[check] effective execution guard adversarial tests\n'
+(cd "${ROOT_DIR}" && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -q hermes.test_factory_execution_guards hermes.test_factory_execution_guard_profile_resolution)
 printf '[check] bootstrap compatibility\n'
 bash "${BOOTSTRAP_VERIFY}"
 
-printf 'OK: weryfikacja Kanban, strict routed handoff i execution guards zakończona\n'
+printf 'OK: weryfikacja Kanban, provenance-bound routed handoff i hardened execution guards zakończona\n'
