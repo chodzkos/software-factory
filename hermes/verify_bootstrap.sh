@@ -70,11 +70,14 @@ grep -Fq "auditor-ox config set fallback_providers '[]'" "${BOOTSTRAP}"
 grep -Fq "auditor-ox config set toolsets '[]'" "${BOOTSTRAP}"
 if grep -Eqi 'stealth/ox-alpha|OX_MODEL|OX_PROVIDER' "${BOOTSTRAP}" "${MODEL_POLICY}" "${ORCHESTRATOR_SOUL}"; then echo 'ERROR: active Ox routing remains' >&2; exit 1; fi
 
-printf '[check] runtime-controller mechanical boundary\n'
+printf '[check] runtime-controller quote-aware mechanical boundary\n'
 grep -Fq "config set toolsets '[\"terminal\"]'" "${RUNTIME_BOOTSTRAP}"
 grep -Fq 'plugins enable "${EXECUTION_GUARD}" --no-allow-tool-override' "${RUNTIME_BOOTSTRAP}"
 grep -Fq 'config set tools.tool_search.enabled off' "${RUNTIME_BOOTSTRAP}"
-grep -Fq 'Software Factory execution guard refused multiline terminal command' "${GUARD_ENTRY}"
+grep -Fq 'Software Factory execution guard refused unquoted terminal line break' "${GUARD_ENTRY}"
+grep -Fq 'def _has_unquoted_linebreak' "${GUARD_ENTRY}"
+grep -Fq '_guard._runtime_terminal_allowed = _runtime_terminal_allowed' "${GUARD_ENTRY}"
+grep -Fq '"--actual-json" in args' "${GUARD_ENTRY}"
 grep -Fq 'validate-routing-body' "${GUARD_ENTRY}"
 grep -Fq 'validate-routing-live' "${GUARD_ENTRY}"
 if grep -Fq '"validate-handoff"' "${GUARD_ENTRY}"; then echo 'ERROR: legacy handoff remains in effective runtime allowlist' >&2; exit 1; fi
