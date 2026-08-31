@@ -47,7 +47,7 @@ Dla code-changing task/review `SECURITY_SENSITIVE`, `IMPLEMENTER`, `REQUIRED_REV
 | `coder` | `yes` | forbidden |
 | `coder-claude` | `yes` | `reviewer-gpt` |
 
-`reviewer-gpt` jest przypięty do `openai-codex/gpt-5.6-sol`; nie dziedziczy security-review providera z `PRIMARY_PROFILE`.
+`reviewer-gpt` jest przypięty do `openai-codex/gpt-5.6-sol`; canonical bootstrap fizycznie usuwa legacy `fallback_model` i wymaga pustego `fallback_providers`, więc security reviewer nie może odziedziczyć fallbacku z `PRIMARY_PROFILE`.
 
 `hermes/model_routing_policy.py` egzekwuje exact reviewer set. Malformed CSV, `none`, duplicate fields, unknown profiles, duplicate JSON keys i invalid nested `task` kończą się `MODEL_ROUTING_DRIFT`.
 
@@ -57,15 +57,17 @@ Body nie potwierdza pól runtime. Każda niezgodność runtime kończy się `RUN
 
 ### 5.1 Runtime controller
 
-`runtime-controller` ma tylko toolset `terminal` i profile-scoped `factory-execution-guards`. `pre_tool_call` przepuszcza wyłącznie:
+`runtime-controller` ma tylko toolset `terminal` i profile-scoped `factory-execution-guards`. `pre_tool_call` przepuszcza wyłącznie pojedynczoliniowe:
 
 ```text
 ~/.hermes/profiles/runtime-controller/kanban_runtime_cli.sh <allowlisted-op> ...
 ```
 
-Allowlist: `create`, `show`, `block`, `complete`, `validate-runtime`, `validate-routed-handoff`, `validate-routing`.
+Allowlist: `create`, `show`, `block`, `complete`, `validate-runtime`, `validate-routed-handoff`, `validate-routing-body`, `validate-routing-live`.
 
-Body-independent `validate-handoff` nie istnieje. Bezpośrednie `hermes`, Git, Python, curl, file/code tools, shell operators, pipe/chaining i command substitution są mechanicznie blokowane.
+Literal newline/CR, body-independent `validate-handoff`, bezpośrednie `hermes`, Git, Python, curl, file/code tools, shell operators, pipe/chaining i command substitution są mechanicznie blokowane.
+
+Pre-create routing używa tylko `validate-routing-body --task-body <exact-body>`. Wszystkie post-create/live walidacje używają `--task-id`; validator sam wykonuje `hermes kanban show <task-id> --json`. Runtime-controller nie może podać, przepisać ani sfabrykować `--actual-json` jako live evidence.
 
 ### 5.2 Sticky parent quarantine
 
@@ -75,22 +77,22 @@ Create-time `blocked` nie jest sticky quarantine w Hermes 0.20.4. Runtime-contro
 
 ### 5.3 Runtime fields
 
-Gate waliduje co najmniej `assignee`, `workspace_kind`, create-time `workspace_path`, wymagany `branch_name`, `max_retries`, `parents` i exact model routing z live body. `max_runtime` pozostaje create-time fail-visible ograniczeniem Hermesa 0.20.4 bez stabilnego readbacku.
+Gate waliduje co najmniej `assignee`, `workspace_kind`, create-time `workspace_path`, wymagany `branch_name`, `max_retries`, `parents` i exact model routing z autorytatywnego live body. `max_runtime` pozostaje create-time fail-visible ograniczeniem Hermesa 0.20.4 bez stabilnego readbacku.
 
 ## 6. Same-card implementer → reviewer handoff
 
 Po claimie Hermes materializuje worktree. Implementer kończy run przez native `review_requested`; karta przechodzi do `status=review`, reviewer assignee i zachowuje ten sam resolved worktree.
 
-Przed dispatch review runtime-controller wykonuje na tym samym live `show --json`:
+Przed dispatch review runtime-controller wykonuje:
 
 ```text
-validate-routing --actual-json <live-json>
-validate-routed-handoff --actual-json <live-json>
+validate-routing-live --task-id <task-id>
+validate-routed-handoff --task-id <task-id>
 ```
 
-Oba wejścia używają wspólnego strict JSON decodera odrzucającego duplicate keys na każdym poziomie.
+Oba validate live state pobierają snapshot samodzielnie przez `hermes kanban show <task-id> --json` i używają strict duplicate-key decodera. Caller-supplied JSON nie jest security inputem.
 
-`validate-routed-handoff` wyprowadza implementera/reviewera wyłącznie z live body i wymaga: dokładnie jednego reviewera, `status=review`, właściwego `task.assignee`, dokładnie jednego `WORKSPACE: worktree:<base-repo>`, live workspace dokładnie `<base-repo>/.worktrees/<task-id>` bez `.`/`..`/symlink escape, najnowszego `review_requested` z mandatory integer `run_id`, latest implementer run `outcome=review_requested` z tym samym ID oraz run metadata zawierającej exact `task_id` i exact resolved workspace.
+`validate-routed-handoff` wyprowadza implementera/reviewera wyłącznie z live body i wymaga: dokładnie jednego reviewera, `status=review`, właściwego `task.assignee`, dokładnie jednego `WORKSPACE: worktree:<base-repo>`, istniejący kanoniczny live workspace dokładnie `<base-repo>/.worktrees/<task-id>` bez `.`/`..`/duplicate separator/symlink escape, najnowszy `review_requested` z mandatory prawdziwym integer `run_id` (JSON boolean jest odrzucany), latest implementer run `outcome=review_requested` z tym samym ID oraz run metadata zawierającą exact `task_id` i exact resolved workspace.
 
 Summary ani profile names przekazane osobno nie są security inputem. Przy `CHANGES_REQUIRED` reviewer używa native same-card `kanban_request_changes`.
 
@@ -98,15 +100,27 @@ Summary ani profile names przekazane osobno nie są security inputem. Przy `CHAN
 
 `coder-claude`, `reviewer-claude`, `architect-claude-opus` mają profile-scoped `factory-execution-guards` v0.4.0.
 
-Outer GPT nie może używać terminala do `find`, Git, Python, grep ani innych helperów. Terminal przyjmuje wyłącznie literalne argv0 `claude`; `./claude`, `/tmp/claude` i alternatywne ścieżki są blokowane. Guard wiąże attestation z resolved Claude binary path + SHA-256.
+Outer GPT nie może używać terminala do `find`, Git, Python, grep ani innych helperów. Terminal przyjmuje wyłącznie literalne argv0 `claude`; `./claude`, `/tmp/claude` i alternatywne ścieżki są blokowane.
 
-Claude command schema jest zamknięty: dokładnie jedno print prompt, exact model, JSON output, exact profile-specific `--allowedTools`, opcjonalny bounded `--max-turns`/`--effort`. Duplicate/unknown flags, permission bypass, settings/MCP/plugin/resume/worktree/debug/fallback są odrzucane. Prompt musi zawierać exact bieżący task ID, run ID i resolved worktree.
+Każdy Claude invocation musi zawierać `--safe-mode`, aby wyłączyć project/user `CLAUDE.md`, hooks, plugins, skills i MCP. Coder wymaga `--permission-mode acceptEdits`; reviewer/architect wymagają `--permission-mode plan`.
+
+Prompt musi zawierać dokładnie po jednej osobnej linii:
+
+```text
+TASK_ID: <exact-task-id>
+RUN_ID: <exact-run-id>
+WORKSPACE: <exact-resolved-worktree>
+```
+
+Substringi/prefiksy/sufiksy i duplikaty nie są akceptowane. Cwd procesu Claude musi być dokładnie resolved worktree.
 
 Coder tools:
 
 ```text
-Read,Write,Edit,Glob,Grep,Bash(git status *),Bash(git diff *),Bash(git rev-parse *),Bash(python3 *)
+Read,Write,Edit,Glob,Grep
 ```
+
+Coder nie otrzymuje ogólnego `Bash`, Python ani Git. Shell-based testy/static gates są wykonywane jako osobny kontrolowany etap po implementacji, a nie przez Claude Code implementera.
 
 Reviewer/architect exact read-only tools:
 
@@ -114,13 +128,13 @@ Reviewer/architect exact read-only tools:
 Read,Glob,Grep
 ```
 
-Reviewer/architect Claude nie otrzymuje żadnego `Bash`.
+Reviewer/architect mają dodatkowo `--permission-mode plan`; nie otrzymują `Bash`, `Write` ani `Edit`.
 
 ### 7.1 In-process attestation i evidence schema v5
 
 Przed canonical Claude run `pre_tool_call` tworzy losowy nonce wyłącznie w pamięci worker process i wiąże go z task/run/profile, resolved workspace, command hash, Claude binary path+SHA-256, Git HEAD oraz content-state digest przed wykonaniem.
 
-Content-state digest obejmuje staged diff oraz raw bytes/mode/symlink target wszystkich modified/deleted/untracked paths. Zmiana treści pliku jest więc wykrywana nawet jeśli `git status` nadal pokazuje ten sam status class.
+Content-state digest obejmuje staged diff oraz raw bytes/mode/symlink target **wszystkich tracked i untracked paths**. Tracked paths są enumerowane z Git index niezależnie od status hints, więc `assume-unchanged` i `skip-worktree` nie ukrywają ich przed digestem. Deleted paths również są reprezentowane.
 
 `post_tool_call` wystawia evidence tylko dla matching pending attestation i successful Claude JSON result. Evidence schema v5 zapisuje także Git HEAD/content-state po wykonaniu oraz attestation ID wyprowadzony z in-memory nonce.
 
@@ -130,11 +144,15 @@ Przed transition guard ponownie sprawdza current Claude binary identity, resolve
 
 ## 8. Plugin supply chain
 
-Installer tworzy jeden immutable snapshot source/pin set po początkowej walidacji manifestu. Późniejsza transakcja nie otwiera ponownie mutable manifestu. `--replace-reviewed` jest explicit opt-in, publikacja jest serializowana `flock`, stage jest rehashowany z frozen snapshot, rollback jest uzbrojony przed ruszeniem starego targetu, a failure po publikacji usuwa nowy target i obowiązkowo przywraca backup. Adversarial test wymusza post-publish corruption i sprawdza exact restore starego targetu.
+Installer tworzy jeden immutable snapshot current pin set oraz jawnie zatwierdzonych `replace_from` predecessor pin sets po początkowej walidacji manifestu. Późniejsza transakcja nie otwiera ponownie mutable manifestu.
+
+Destination path i wszystkie istniejące komponenty parent są odrzucane, jeśli są symlinkami. Publikacja jest serializowana przez `flock` na zweryfikowanym katalogu destination, bez osobnego symlinkowalnego lock file. `--replace-reviewed` może zastąpić tylko exact current/reviewed predecessor bytes; jedynym tolerowanym runtime noise jest `__pycache__/*.pyc`. Unknown/drifted target jest fail-closed.
+
+Stage jest rehashowany z frozen snapshot, rollback jest uzbrojony przed ruszeniem starego targetu, a post-publish verification failure obowiązkowo przywraca backup. Po udanym commit nowy target nie jest usuwany tylko dlatego, że cleanup starego backupu zawiedzie — cleanup failure jest raportowany osobno.
 
 ## 9. Repository analyst fresh deployment
 
-Canonical `bootstrap_profiles.sh` po konfiguracji profili wykonuje `bootstrap_repository_analyst_isolation.sh` oraz `verify_repository_analyst_isolation.sh --live`. Re-run analyst bootstrap używa controlled reviewed replacement, więc runtime `__pycache__` albo starsze reviewed bytes nie blokują odtworzenia exact pinned tree.
+Canonical `bootstrap_profiles.sh` po konfiguracji profili wykonuje `bootstrap_repository_analyst_isolation.sh` oraz `verify_repository_analyst_isolation.sh --live`. Re-run analyst bootstrap używa controlled reviewed replacement: current reviewed bytes plus wyłącznie runtime `__pycache__` mogą zostać odtworzone; unknown target nie może być nadpisany jako „reviewed”.
 
 ## 10. Integrity skills
 
@@ -142,7 +160,7 @@ Canonical `bootstrap_profiles.sh` po konfiguracji profili wykonuje `bootstrap_re
 
 ## 11. Legacy Ox
 
-Ox Alpha nie jest aktywnym backendem. Existing `auditor-ox` dostaje `model.provider=model.default=disabled-legacy`, `factory.execution_backend=disabled-legacy`, empty fallback/toolsets, disabled tool search i broad denylist.
+Ox Alpha nie jest aktywnym backendem. Existing `auditor-ox` dostaje `model.provider=model.default=disabled-legacy`, `factory.execution_backend=disabled-legacy`, empty `fallback_providers`/toolsets, disabled tool search i broad denylist. Bootstrap fizycznie usuwa legacy `fallback_model`, inherited `mcp_servers` oraz stare API-server override keys z profilu.
 
 ## 12. Review/audit decision contract
 
