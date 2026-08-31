@@ -44,23 +44,24 @@ Reviewer set musi być dokładny. Security reviewer jest przypięty do OpenAI, `
 
 Profile Claude nie udają natywnego Anthropica w Hermesie. Outer Hermes koordynuje, ale właściwa praca musi przejść przez `claude-code`.
 
-`factory-execution-guards` v0.5.0:
+`factory-execution-guards` v0.6.0:
 
 - blokuje direct outer-GPT write/patch/code execution,
 - terminal outer GPT pozwala wyłącznie na literalne `claude`; żaden `find`, Git, Python, grep ani inny helper binary nie jest dopuszczony,
 - każda delegacja wymaga `--safe-mode`, który wyłącza project/user `CLAUDE.md`, hooks, plugins, skills i MCP bez wyłączania OAuth,
-- coder wymaga `--permission-mode acceptEdits` i dokładnych delegated tools `Read,Write,Edit,Glob,Grep` — bez Bash/Python/Git,
+- coder wymaga `--permission-mode dontAsk` i dokładnych permission rules `Read,Glob,Grep,Edit(//<exact-resolved-worktree>/**)`; szerokie `Write`/`Edit`, Bash/Python/Git są zabronione,
+- workspace-scoped `Edit(...)` jest mechanicznie wyliczany przez guard z resolved Kanban workspace; write poza worktree nie powinien przejść ani poprosić o rozszerzenie uprawnień,
 - reviewer-claude i architect-claude-opus wymagają `--permission-mode plan` i dokładnych `Read,Glob,Grep`,
 - odrzuca `./claude`, `/tmp/claude`, duplicate/unknown flags, permission bypass, settings/MCP/plugin/resume/worktree/debug/fallback,
 - prompt musi zawierać dokładnie po jednej osobnej linii `TASK_ID: ...`, `RUN_ID: ...`, `WORKSPACE: ...`, a cwd Claude musi być exact resolved worktree,
 - quoted multiline prompt jest dozwolony; newline/CR poza shell quotes jest blokowany przed wykonaniem jako separator poleceń,
 - przed Claude runem guard tworzy losowy in-process attestation i zapisuje Git HEAD + content-state digest,
-- content-state digest obejmuje staged diff oraz raw bytes/mode/symlink target wszystkich tracked i untracked paths; `assume-unchanged`/`skip-worktree` nie ukrywają tracked pliku,
+- content-state digest obejmuje staged diff oraz raw bytes/mode/symlink target wszystkich tracked i untracked paths, **także Git-ignored untracked**; `assume-unchanged`/`skip-worktree`/`.gitignore` nie ukrywają workspace content,
 - evidence schema v5 wiąże task/run/profile, resolved workspace, Claude session, command hash, Claude binary path+SHA-256, Git HEAD/content-state before/after oraz attestation ID,
 - sam plik evidence nie odblokowuje lifecycle: wymagany jest też completed attestation nadal obecny w pamięci tego samego worker process,
 - zmiana zawartości workspace, HEAD, resolved workspace albo Claude binary po evidence unieważnia handoff/completion; rozpoczęcie kolejnego Claude command również unieważnia poprzedni attestation.
 
-Brak Claude CLI/OAuth/skilla/evidence oznacza blocked; nie ma hidden fallbacku.
+Brak Claude CLI/OAuth/evidence oznacza blocked; nie ma hidden fallbacku.
 
 ## Runtime controller
 
