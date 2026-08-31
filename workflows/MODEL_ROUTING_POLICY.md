@@ -93,7 +93,7 @@ Routed handoff requires:
 
 ## 7. Claude Code mechanical execution boundary
 
-Claude-backed profiles use profile-scoped `factory-execution-guards` v0.4.0.
+Claude-backed profiles use profile-scoped `factory-execution-guards` v0.5.0.
 
 Outer GPT terminal access is **Claude-only**: no `find`, Git, Python, grep or other helper executable is permitted. Direct file/code mutation tools are blocked.
 
