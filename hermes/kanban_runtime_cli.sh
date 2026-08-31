@@ -12,13 +12,14 @@ Usage:
   kanban_runtime_cli.sh show <task-id> [--json]
   kanban_runtime_cli.sh block <task-id> <reason...>
   kanban_runtime_cli.sh complete <task-id> <summary...>
-  kanban_runtime_cli.sh validate-runtime <validator-runtime-args...>
-  kanban_runtime_cli.sh validate-routed-handoff --actual-json <live-json>
-  kanban_runtime_cli.sh validate-routing <model-routing-args...>
+  kanban_runtime_cli.sh validate-runtime --task-id <task-id> <validator-runtime-expectations...>
+  kanban_runtime_cli.sh validate-routed-handoff --task-id <task-id>
+  kanban_runtime_cli.sh validate-routing-body --task-body <task-body>
+  kanban_runtime_cli.sh validate-routing-live --task-id <task-id>
 
-This wrapper intentionally exposes only the Kanban/runtime-contract operations
-required by the Software Factory runtime-controller. It never evals input and
-never executes an arbitrary shell command.
+Live validators fetch authoritative Kanban JSON themselves. The caller never
+supplies live snapshot bytes. This wrapper intentionally exposes only the
+Software Factory runtime-control operations and never evals input.
 EOF
   exit 2
 }
@@ -67,11 +68,18 @@ case "${op}" in
     ;;
   validate-routed-handoff)
     [[ -f "${VALIDATOR}" ]] || { echo "ERROR: missing ${VALIDATOR}" >&2; exit 2; }
+    [[ $# -eq 2 && "$1" == "--task-id" ]] || usage
     exec python3 "${VALIDATOR}" routed-handoff "$@"
     ;;
-  validate-routing)
+  validate-routing-body)
     [[ -f "${MODEL_ROUTING_VALIDATOR}" ]] || { echo "ERROR: missing ${MODEL_ROUTING_VALIDATOR}" >&2; exit 2; }
+    [[ $# -eq 2 && "$1" == "--task-body" ]] || usage
     exec python3 "${MODEL_ROUTING_VALIDATOR}" "$@"
+    ;;
+  validate-routing-live)
+    [[ -f "${VALIDATOR}" ]] || { echo "ERROR: missing ${VALIDATOR}" >&2; exit 2; }
+    [[ $# -eq 2 && "$1" == "--task-id" ]] || usage
+    exec python3 "${VALIDATOR}" routing-live "$@"
     ;;
   *)
     usage
