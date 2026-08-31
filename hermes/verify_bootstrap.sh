@@ -7,53 +7,61 @@ RUNTIME_BOOTSTRAP="${ROOT_DIR}/hermes/bootstrap_runtime_controller.sh"
 ANALYST_BOOTSTRAP="${ROOT_DIR}/hermes/bootstrap_repository_analyst_isolation.sh"
 ANALYST_VERIFY="${ROOT_DIR}/hermes/verify_repository_analyst_isolation.sh"
 PLUGIN_INSTALLER="${ROOT_DIR}/hermes/install_factory_plugins.sh"
+CONFIG_KEY_REMOVER="${ROOT_DIR}/hermes/remove_profile_config_keys.py"
 STANDARD="${ROOT_DIR}/standards/SOFTWARE_DEVELOPMENT_STANDARD.md"
 MODEL_POLICY="${ROOT_DIR}/workflows/MODEL_ROUTING_POLICY.md"
 MODEL_ROUTING="${ROOT_DIR}/hermes/model_routing_policy.py"
 GUARD="${ROOT_DIR}/hermes/plugins/factory-execution-guards/guard.py"
+GUARD_ENTRY="${ROOT_DIR}/hermes/plugins/factory-execution-guards/__init__.py"
 GUARD_MANIFEST="${ROOT_DIR}/hermes/plugins/factory-execution-guards/plugin.yaml"
+PLUGIN_MANIFEST="${ROOT_DIR}/hermes/plugins/manifest.json"
 GUARD_TESTS="${ROOT_DIR}/hermes/test_factory_execution_guards.py"
 GUARD_PROFILE_TESTS="${ROOT_DIR}/hermes/test_factory_execution_guard_profile_resolution.py"
 ORCHESTRATOR_SOUL="${ROOT_DIR}/hermes/profiles/orchestrator/SOUL.md"
+CODER_CLAUDE_SOUL="${ROOT_DIR}/hermes/profiles/coder-claude/SOUL.md"
+REVIEWER_CLAUDE_SOUL="${ROOT_DIR}/hermes/profiles/reviewer-claude/SOUL.md"
+ARCHITECT_CLAUDE_SOUL="${ROOT_DIR}/hermes/profiles/architect-claude-opus/SOUL.md"
 
 printf '[check] syntax and required sources\n'
 bash -n "${BOOTSTRAP}" "${RUNTIME_BOOTSTRAP}" "${PLUGIN_INSTALLER}" "${ANALYST_BOOTSTRAP}" "${ANALYST_VERIFY}"
-for path in "${STANDARD}" "${MODEL_POLICY}" "${MODEL_ROUTING}" "${GUARD}" "${GUARD_MANIFEST}" "${GUARD_TESTS}" "${GUARD_PROFILE_TESTS}" "${PLUGIN_INSTALLER}"; do test -f "${path}"; done
+PYTHONDONTWRITEBYTECODE=1 python3 -m py_compile "${CONFIG_KEY_REMOVER}"
+for path in "${STANDARD}" "${MODEL_POLICY}" "${MODEL_ROUTING}" "${GUARD}" "${GUARD_ENTRY}" "${GUARD_MANIFEST}" "${PLUGIN_MANIFEST}" "${GUARD_TESTS}" "${GUARD_PROFILE_TESTS}" "${PLUGIN_INSTALLER}"; do test -f "${path}"; done
 
-printf '[check] pinned Claude policy\n'
+printf '[check] pinned Claude policy and clean invocation mode\n'
 grep -Fq 'CLAUDE_SKILL="claude-code"' "${BOOTSTRAP}"
 grep -Fq 'CLAUDE_NORMAL_MODEL="sonnet"' "${BOOTSTRAP}"
 grep -Fq 'CLAUDE_DEEP_MODEL="opus"' "${BOOTSTRAP}"
 if grep -Eq 'CLAUDE_(SKILL|NORMAL_MODEL|DEEP_MODEL)="\$\{' "${BOOTSTRAP}"; then echo 'ERROR: Claude backend/model policy must not be environment-overridable' >&2; exit 1; fi
 for profile in coder-claude reviewer-claude architect-claude-opus; do grep -Fq "install_execution_guard \"\${profile}\"" "${BOOTSTRAP}"; done
-grep -Fq 'config set --force factory.execution_backend claude-code' "${BOOTSTRAP}"
-grep -Fq 'coder-claude config set --force factory.claude_model_class sonnet' "${BOOTSTRAP}"
-grep -Fq 'reviewer-claude config set --force factory.claude_model_class sonnet' "${BOOTSTRAP}"
-grep -Fq 'architect-claude-opus config set --force factory.claude_model_class opus' "${BOOTSTRAP}"
+for soul in "${CODER_CLAUDE_SOUL}" "${REVIEWER_CLAUDE_SOUL}" "${ARCHITECT_CLAUDE_SOUL}"; do grep -Fq -- '--safe-mode' "${soul}"; grep -Fq 'TASK_ID:' "${soul}"; grep -Fq 'RUN_ID:' "${soul}"; grep -Fq 'WORKSPACE:' "${soul}"; done
+grep -Fq -- '--permission-mode acceptEdits' "${CODER_CLAUDE_SOUL}"
+grep -Fq "--allowedTools 'Read,Write,Edit,Glob,Grep'" "${CODER_CLAUDE_SOUL}"
+for soul in "${REVIEWER_CLAUDE_SOUL}" "${ARCHITECT_CLAUDE_SOUL}"; do grep -Fq -- '--permission-mode plan' "${soul}"; grep -Fq "--allowedTools 'Read,Glob,Grep'" "${soul}"; done
+if grep -Fq 'Bash(' "${CODER_CLAUDE_SOUL}"; then echo 'ERROR: coder-claude must not receive Bash after hardening' >&2; exit 1; fi
 
-printf '[check] pinned OpenAI security reviewer\n'
+printf '[check] pinned OpenAI security reviewer and legacy fallback removal\n'
 grep -Fq 'SECURITY_REVIEW_PROVIDER="openai-codex"' "${BOOTSTRAP}"
 grep -Fq 'SECURITY_REVIEW_MODEL="gpt-5.6-sol"' "${BOOTSTRAP}"
-grep -Fq 'reviewer-gpt config set model.provider "${SECURITY_REVIEW_PROVIDER}"' "${BOOTSTRAP}"
-grep -Fq 'reviewer-gpt config set model.default "${SECURITY_REVIEW_MODEL}"' "${BOOTSTRAP}"
-grep -Fq 'expect_config reviewer-gpt model.provider "${SECURITY_REVIEW_PROVIDER}"' "${BOOTSTRAP}"
-grep -Fq 'expect_config reviewer-gpt model.default "${SECURITY_REVIEW_MODEL}"' "${BOOTSTRAP}"
+grep -Fq 'remove_profile_keys "${profile}" fallback_model model.fallback_model' "${BOOTSTRAP}"
+grep -Fq 'expect_profile_keys_absent reviewer-gpt fallback_model model.fallback_model' "${BOOTSTRAP}"
+grep -Fq 'expect_config reviewer-gpt fallback_providers' "${BOOTSTRAP}"
 
 printf '[check] transactional reviewed plugin upgrade\n'
-grep -Fq -- '--replace-reviewed' "${PLUGIN_INSTALLER}"
-grep -Fq 'immutable transaction file' "${PLUGIN_INSTALLER}"
+grep -Fq 'verify_reviewed_provenance' "${PLUGIN_INSTALLER}"
+grep -Fq 'replace_from' "${PLUGIN_INSTALLER}"
+grep -Fq 'assert_safe_dest_path' "${PLUGIN_INSTALLER}"
+grep -Fq 'exec 9<"$DEST"' "${PLUGIN_INSTALLER}"
+if grep -Fq '.factory-plugin.lock.' "${PLUGIN_INSTALLER}"; then echo 'ERROR: symlinkable lock pathname must not be used' >&2; exit 1; fi
 grep -Fq 'trap rollback EXIT' "${PLUGIN_INSTALLER}"
-grep -Fq 'rm -rf -- "$target"' "${PLUGIN_INSTALLER}"
-grep -Fq 'mv -- "$backup" "$target"' "${PLUGIN_INSTALLER}"
-if grep -Fq '|| true' "${PLUGIN_INSTALLER}"; then echo 'ERROR: plugin rollback must not suppress restoration failures' >&2; exit 1; fi
+grep -Fq 'rollback failed to restore reviewed target' "${PLUGIN_INSTALLER}"
+grep -Fq 'old backup cleanup failed' "${PLUGIN_INSTALLER}"
 count="$(grep -c '"$MANIFEST"' "${PLUGIN_INSTALLER}")"
 [[ "$count" -eq 1 ]] || { echo "ERROR: installer reopens mutable manifest after snapshot (count=$count)" >&2; exit 1; }
-grep -Fq -- '--plugin "${EXECUTION_GUARD}" --replace-reviewed' "${BOOTSTRAP}"
-grep -Fq -- '--plugin "${EXECUTION_GUARD}" --replace-reviewed' "${RUNTIME_BOOTSTRAP}"
-grep -Fq -- '--plugin "${PLUGIN}" --replace-reviewed' "${ANALYST_BOOTSTRAP}"
+grep -Fq '"replace_from"' "${PLUGIN_MANIFEST}"
 
-printf '[check] legacy Ox inference kill switch\n'
-grep -Fq 'if profile_exists auditor-ox; then' "${BOOTSTRAP}"
+printf '[check] legacy Ox inference kill switch and inherited config cleanup\n'
+grep -Fq 'remove_profile_keys auditor-ox fallback_model model.fallback_model mcp_servers API_SERVER_ENABLED API_SERVER_KEY' "${BOOTSTRAP}"
+grep -Fq 'expect_profile_keys_absent auditor-ox fallback_model model.fallback_model mcp_servers API_SERVER_ENABLED API_SERVER_KEY' "${BOOTSTRAP}"
 grep -Fq 'auditor-ox config set model.provider disabled-legacy' "${BOOTSTRAP}"
 grep -Fq 'auditor-ox config set model.default disabled-legacy' "${BOOTSTRAP}"
 grep -Fq "auditor-ox config set fallback_providers '[]'" "${BOOTSTRAP}"
@@ -64,31 +72,28 @@ printf '[check] runtime-controller mechanical boundary\n'
 grep -Fq "config set toolsets '[\"terminal\"]'" "${RUNTIME_BOOTSTRAP}"
 grep -Fq 'plugins enable "${EXECUTION_GUARD}" --no-allow-tool-override' "${RUNTIME_BOOTSTRAP}"
 grep -Fq 'config set tools.tool_search.enabled off' "${RUNTIME_BOOTSTRAP}"
-if grep -Fq "config set toolsets '[\"hermes-cli\",\"terminal\"]'" "${RUNTIME_BOOTSTRAP}"; then echo 'ERROR: runtime-controller must not expose hermes-cli' >&2; exit 1; fi
-grep -Fq 'RUNTIME_PROFILE = "runtime-controller"' "${GUARD}"
-grep -Fq 'validate-routed-handoff' "${GUARD}"
-if grep -Fq '"validate-handoff"' "${GUARD}"; then echo 'ERROR: legacy handoff remains in runtime allowlist' >&2; exit 1; fi
+grep -Fq 'Software Factory execution guard refused multiline terminal command' "${GUARD_ENTRY}"
+grep -Fq 'validate-routing-body' "${GUARD_ENTRY}"
+grep -Fq 'validate-routing-live' "${GUARD_ENTRY}"
+if grep -Fq '"validate-handoff"' "${GUARD_ENTRY}"; then echo 'ERROR: legacy handoff remains in effective runtime allowlist' >&2; exit 1; fi
 
 printf '[check] sealed Claude execution/evidence boundary\n'
 grep -Fq 'version: 0.4.0' "${GUARD_MANIFEST}"
-grep -Fq 'tokens[0] != "claude"' "${GUARD}"
-grep -Fq 'CODER_CLAUDE_TOOLS' "${GUARD}"
-grep -Fq 'READONLY_CLAUDE_TOOLS = "Read,Glob,Grep"' "${GUARD}"
-if grep -F 'READONLY_CLAUDE_TOOLS' "${GUARD}" | grep -Fq 'Bash('; then echo 'ERROR: reviewer/architect Claude tools must be shell-free' >&2; exit 1; fi
-grep -Fq 'FORBIDDEN_CLAUDE_FLAGS' "${GUARD}"
+grep -Fq '_CODER_TOOLS = "Read,Write,Edit,Glob,Grep"' "${GUARD_ENTRY}"
+grep -Fq '_READONLY_TOOLS = "Read,Glob,Grep"' "${GUARD_ENTRY}"
+grep -Fq '_REQUIRED_BOOL_FLAGS = frozenset({"--safe-mode"})' "${GUARD_ENTRY}"
+grep -Fq 'expected_mode = "acceptEdits" if profile == "coder-claude" else "plan"' "${GUARD_ENTRY}"
+grep -Fq '_exact_marker(prompt, "TASK_ID", task_id)' "${GUARD_ENTRY}"
+grep -Fq '_exact_marker(prompt, "RUN_ID", run_id)' "${GUARD_ENTRY}"
+grep -Fq '_exact_marker(prompt, "WORKSPACE", workspace)' "${GUARD_ENTRY}"
+grep -Fq 'ls-files", "-c", "-o"' "${GUARD_ENTRY}"
+grep -Fq '_guard._workspace_content_state = _hardened_workspace_content_state' "${GUARD_ENTRY}"
+grep -Fq '_guard._parse_claude_argv = _hardened_parse_claude_argv' "${GUARD_ENTRY}"
 grep -Fq '_PENDING_ATTESTATIONS' "${GUARD}"
 grep -Fq '_COMPLETED_ATTESTATIONS' "${GUARD}"
-grep -Fq 'attestation_id' "${GUARD}"
-grep -Fq 'claude_binary_sha256' "${GUARD}"
-grep -Fq '_workspace_content_state' "${GUARD}"
-grep -Fq 'workspace_content_state_after_sha256' "${GUARD}"
 grep -Fq 'data.get("schema") == 5' "${GUARD}"
-grep -Fq 'HERMES_KANBAN_TASK' "${GUARD}"
-grep -Fq 'requires successful in-process attested Claude Code evidence' "${GUARD}"
 
 printf '[check] fresh bootstrap activates repository-analyst isolation\n'
-grep -Fq 'ANALYST_BOOTSTRAP=' "${BOOTSTRAP}"
-grep -Fq 'ANALYST_VERIFY=' "${BOOTSTRAP}"
 grep -Fq 'bash "${ANALYST_BOOTSTRAP}"' "${BOOTSTRAP}"
 grep -Fq 'bash "${ANALYST_VERIFY}" --live' "${BOOTSTRAP}"
 
@@ -96,7 +101,6 @@ printf '[check] routing policy shape\n'
 grep -Fq 'security_sensitive_openai_implementer_forbidden' "${MODEL_ROUTING}"
 grep -Fq 'reviewer_set_mismatch:' "${MODEL_ROUTING}"
 grep -Fq 'strict_json_loads' "${MODEL_ROUTING}"
-grep -Fq 'validate-routed-handoff' "${ORCHESTRATOR_SOUL}"
 
 printf '[check] coder worktree forced off\n'
 for profile in coder coder-claude; do
