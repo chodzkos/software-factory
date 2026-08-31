@@ -44,7 +44,7 @@ Reviewer set musi być dokładny. Security reviewer jest przypięty do OpenAI, `
 
 Profile Claude nie udają natywnego Anthropica w Hermesie. Outer Hermes koordynuje, ale właściwa praca musi przejść przez `claude-code`.
 
-`factory-execution-guards` v0.4.0:
+`factory-execution-guards` v0.5.0:
 
 - blokuje direct outer-GPT write/patch/code execution,
 - terminal outer GPT pozwala wyłącznie na literalne `claude`; żaden `find`, Git, Python, grep ani inny helper binary nie jest dopuszczony,
