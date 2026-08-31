@@ -22,9 +22,7 @@ _REQUIRED_BOOL_FLAGS = frozenset({"--safe-mode"})
 _VALUE_FLAGS = frozenset({
     "-p", "--print", "--model", "--output-format", "--allowedTools", "--max-turns", "--effort", "--permission-mode",
 })
-
-# Keep the underlying guard's constants synchronized with the hardened entrypoint.
-_guard.RUNTIME_OPS = frozenset({
+_RUNTIME_OPS = frozenset({
     "create",
     "show",
     "block",
@@ -34,6 +32,9 @@ _guard.RUNTIME_OPS = frozenset({
     "validate-routing-body",
     "validate-routing-live",
 })
+
+# Keep the underlying guard's constants synchronized with the hardened entrypoint.
+_guard.RUNTIME_OPS = _RUNTIME_OPS
 _guard.CODER_CLAUDE_TOOLS = _CODER_TOOLS
 _guard.READONLY_CLAUDE_TOOLS = _READONLY_TOOLS
 
@@ -55,16 +56,69 @@ def _activate_profile_identity() -> None:
         os.environ["HERMES_PROFILE"] = logical.name
 
 
-def _reject_multiline_terminal(tool_name: str, args) -> dict[str, str] | None:
+def _has_unquoted_linebreak(command: str) -> bool:
+    """Reject shell line separators while allowing newlines inside quoted arguments.
+
+    Claude prompts intentionally contain literal newlines inside the quoted `-p`
+    argument. A newline outside quotes is a shell command separator and must fail
+    closed. Backslash-newline outside quotes is also rejected conservatively.
+    """
+    quote = ""
+    escaped = False
+    for char in command:
+        if escaped:
+            if char in "\r\n" and not quote:
+                return True
+            escaped = False
+            continue
+        if char == "\\" and quote != "'":
+            escaped = True
+            continue
+        if quote:
+            if char == quote:
+                quote = ""
+            continue
+        if char in {"'", '"'}:
+            quote = char
+            continue
+        if char in "\r\n":
+            return True
+    return False
+
+
+def _reject_unquoted_linebreak(tool_name: str, args) -> dict[str, str] | None:
     if tool_name != "terminal" or not isinstance(args, dict):
         return None
     command = args.get("command")
-    if isinstance(command, str) and ("\n" in command or "\r" in command):
+    if isinstance(command, str) and _has_unquoted_linebreak(command):
         return {
             "action": "block",
-            "message": "Software Factory execution guard refused multiline terminal command",
+            "message": "Software Factory execution guard refused unquoted terminal line break",
         }
     return None
+
+
+def _runtime_terminal_allowed(command: str) -> bool:
+    try:
+        tokens = _guard._shell_tokens(command)
+    except ValueError:
+        return False
+    if len(tokens) < 2 or tokens[0] not in _guard._runtime_wrapper_paths() or tokens[1] not in _RUNTIME_OPS:
+        return False
+    op = tokens[1]
+    args = tokens[2:]
+    if "--actual-json" in args:
+        return False
+    if op in {"validate-routing-live", "validate-routed-handoff"}:
+        return len(args) == 2 and args[0] == "--task-id" and bool(args[1]) and not args[1].startswith("-")
+    if op == "validate-routing-body":
+        return len(args) == 2 and args[0] == "--task-body" and bool(args[1])
+    if op == "validate-runtime":
+        return len(args) >= 4 and args[0] == "--task-id" and bool(args[1]) and "--workspace-kind" in args
+    if op == "show":
+        return len(args) in {1, 2} and bool(args[0]) and not args[0].startswith("-") and (len(args) == 1 or args[1] == "--json")
+    # create/block/complete are additionally validated and quoted by the wrapper.
+    return bool(args)
 
 
 def _run_git(workspace: str, args: list[str], *, text: bool = False) -> str | bytes:
@@ -206,13 +260,14 @@ def _hardened_parse_claude_argv(profile: str, command: str) -> dict[str, str] | 
 # Patch the implementation functions that all guard lifecycle checks resolve at runtime.
 _guard._workspace_content_state = _hardened_workspace_content_state
 _guard._parse_claude_argv = _hardened_parse_claude_argv
+_guard._runtime_terminal_allowed = _runtime_terminal_allowed
 
 
 def on_pre_tool_call(*args, **kwargs):
     _activate_profile_identity()
     tool_name = kwargs.get("tool_name", args[0] if args else "")
     tool_args = kwargs.get("args", args[1] if len(args) > 1 else None)
-    blocked = _reject_multiline_terminal(tool_name, tool_args)
+    blocked = _reject_unquoted_linebreak(tool_name, tool_args)
     if blocked is not None and os.environ.get("HERMES_PROFILE", "").strip() in _PROTECTED_PROFILES:
         return blocked
     return _guard.on_pre_tool_call(*args, **kwargs)
