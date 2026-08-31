@@ -57,7 +57,7 @@ Body nie potwierdza pól runtime. Każda niezgodność runtime kończy się `RUN
 
 ### 5.1 Runtime controller
 
-`runtime-controller` ma tylko toolset `terminal` i profile-scoped `factory-execution-guards`. `pre_tool_call` przepuszcza wyłącznie pojedynczoliniowe:
+`runtime-controller` ma tylko toolset `terminal` i profile-scoped `factory-execution-guards`. `pre_tool_call` przepuszcza wyłącznie pojedyncze wywołanie wrappera; line break poza quoted argumentem jest odrzucany:
 
 ```text
 ~/.hermes/profiles/runtime-controller/kanban_runtime_cli.sh <allowlisted-op> ...
@@ -65,7 +65,7 @@ Body nie potwierdza pól runtime. Każda niezgodność runtime kończy się `RUN
 
 Allowlist: `create`, `show`, `block`, `complete`, `validate-runtime`, `validate-routed-handoff`, `validate-routing-body`, `validate-routing-live`.
 
-Literal newline/CR, body-independent `validate-handoff`, bezpośrednie `hermes`, Git, Python, curl, file/code tools, shell operators, pipe/chaining i command substitution są mechanicznie blokowane.
+Unquoted literal newline/CR, body-independent `validate-handoff`, bezpośrednie `hermes`, Git, Python, curl, file/code tools, shell operators, pipe/chaining i command substitution są mechanicznie blokowane. Quoted wieloliniowy argument jest dopuszczalny wyłącznie jako pojedynczy argument i nadal podlega dokładnej walidacji argv właściwej operacji.
 
 Pre-create routing używa tylko `validate-routing-body --task-body <exact-body>`. Wszystkie post-create/live walidacje używają `--task-id`; validator sam wykonuje `hermes kanban show <task-id> --json`. Runtime-controller nie może podać, przepisać ani sfabrykować `--actual-json` jako live evidence.
 
@@ -98,7 +98,7 @@ Summary ani profile names przekazane osobno nie są security inputem. Przy `CHAN
 
 ## 7. Claude Code execution boundary
 
-`coder-claude`, `reviewer-claude`, `architect-claude-opus` mają profile-scoped `factory-execution-guards` v0.4.0.
+`coder-claude`, `reviewer-claude`, `architect-claude-opus` mają profile-scoped `factory-execution-guards` v0.5.0.
 
 Outer GPT nie może używać terminala do `find`, Git, Python, grep ani innych helperów. Terminal przyjmuje wyłącznie literalne argv0 `claude`; `./claude`, `/tmp/claude` i alternatywne ścieżki są blokowane.
 
@@ -112,7 +112,7 @@ RUN_ID: <exact-run-id>
 WORKSPACE: <exact-resolved-worktree>
 ```
 
-Substringi/prefiksy/sufiksy i duplikaty nie są akceptowane. Cwd procesu Claude musi być dokładnie resolved worktree.
+Quoted wieloliniowy prompt jest dozwolony, ale newline/CR poza quoted argumentem nadal jest mechanicznie blokowany jako separator shella. Substringi/prefiksy/sufiksy i duplikaty markerów nie są akceptowane. Cwd procesu Claude musi być dokładnie resolved worktree.
 
 Coder tools:
 
