@@ -22,7 +22,7 @@ trap 'rm -rf -- "$snapshot_dir"' EXIT
 snapshot="$snapshot_dir/pins.json"
 
 # Validate the mutable repository manifest/source exactly once and freeze the
-# reviewed source path plus complete pin set into an immutable transaction file.
+# reviewed source path, current pins and explicitly approved predecessor pins.
 PYTHONDONTWRITEBYTECODE=1 python3 - "$ROOT_DIR" "$MANIFEST" "$plugin" "$snapshot" <<'PY'
 import hashlib,json,pathlib,re,sys
 root=pathlib.Path(sys.argv[1]); manifest_path=pathlib.Path(sys.argv[2]); name=sys.argv[3]; out=pathlib.Path(sys.argv[4])
@@ -38,10 +38,19 @@ src=root/expected
 if src.is_symlink() or not src.is_dir(): raise SystemExit(f"ERROR: invalid plugin source root: {name}")
 pins=spec.get("files")
 if not isinstance(pins,dict) or not pins: raise SystemExit(f"ERROR: invalid plugin pin set: {name}")
-for rel,sha in pins.items():
-    p=pathlib.PurePosixPath(rel)
-    if p.is_absolute() or ".." in p.parts or "." in p.parts or not p.parts: raise SystemExit(f"ERROR: invalid plugin relative path: {rel}")
-    if not re.fullmatch(r"[0-9a-f]{40}", str(sha)): raise SystemExit(f"ERROR: invalid plugin blob pin: {rel}")
+
+def validate_pinset(pinset,label):
+    if not isinstance(pinset,dict) or not pinset: raise SystemExit(f"ERROR: invalid {label} pin set: {name}")
+    for rel,sha in pinset.items():
+        p=pathlib.PurePosixPath(rel)
+        if p.is_absolute() or ".." in p.parts or "." in p.parts or not p.parts: raise SystemExit(f"ERROR: invalid plugin relative path: {rel}")
+        if not re.fullmatch(r"[0-9a-f]{40}", str(sha)): raise SystemExit(f"ERROR: invalid plugin blob pin: {rel}")
+validate_pinset(pins,"current")
+replace_from=spec.get("replace_from",[])
+if not isinstance(replace_from,list): raise SystemExit(f"ERROR: invalid replace_from: {name}")
+for i,pinset in enumerate(replace_from):
+    validate_pinset(pinset,f"replace_from[{i}]")
+
 actual_files=[]; actual_dirs=[]
 for path in src.rglob("*"):
     rel=path.relative_to(src).as_posix()
@@ -58,11 +67,24 @@ def blob_sha(data): return hashlib.sha1(b"blob "+str(len(data)).encode()+b"\0"+d
 for rel,expected_sha in sorted(pins.items()):
     got=blob_sha((src/rel).read_bytes())
     if got != expected_sha: raise SystemExit(f"ERROR: plugin blob mismatch: {rel}: {got} != {expected_sha}")
-out.write_text(json.dumps({"plugin":name,"source":str(src),"pins":pins}, sort_keys=True)+"\n")
+out.write_text(json.dumps({"plugin":name,"source":str(src),"pins":pins,"replace_from":replace_from}, sort_keys=True)+"\n")
 PY
 
 src="$(PYTHONDONTWRITEBYTECODE=1 python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["source"])' "$snapshot")"
 target="$DEST/$plugin"
+
+assert_safe_dest_path() {
+  PYTHONDONTWRITEBYTECODE=1 python3 - "$DEST" <<'PY'
+import pathlib,sys
+path=pathlib.Path(sys.argv[1]).expanduser()
+if not path.is_absolute(): raise SystemExit("ERROR: plugin destination must be absolute")
+cur=pathlib.Path(path.anchor)
+for part in path.parts[1:]:
+    cur=cur/part
+    if cur.is_symlink(): raise SystemExit(f"ERROR: symlinked plugin destination component refused: {cur}")
+    if cur.exists() and not cur.is_dir(): raise SystemExit(f"ERROR: non-directory plugin destination component refused: {cur}")
+PY
+}
 
 verify_tree() {
   local root="$1"
@@ -89,6 +111,38 @@ for rel,expected in sorted(pins.items()):
 PY
 }
 
+verify_reviewed_provenance() {
+  local root="$1"
+  PYTHONDONTWRITEBYTECODE=1 python3 - "$snapshot" "$root" <<'PY'
+import hashlib,json,pathlib,sys
+snap=json.load(open(sys.argv[1])); root=pathlib.Path(sys.argv[2])
+if root.is_symlink() or not root.is_dir(): raise SystemExit("ERROR: replacement target missing or symlinked")
+def blob_sha(data): return hashlib.sha1(b"blob "+str(len(data)).encode()+b"\0"+data).hexdigest()
+files=[]
+for path in root.rglob("*"):
+    rel=path.relative_to(root)
+    if path.is_symlink(): raise SystemExit(f"ERROR: replacement target contains symlink: {rel.as_posix()}")
+    # Runtime bytecode noise is the only tolerated non-reviewed material.
+    if "__pycache__" in rel.parts:
+        if path.is_dir(): continue
+        if path.is_file() and path.suffix == ".pyc": continue
+        raise SystemExit(f"ERROR: unexpected runtime noise: {rel.as_posix()}")
+    if path.is_file(): files.append(rel.as_posix())
+    elif not path.is_dir(): raise SystemExit(f"ERROR: non-regular replacement entry: {rel.as_posix()}")
+
+candidates=[snap["pins"],*snap.get("replace_from",[])]
+for pins in candidates:
+    if sorted(files) != sorted(pins): continue
+    ok=True
+    for rel,expected in pins.items():
+        try: got=blob_sha((root/rel).read_bytes())
+        except OSError: ok=False; break
+        if got != expected: ok=False; break
+    if ok: raise SystemExit(0)
+raise SystemExit("ERROR: existing target is not a recognized reviewed version")
+PY
+}
+
 refuse_target_symlink() {
   if [[ -L "$target" ]]; then
     echo "ERROR: installed plugin target is a symlink: $target" >&2
@@ -96,6 +150,7 @@ refuse_target_symlink() {
   fi
 }
 
+assert_safe_dest_path
 if [[ $dry -eq 1 ]]; then
   refuse_target_symlink
   if [[ -e "$target" ]]; then
@@ -103,21 +158,28 @@ if [[ $dry -eq 1 ]]; then
       echo "OK unchanged: $plugin"; echo "FACTORY_PLUGIN_INSTALL_OK"; exit 0
     fi
     [[ $replace_reviewed -eq 1 ]] || { echo "ERROR: existing installed plugin differs: $target" >&2; exit 1; }
+    verify_reviewed_provenance "$target"
     echo "WOULD_REPLACE_REVIEWED: $plugin -> $target"; echo "FACTORY_PLUGIN_INSTALL_OK"; exit 0
   fi
   echo "WOULD_INSTALL: $plugin -> $target"; echo "FACTORY_PLUGIN_INSTALL_OK"; exit 0
 fi
 
 mkdir -p "$DEST"
+assert_safe_dest_path
 command -v flock >/dev/null 2>&1 || { echo "ERROR: flock is required for serialized plugin installation" >&2; exit 1; }
-lock_file="$DEST/.factory-plugin.lock.$plugin"; exec 9>"$lock_file"; flock 9
+# Lock the already-validated destination directory itself. There is no attacker-
+# controlled lock pathname to symlink or truncate.
+exec 9<"$DEST"
+flock 9
+assert_safe_dest_path
 
 refuse_target_symlink
 if [[ -e "$target" ]] && verify_tree "$target" >/dev/null 2>&1; then
   echo "OK unchanged: $plugin"; echo "FACTORY_PLUGIN_INSTALL_OK"; exit 0
 fi
-if [[ -e "$target" && $replace_reviewed -ne 1 ]]; then
-  echo "ERROR: existing installed plugin differs: $target" >&2; exit 1
+if [[ -e "$target" ]]; then
+  [[ $replace_reviewed -eq 1 ]] || { echo "ERROR: existing installed plugin differs: $target" >&2; exit 1; }
+  verify_reviewed_provenance "$target"
 fi
 
 stage="$(mktemp -d "$DEST/.factory-plugin.stage.XXXXXX")"
@@ -132,7 +194,7 @@ rollback() {
     rm -rf -- "$target"
   fi
   if [[ -n "$backup" && -e "$backup" ]]; then
-    mv -- "$backup" "$target"
+    mv -- "$backup" "$target" || { echo "ERROR: rollback failed to restore reviewed target" >&2; exit 1; }
   fi
   if [[ -n "$backup_root" && -d "$backup_root" ]]; then
     rmdir "$backup_root" 2>/dev/null || { echo "ERROR: rollback backup directory not empty: $backup_root" >&2; exit 1; }
@@ -141,8 +203,6 @@ rollback() {
 }
 trap rollback EXIT
 
-# Copy only files named in the frozen snapshot. Re-hash the staged tree against
-# that same snapshot, never against a reopened manifest.
 mapfile -t rels < <(PYTHONDONTWRITEBYTECODE=1 python3 -c 'import json,sys; print(*sorted(json.load(open(sys.argv[1]))["pins"]), sep="\n")' "$snapshot")
 for rel in "${rels[@]}"; do
   mkdir -p "$stage/$(dirname "$rel")"
@@ -150,8 +210,6 @@ for rel in "${rels[@]}"; do
 done
 verify_tree "$stage"
 
-# Arm rollback before moving the old target. The backup and target live under
-# DEST so renames are same-filesystem and serialized by the held lock.
 if [[ -e "$target" ]]; then
   backup_root="$(mktemp -d "$DEST/.factory-plugin.backup.XXXXXX")"
   backup="$backup_root/$plugin"
@@ -161,15 +219,19 @@ mv -- "$stage" "$target"
 published=1
 verify_tree "$target"
 
+# The new target is now committed. Never destroy a valid new target merely
+# because cleanup of the old backup fails; report cleanup failure separately.
+published=0
+trap - EXIT
 if [[ -n "$backup" ]]; then
-  rm -rf -- "$backup"
-  rmdir "$backup_root"
+  if ! rm -rf -- "$backup" || ! rmdir "$backup_root"; then
+    echo "ERROR: reviewed plugin installed, but old backup cleanup failed: $backup_root" >&2
+    exit 1
+  fi
   backup=""; backup_root=""
   echo "REPLACED_REVIEWED: $plugin"
 else
   echo "INSTALLED: $plugin"
 fi
-published=0
-trap - EXIT
 rm -rf -- "$snapshot_dir"
 echo "FACTORY_PLUGIN_INSTALL_OK"
