@@ -45,6 +45,8 @@ grep -Fq 'SECURITY_REVIEW_MODEL="gpt-5.6-sol"' "${BOOTSTRAP}"
 grep -Fq 'remove_profile_keys "${profile}" fallback_model model.fallback_model' "${BOOTSTRAP}"
 grep -Fq 'expect_profile_keys_absent reviewer-gpt fallback_model model.fallback_model' "${BOOTSTRAP}"
 grep -Fq 'expect_config reviewer-gpt fallback_providers' "${BOOTSTRAP}"
+grep -Fq 'CONFIG_KEY_REMOVER=' "${RUNTIME_BOOTSTRAP}"
+grep -Fq 'fallback_model model.fallback_model' "${RUNTIME_BOOTSTRAP}"
 
 printf '[check] transactional reviewed plugin upgrade\n'
 grep -Fq 'verify_reviewed_provenance' "${PLUGIN_INSTALLER}"
@@ -77,8 +79,8 @@ grep -Fq 'validate-routing-body' "${GUARD_ENTRY}"
 grep -Fq 'validate-routing-live' "${GUARD_ENTRY}"
 if grep -Fq '"validate-handoff"' "${GUARD_ENTRY}"; then echo 'ERROR: legacy handoff remains in effective runtime allowlist' >&2; exit 1; fi
 
-printf '[check] sealed Claude execution/evidence boundary\n'
-grep -Fq 'version: 0.4.0' "${GUARD_MANIFEST}"
+printf '[check] sealed Claude execution/evidence boundary v0.5.0\n'
+grep -Fq 'version: 0.5.0' "${GUARD_MANIFEST}"
 grep -Fq '_CODER_TOOLS = "Read,Write,Edit,Glob,Grep"' "${GUARD_ENTRY}"
 grep -Fq '_READONLY_TOOLS = "Read,Glob,Grep"' "${GUARD_ENTRY}"
 grep -Fq '_REQUIRED_BOOL_FLAGS = frozenset({"--safe-mode"})' "${GUARD_ENTRY}"
@@ -117,4 +119,4 @@ printf '[check] guard adversarial unit tests\n'
 (cd "${ROOT_DIR}" && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -q hermes.test_factory_execution_guards hermes.test_factory_execution_guard_profile_resolution)
 
 if command -v shellcheck >/dev/null 2>&1; then shellcheck "${BOOTSTRAP}" "${RUNTIME_BOOTSTRAP}" "${PLUGIN_INSTALLER}" "$0"; else echo '[info] shellcheck nie jest zainstalowany; pomijam'; fi
-printf 'OK: statyczna weryfikacja bootstrapu i sealed execution guards zakończona\n'
+printf 'OK: statyczna weryfikacja bootstrapu i sealed execution guards v0.5.0 zakończona\n'
