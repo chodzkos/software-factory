@@ -53,6 +53,7 @@ Profile Claude nie udają natywnego Anthropica w Hermesie. Outer Hermes koordynu
 - reviewer-claude i architect-claude-opus wymagają `--permission-mode plan` i dokładnych `Read,Glob,Grep`,
 - odrzuca `./claude`, `/tmp/claude`, duplicate/unknown flags, permission bypass, settings/MCP/plugin/resume/worktree/debug/fallback,
 - prompt musi zawierać dokładnie po jednej osobnej linii `TASK_ID: ...`, `RUN_ID: ...`, `WORKSPACE: ...`, a cwd Claude musi być exact resolved worktree,
+- quoted multiline prompt jest dozwolony; newline/CR poza shell quotes jest blokowany przed wykonaniem jako separator poleceń,
 - przed Claude runem guard tworzy losowy in-process attestation i zapisuje Git HEAD + content-state digest,
 - content-state digest obejmuje staged diff oraz raw bytes/mode/symlink target wszystkich tracked i untracked paths; `assume-unchanged`/`skip-worktree` nie ukrywają tracked pliku,
 - evidence schema v5 wiąże task/run/profile, resolved workspace, Claude session, command hash, Claude binary path+SHA-256, Git HEAD/content-state before/after oraz attestation ID,
@@ -63,7 +64,7 @@ Brak Claude CLI/OAuth/skilla/evidence oznacza blocked; nie ma hidden fallbacku.
 
 ## Runtime controller
 
-`runtime-controller` ma tylko toolset `terminal`; `pre_tool_call` przepuszcza wyłącznie pojedynczoliniowe:
+`runtime-controller` ma tylko toolset `terminal`; `pre_tool_call` przepuszcza wyłącznie pojedyncze wywołanie wrappera:
 
 ```text
 ~/.hermes/profiles/runtime-controller/kanban_runtime_cli.sh <allowlisted-op> ...
@@ -71,7 +72,7 @@ Brak Claude CLI/OAuth/skilla/evidence oznacza blocked; nie ma hidden fallbacku.
 
 Operacje: `create`, `show`, `block`, `complete`, `validate-runtime`, `validate-routed-handoff`, `validate-routing-body`, `validate-routing-live`.
 
-Literal newline/CR i shell separators są blokowane. Body-independent `validate-handoff` został usunięty.
+Unquoted literal newline/CR i shell separators są blokowane. Quoted multiline argument pozostaje pojedynczym argv i nadal podlega walidacji konkretnej operacji. Body-independent `validate-handoff` został usunięty.
 
 Pre-create routing może sprawdzić przekazany body przez `validate-routing-body`. Po create wszystkie security-relevant live walidacje przyjmują **task ID**, nie JSON snapshot:
 
