@@ -16,7 +16,7 @@ _PROTECTED_PROFILES = frozenset({
     "architect-claude-opus",
 })
 _CLAUDE_PROFILES = frozenset({"coder-claude", "reviewer-claude", "architect-claude-opus"})
-_CODER_TOOLS = "Read,Write,Edit,Glob,Grep"
+_CODER_READ_TOOLS = "Read,Glob,Grep"
 _READONLY_TOOLS = "Read,Glob,Grep"
 _REQUIRED_BOOL_FLAGS = frozenset({"--safe-mode"})
 _VALUE_FLAGS = frozenset({
@@ -35,7 +35,7 @@ _RUNTIME_OPS = frozenset({
 
 # Keep the underlying guard's constants synchronized with the hardened entrypoint.
 _guard.RUNTIME_OPS = _RUNTIME_OPS
-_guard.CODER_CLAUDE_TOOLS = _CODER_TOOLS
+_guard.CODER_CLAUDE_TOOLS = _CODER_READ_TOOLS
 _guard.READONLY_CLAUDE_TOOLS = _READONLY_TOOLS
 
 
@@ -57,12 +57,7 @@ def _activate_profile_identity() -> None:
 
 
 def _has_unquoted_linebreak(command: str) -> bool:
-    """Reject shell line separators while allowing newlines inside quoted arguments.
-
-    Claude prompts intentionally contain literal newlines inside the quoted `-p`
-    argument. A newline outside quotes is a shell command separator and must fail
-    closed. Backslash-newline outside quotes is also rejected conservatively.
-    """
+    """Reject shell line separators while allowing newlines inside quoted arguments."""
     quote = ""
     escaped = False
     for char in command:
@@ -117,7 +112,6 @@ def _runtime_terminal_allowed(command: str) -> bool:
         return len(args) >= 4 and args[0] == "--task-id" and bool(args[1]) and "--workspace-kind" in args
     if op == "show":
         return len(args) in {1, 2} and bool(args[0]) and not args[0].startswith("-") and (len(args) == 1 or args[1] == "--json")
-    # create/block/complete are additionally validated and quoted by the wrapper.
     return bool(args)
 
 
@@ -133,20 +127,16 @@ def _run_git(workspace: str, args: list[str], *, text: bool = False) -> str | by
 
 
 def _hardened_workspace_content_state(workspace: str) -> tuple[str, str] | None:
-    """Hash HEAD, staged bytes, and every tracked/untracked worktree path.
-
-    `git ls-files -c` enumerates cached tracked paths even when assume-unchanged or
-    skip-worktree suppress normal status output, closing that attestation bypass.
-    """
+    """Hash HEAD, staged bytes, and every tracked/untracked path, including ignored paths."""
     try:
         root = Path(workspace).resolve(strict=True)
         head = str(_run_git(str(root), ["rev-parse", "HEAD"], text=True)).strip()
         staged = bytes(_run_git(
             str(root), ["diff", "--cached", "--binary", "--no-ext-diff", "--no-textconv", "HEAD", "--"]
         ))
-        raw_paths = bytes(_run_git(
-            str(root), ["ls-files", "-c", "-o", "--exclude-standard", "-z"]
-        ))
+        # Deliberately omit --exclude-standard: ignored untracked files are security-relevant
+        # workspace state too and must invalidate schema-v5 evidence when they change.
+        raw_paths = bytes(_run_git(str(root), ["ls-files", "-c", "-o", "-z"]))
     except (OSError, subprocess.SubprocessError):
         return None
     if len(head) != 40 or any(ch not in "0123456789abcdef" for ch in head.lower()):
@@ -184,6 +174,18 @@ def _exact_marker(prompt: str, name: str, value: str) -> bool:
     return sum(1 for line in prompt.splitlines() if line == target) == 1
 
 
+def _claude_edit_rule(workspace: str) -> str:
+    """Return Claude Code absolute permission rule confining all built-in edits to workspace."""
+    if not workspace.startswith("/") or any(ch in workspace for ch in "\r\n"):
+        raise ValueError("invalid workspace for Claude edit rule")
+    # Claude permission syntax uses // for filesystem-absolute Edit rules.
+    return f"Edit(/{workspace}/**)"
+
+
+def _coder_tools(workspace: str) -> str:
+    return f"{_CODER_READ_TOOLS},{_claude_edit_rule(workspace)}"
+
+
 def _hardened_parse_claude_argv(profile: str, command: str) -> dict[str, str] | None:
     try:
         tokens = _guard._shell_tokens(command)
@@ -217,15 +219,6 @@ def _hardened_parse_claude_argv(profile: str, command: str) -> dict[str, str] | 
     prompt_flags = [flag for flag in ("-p", "--print") if flag in values]
     if len(prompt_flags) != 1:
         return None
-    expected_model = "opus" if profile == "architect-claude-opus" else "sonnet"
-    if values.get("--model") != expected_model or values.get("--output-format") != "json":
-        return None
-    expected_tools = _CODER_TOOLS if profile == "coder-claude" else _READONLY_TOOLS
-    if values.get("--allowedTools") != expected_tools:
-        return None
-    expected_mode = "acceptEdits" if profile == "coder-claude" else "plan"
-    if values.get("--permission-mode") != expected_mode:
-        return None
 
     task_id = _guard._task_id()
     run_id = _guard._run_id()
@@ -237,6 +230,20 @@ def _hardened_parse_claude_argv(profile: str, command: str) -> dict[str, str] | 
             return None
     except OSError:
         return None
+
+    expected_model = "opus" if profile == "architect-claude-opus" else "sonnet"
+    if values.get("--model") != expected_model or values.get("--output-format") != "json":
+        return None
+    try:
+        expected_tools = _coder_tools(workspace) if profile == "coder-claude" else _READONLY_TOOLS
+    except ValueError:
+        return None
+    if values.get("--allowedTools") != expected_tools:
+        return None
+    expected_mode = "dontAsk" if profile == "coder-claude" else "plan"
+    if values.get("--permission-mode") != expected_mode:
+        return None
+
     prompt = values[prompt_flags[0]]
     if not _exact_marker(prompt, "TASK_ID", task_id):
         return None
@@ -257,7 +264,6 @@ def _hardened_parse_claude_argv(profile: str, command: str) -> dict[str, str] | 
     return values
 
 
-# Patch the implementation functions that all guard lifecycle checks resolve at runtime.
 _guard._workspace_content_state = _hardened_workspace_content_state
 _guard._parse_claude_argv = _hardened_parse_claude_argv
 _guard._runtime_terminal_allowed = _runtime_terminal_allowed
