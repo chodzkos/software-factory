@@ -19,9 +19,21 @@
       "activation_status": "reviewed-ready",
       "files": {
         "plugin.yaml": "a179b118c5481942504f8ab7932a8bd9cbd05dca",
-        "__init__.py": "80be85634dee187f056243d6124aaa3458c160f5",
+        "__init__.py": "75d9a2a47769a6f9f87db62ff6093a14d9cbc477",
         "guard.py": "fb2109da908740b63d62ba7951b38ef44505c905"
-      }
+      },
+      "replace_from": [
+        {
+          "plugin.yaml": "a179b118c5481942504f8ab7932a8bd9cbd05dca",
+          "__init__.py": "80be85634dee187f056243d6124aaa3458c160f5",
+          "guard.py": "fb2109da908740b63d62ba7951b38ef44505c905"
+        },
+        {
+          "plugin.yaml": "a179b118c5481942504f8ab7932a8bd9cbd05dca",
+          "__init__.py": "eaf8c5095223e1bda52f0a2d707e72e4c608b9ed",
+          "guard.py": "fb2109da908740b63d62ba7951b38ef44505c905"
+        }
+      ]
     }
   }
 }
