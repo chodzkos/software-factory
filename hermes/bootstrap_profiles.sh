@@ -7,6 +7,7 @@ STANDARD_SRC="${ROOT_DIR}/standards/SOFTWARE_DEVELOPMENT_STANDARD.md"
 PLUGIN_INSTALLER="${ROOT_DIR}/hermes/install_factory_plugins.sh"
 ANALYST_BOOTSTRAP="${ROOT_DIR}/hermes/bootstrap_repository_analyst_isolation.sh"
 ANALYST_VERIFY="${ROOT_DIR}/hermes/verify_repository_analyst_isolation.sh"
+CONFIG_KEY_REMOVER="${ROOT_DIR}/hermes/remove_profile_config_keys.py"
 EXECUTION_GUARD="factory-execution-guards"
 PRIMARY_PROFILE="${PRIMARY_PROFILE:-default}"
 DISPATCHER_PROFILE="${DISPATCHER_PROFILE:-default}"
@@ -43,13 +44,30 @@ declare -A descriptions=(
 )
 
 command -v hermes >/dev/null 2>&1 || { echo "ERROR: hermes not found in PATH" >&2; exit 1; }
-for required in "${STANDARD_SRC}" "${PLUGIN_INSTALLER}" "${ANALYST_BOOTSTRAP}" "${ANALYST_VERIFY}"; do
+for required in "${STANDARD_SRC}" "${PLUGIN_INSTALLER}" "${ANALYST_BOOTSTRAP}" "${ANALYST_VERIFY}" "${CONFIG_KEY_REMOVER}"; do
   [[ -f "${required}" ]] || { echo "ERROR: missing ${required}" >&2; exit 1; }
 done
 
 profile_exists() { local name="$1"; [[ -d "${PROFILE_ROOT}/${name}" ]]; }
 get_config() { local profile="$1" key="$2"; hermes -p "${profile}" config get "${key}" 2>/dev/null | tail -n 1 | tr -d '\r'; }
 expect_config() { local profile="$1" key="$2" expected="$3" actual; actual="$(get_config "${profile}" "${key}")"; [[ "${actual}" == "${expected}" ]] || { echo "ERROR: ${profile}:${key} expected '${expected}', got '${actual}'" >&2; exit 1; }; }
+remove_profile_keys() {
+  local profile="$1"; shift
+  PYTHONDONTWRITEBYTECODE=1 python3 "${CONFIG_KEY_REMOVER}" "${PROFILE_ROOT}/${profile}/config.yaml" "$@"
+}
+expect_profile_keys_absent() {
+  local profile="$1"; shift
+  PYTHONDONTWRITEBYTECODE=1 python3 - "${PROFILE_ROOT}/${profile}/config.yaml" "$@" <<'PY'
+import pathlib,sys,yaml
+path=pathlib.Path(sys.argv[1]); data=yaml.safe_load(path.read_text()) or {}
+for dotted in sys.argv[2:]:
+    cur=data; found=True
+    for part in dotted.split('.'):
+        if not isinstance(cur,dict) or part not in cur: found=False; break
+        cur=cur[part]
+    if found: raise SystemExit(f"ERROR: inherited config key remains: {dotted}")
+PY
+}
 install_profile_soul() {
   local profile="$1" soul_src="${ROOT_DIR}/hermes/profiles/${profile}/SOUL.md"
   [[ -f "${soul_src}" ]] || return 0
@@ -71,8 +89,6 @@ primary_provider="$(get_config "${PRIMARY_PROFILE}" model.provider)"; primary_mo
 [[ -n "${primary_provider}" && -n "${primary_model}" ]] || { echo "ERROR: PRIMARY_PROFILE='${PRIMARY_PROFILE}' has no usable model config" >&2; exit 1; }
 if [[ "${ALLOW_NON_GPT_PRIMARY}" != "1" && ! "${primary_model}" =~ [Gg][Pp][Tt] ]]; then echo "ERROR: PRIMARY_PROFILE='${PRIMARY_PROFILE}' uses non-GPT model '${primary_model}'" >&2; exit 1; fi
 
-# The mandatory security reviewer is not derived from PRIMARY_PROFILE and is not
-# affected by ALLOW_NON_GPT_PRIMARY.
 echo "Security reviewer pin: ${SECURITY_REVIEW_PROVIDER}/${SECURITY_REVIEW_MODEL}"
 echo "Primary profile: ${PRIMARY_PROFILE} -> ${primary_provider}/${primary_model}"
 echo "Dispatcher profile: ${DISPATCHER_PROFILE}"
@@ -83,6 +99,9 @@ echo "Ox policy: disabled and removed from active Software Factory routing"; ech
 for profile in "${profiles[@]}"; do
   if profile_exists "${profile}"; then echo "[exists] ${profile}"; else echo "[create] ${profile}"; hermes profile create "${profile}" --clone-from "${PRIMARY_PROFILE}" --description "${descriptions[$profile]}"; fi
   install_profile_soul "${profile}"
+  # Hermes 0.20.4 merges the legacy fallback_model key into the effective
+  # fallback chain even when fallback_providers is empty. Remove it physically.
+  remove_profile_keys "${profile}" fallback_model model.fallback_model
   hermes -p "${profile}" config set tool_loop_guardrails.hard_stop_enabled true
   hermes -p "${profile}" config set agent.tool_use_enforcement auto
 done
@@ -109,6 +128,9 @@ hermes -p reviewer-gpt config set --force factory.execution_backend native-opena
 
 if profile_exists auditor-ox; then
   echo "[legacy] disabling auditor-ox inference"
+  # Remove inherited dormant capability/fallback state rather than merely hiding it
+  # behind disabled toolsets/provider values.
+  remove_profile_keys auditor-ox fallback_model model.fallback_model mcp_servers API_SERVER_ENABLED API_SERVER_KEY api_server_enabled api_server_key
   hermes -p auditor-ox config set model.provider disabled-legacy
   hermes -p auditor-ox config set model.default disabled-legacy
   hermes -p auditor-ox config set --force factory.execution_backend disabled-legacy
@@ -132,6 +154,8 @@ hermes -p "${DISPATCHER_PROFILE}" config set kanban.default_assignee routing-sin
 
 expect_config reviewer-gpt model.provider "${SECURITY_REVIEW_PROVIDER}"
 expect_config reviewer-gpt model.default "${SECURITY_REVIEW_MODEL}"
+expect_config reviewer-gpt fallback_providers '[]'
+expect_profile_keys_absent reviewer-gpt fallback_model model.fallback_model
 expect_config reviewer-gpt factory.execution_backend native-openai
 expect_config coder factory.execution_backend native-openai
 expect_config coder-claude factory.execution_backend claude-code; expect_config coder-claude factory.claude_model_class sonnet
@@ -141,12 +165,16 @@ expect_config critic model.provider "${GROK_PROVIDER}"; expect_config critic mod
 expect_config task-decomposer model.default "${GEMINI_MODEL}"; expect_config quick-reviewer model.default "${GEMINI_MODEL}"; expect_config docs model.default "${GEMINI_MODEL}"; expect_config repository-analyst model.default "${primary_model}"
 expect_config coder worktree "false"; expect_config coder worktree_sync "false"; expect_config coder-claude worktree "false"; expect_config coder-claude worktree_sync "false"
 expect_config "${DISPATCHER_PROFILE}" kanban.orchestrator_profile orchestrator; expect_config "${DISPATCHER_PROFILE}" kanban.default_assignee routing-sink
-if profile_exists auditor-ox; then expect_config auditor-ox model.provider disabled-legacy; expect_config auditor-ox model.default disabled-legacy; expect_config auditor-ox factory.execution_backend disabled-legacy; expect_config auditor-ox fallback_providers '[]'; fi
+if profile_exists auditor-ox; then
+  expect_config auditor-ox model.provider disabled-legacy
+  expect_config auditor-ox model.default disabled-legacy
+  expect_config auditor-ox factory.execution_backend disabled-legacy
+  expect_config auditor-ox fallback_providers '[]'
+  expect_profile_keys_absent auditor-ox fallback_model model.fallback_model mcp_servers API_SERVER_ENABLED API_SERVER_KEY api_server_enabled api_server_key
+fi
 
 [[ -f "${PROFILE_ROOT}/orchestrator/SOUL.md" ]] && grep -Fq '# Software Development Standard — wstrzyknięty kontekst runtime' "${PROFILE_ROOT}/orchestrator/SOUL.md" || { echo "ERROR: orchestrator did not receive injected Standard" >&2; exit 1; }
 
-# Fresh deployments must end with the repository-analyst capability cut over to
-# its reviewed profile-scoped plugin, not inherited primary-profile tools.
 PYTHONDONTWRITEBYTECODE=1 bash "${ANALYST_BOOTSTRAP}"
 PYTHONDONTWRITEBYTECODE=1 bash "${ANALYST_VERIFY}" --live
 
