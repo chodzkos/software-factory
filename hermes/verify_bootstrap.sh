@@ -39,8 +39,8 @@ grep -Fq 'CLAUDE_DEEP_MODEL="opus"' "${BOOTSTRAP}"
 if grep -Eq 'CLAUDE_(SKILL|NORMAL_MODEL|DEEP_MODEL)="\$\{' "${BOOTSTRAP}"; then echo 'ERROR: Claude backend/model policy must not be environment-overridable' >&2; exit 1; fi
 for profile in coder-claude reviewer-claude architect-claude-opus; do grep -Fq "install_execution_guard \"\${profile}\"" "${BOOTSTRAP}"; done
 for soul in "${CODER_CLAUDE_SOUL}" "${REVIEWER_CLAUDE_SOUL}" "${ARCHITECT_CLAUDE_SOUL}"; do grep -Fq -- '--safe-mode' "${soul}"; grep -Fq 'TASK_ID:' "${soul}"; grep -Fq 'RUN_ID:' "${soul}"; grep -Fq 'WORKSPACE:' "${soul}"; done
-grep -Fq -- '--permission-mode acceptEdits' "${CODER_CLAUDE_SOUL}"
-grep -Fq -- "--allowedTools 'Read,Write,Edit,Glob,Grep'" "${CODER_CLAUDE_SOUL}"
+grep -Fq -- '--permission-mode dontAsk' "${CODER_CLAUDE_SOUL}"
+grep -Fq 'Edit(//<exact-resolved-worktree>/**)' "${CODER_CLAUDE_SOUL}"
 for soul in "${REVIEWER_CLAUDE_SOUL}" "${ARCHITECT_CLAUDE_SOUL}"; do grep -Fq -- '--permission-mode plan' "${soul}"; grep -Fq -- "--allowedTools 'Read,Glob,Grep'" "${soul}"; done
 if grep -Fq 'Bash(' "${CODER_CLAUDE_SOUL}"; then echo 'ERROR: coder-claude must not receive Bash after hardening' >&2; exit 1; fi
 
@@ -87,16 +87,18 @@ grep -Fq 'validate-routing-body' "${GUARD_ENTRY}"
 grep -Fq 'validate-routing-live' "${GUARD_ENTRY}"
 if grep -Fq '"validate-handoff"' "${GUARD_ENTRY}"; then echo 'ERROR: legacy handoff remains in effective runtime allowlist' >&2; exit 1; fi
 
-printf '[check] sealed Claude execution/evidence boundary v0.5.0\n'
-grep -Fq 'version: 0.5.0' "${GUARD_MANIFEST}"
-grep -Fq '_CODER_TOOLS = "Read,Write,Edit,Glob,Grep"' "${GUARD_ENTRY}"
+printf '[check] sealed Claude execution/evidence boundary v0.6.0\n'
+grep -Fq 'version: 0.6.0' "${GUARD_MANIFEST}"
+grep -Fq '_CODER_READ_TOOLS = "Read,Glob,Grep"' "${GUARD_ENTRY}"
+grep -Fq 'return f"Edit(/{workspace}/**)"' "${GUARD_ENTRY}"
+grep -Fq 'expected_mode = "dontAsk" if profile == "coder-claude" else "plan"' "${GUARD_ENTRY}"
 grep -Fq '_READONLY_TOOLS = "Read,Glob,Grep"' "${GUARD_ENTRY}"
 grep -Fq '_REQUIRED_BOOL_FLAGS = frozenset({"--safe-mode"})' "${GUARD_ENTRY}"
-grep -Fq 'expected_mode = "acceptEdits" if profile == "coder-claude" else "plan"' "${GUARD_ENTRY}"
 grep -Fq '_exact_marker(prompt, "TASK_ID", task_id)' "${GUARD_ENTRY}"
 grep -Fq '_exact_marker(prompt, "RUN_ID", run_id)' "${GUARD_ENTRY}"
 grep -Fq '_exact_marker(prompt, "WORKSPACE", workspace)' "${GUARD_ENTRY}"
-grep -Fq 'ls-files", "-c", "-o"' "${GUARD_ENTRY}"
+grep -Fq '["ls-files", "-c", "-o", "-z"]' "${GUARD_ENTRY}"
+if grep -Fq 'ls-files", "-c", "-o", "--exclude-standard"' "${GUARD_ENTRY}"; then echo 'ERROR: ignored untracked paths are excluded from attestation' >&2; exit 1; fi
 grep -Fq '_guard._workspace_content_state = _hardened_workspace_content_state' "${GUARD_ENTRY}"
 grep -Fq '_guard._parse_claude_argv = _hardened_parse_claude_argv' "${GUARD_ENTRY}"
 grep -Fq '_PENDING_ATTESTATIONS' "${GUARD}"
@@ -127,4 +129,4 @@ printf '[check] guard adversarial unit tests\n'
 (cd "${ROOT_DIR}" && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -q hermes.test_factory_execution_guards hermes.test_factory_execution_guard_profile_resolution)
 
 if command -v shellcheck >/dev/null 2>&1; then shellcheck "${BOOTSTRAP}" "${RUNTIME_BOOTSTRAP}" "${PLUGIN_INSTALLER}" "$0"; else echo '[info] shellcheck nie jest zainstalowany; pomijam'; fi
-printf 'OK: statyczna weryfikacja bootstrapu i sealed execution guards v0.5.0 zakończona\n'
+printf 'OK: statyczna weryfikacja bootstrapu i sealed execution guards v0.6.0 zakończona\n'
