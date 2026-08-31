@@ -24,7 +24,12 @@ ARCHITECT_CLAUDE_SOUL="${ROOT_DIR}/hermes/profiles/architect-claude-opus/SOUL.md
 
 printf '[check] syntax and required sources\n'
 bash -n "${BOOTSTRAP}" "${RUNTIME_BOOTSTRAP}" "${PLUGIN_INSTALLER}" "${ANALYST_BOOTSTRAP}" "${ANALYST_VERIFY}"
-PYTHONDONTWRITEBYTECODE=1 python3 -m py_compile "${CONFIG_KEY_REMOVER}"
+PYTHONDONTWRITEBYTECODE=1 python3 - "${CONFIG_KEY_REMOVER}" <<'PY'
+from pathlib import Path
+import sys
+path = Path(sys.argv[1])
+compile(path.read_text(encoding='utf-8'), str(path), 'exec')
+PY
 for path in "${STANDARD}" "${MODEL_POLICY}" "${MODEL_ROUTING}" "${GUARD}" "${GUARD_ENTRY}" "${GUARD_MANIFEST}" "${PLUGIN_MANIFEST}" "${GUARD_TESTS}" "${GUARD_PROFILE_TESTS}" "${PLUGIN_INSTALLER}"; do test -f "${path}"; done
 
 printf '[check] pinned Claude policy and clean invocation mode\n'
