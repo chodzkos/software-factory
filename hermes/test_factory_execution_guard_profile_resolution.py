@@ -63,11 +63,11 @@ class ProfileResolutionTests(unittest.TestCase):
             PLUGIN._activate_profile_identity()
             self.assertEqual(os.environ.get("HERMES_PROFILE"), "coder-claude")
 
-    def test_multiline_terminal_is_fail_closed_before_shell_parser(self):
+    def test_unquoted_linebreak_is_fail_closed_before_shell_parser(self):
         with patch.dict(os.environ, self._env(HERMES_PROFILE="runtime-controller"), clear=False):
             result=PLUGIN.on_pre_tool_call(tool_name="terminal", args={"command":"echo ok\nid"})
         self.assertEqual(result and result.get("action"), "block")
-        self.assertIn("multiline", result.get("message", ""))
+        self.assertIn("unquoted terminal line break", result.get("message", ""))
 
     def _canonical_command(self, profile: str, workspace: str) -> str:
         model="opus" if profile == "architect-claude-opus" else "sonnet"
