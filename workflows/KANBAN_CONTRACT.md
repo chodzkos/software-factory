@@ -98,11 +98,11 @@ Summary ani profile names przekazane osobno nie są security inputem. Przy `CHAN
 
 ## 7. Claude Code execution boundary
 
-`coder-claude`, `reviewer-claude`, `architect-claude-opus` mają profile-scoped `factory-execution-guards` v0.5.0.
+`coder-claude`, `reviewer-claude`, `architect-claude-opus` mają profile-scoped `factory-execution-guards` v0.6.0.
 
 Outer GPT nie może używać terminala do `find`, Git, Python, grep ani innych helperów. Terminal przyjmuje wyłącznie literalne argv0 `claude`; `./claude`, `/tmp/claude` i alternatywne ścieżki są blokowane.
 
-Każdy Claude invocation musi zawierać `--safe-mode`, aby wyłączyć project/user `CLAUDE.md`, hooks, plugins, skills i MCP. Coder wymaga `--permission-mode acceptEdits`; reviewer/architect wymagają `--permission-mode plan`.
+Każdy Claude invocation musi zawierać `--safe-mode`, aby wyłączyć project/user `CLAUDE.md`, hooks, plugins, skills i MCP. Coder wymaga `--permission-mode dontAsk`; reviewer/architect wymagają `--permission-mode plan`.
 
 Prompt musi zawierać dokładnie po jednej osobnej linii:
 
@@ -114,13 +114,13 @@ WORKSPACE: <exact-resolved-worktree>
 
 Quoted wieloliniowy prompt jest dozwolony, ale newline/CR poza quoted argumentem nadal jest mechanicznie blokowany jako separator shella. Substringi/prefiksy/sufiksy i duplikaty markerów nie są akceptowane. Cwd procesu Claude musi być dokładnie resolved worktree.
 
-Coder tools:
+Coder permissions są wyliczane z resolved worktree i muszą mieć dokładnie postać:
 
 ```text
-Read,Write,Edit,Glob,Grep
+Read,Glob,Grep,Edit(//<exact-resolved-worktree>/**)
 ```
 
-Coder nie otrzymuje ogólnego `Bash`, Python ani Git. Shell-based testy/static gates są wykonywane jako osobny kontrolowany etap po implementacji, a nie przez Claude Code implementera.
+Nie ma szerokiego `Write` ani szerokiego `Edit`. `dontAsk` powoduje, że modyfikacja niepasująca do workspace-scoped `Edit(...)` jest odrzucana zamiast pytania o rozszerzenie uprawnień. Coder nie otrzymuje ogólnego `Bash`, Python ani Git. Shell-based testy/static gates są wykonywane jako osobny kontrolowany etap po implementacji, a nie przez Claude Code implementera.
 
 Reviewer/architect exact read-only tools:
 
@@ -134,7 +134,7 @@ Reviewer/architect mają dodatkowo `--permission-mode plan`; nie otrzymują `Bas
 
 Przed canonical Claude run `pre_tool_call` tworzy losowy nonce wyłącznie w pamięci worker process i wiąże go z task/run/profile, resolved workspace, command hash, Claude binary path+SHA-256, Git HEAD oraz content-state digest przed wykonaniem.
 
-Content-state digest obejmuje staged diff oraz raw bytes/mode/symlink target **wszystkich tracked i untracked paths**. Tracked paths są enumerowane z Git index niezależnie od status hints, więc `assume-unchanged` i `skip-worktree` nie ukrywają ich przed digestem. Deleted paths również są reprezentowane.
+Content-state digest obejmuje staged diff oraz raw bytes/mode/symlink target **wszystkich tracked i untracked paths, także Git-ignored untracked paths**. Tracked paths są enumerowane z Git index niezależnie od status hints, więc `assume-unchanged` i `skip-worktree` nie ukrywają ich przed digestem, a `.gitignore` nie wyłącza lokalnej zawartości workspace z attestation. Deleted paths również są reprezentowane.
 
 `post_tool_call` wystawia evidence tylko dla matching pending attestation i successful Claude JSON result. Evidence schema v5 zapisuje także Git HEAD/content-state po wykonaniu oraz attestation ID wyprowadzony z in-memory nonce.
 
