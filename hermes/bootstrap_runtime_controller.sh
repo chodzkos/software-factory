@@ -11,10 +11,11 @@ WRAPPER_SRC="${ROOT_DIR}/hermes/kanban_runtime_cli.sh"
 VALIDATOR_SRC="${ROOT_DIR}/hermes/kanban_runtime_contract.py"
 MODEL_ROUTING_SRC="${ROOT_DIR}/hermes/model_routing_policy.py"
 PLUGIN_INSTALLER="${ROOT_DIR}/hermes/install_factory_plugins.sh"
+CONFIG_KEY_REMOVER="${ROOT_DIR}/hermes/remove_profile_config_keys.py"
 EXECUTION_GUARD="factory-execution-guards"
 
 command -v hermes >/dev/null 2>&1 || { echo "ERROR: hermes not found in PATH" >&2; exit 1; }
-for path in "${SOUL_SRC}" "${WRAPPER_SRC}" "${VALIDATOR_SRC}" "${MODEL_ROUTING_SRC}" "${PLUGIN_INSTALLER}"; do test -f "${path}" || { echo "ERROR: missing ${path}" >&2; exit 1; }; done
+for path in "${SOUL_SRC}" "${WRAPPER_SRC}" "${VALIDATOR_SRC}" "${MODEL_ROUTING_SRC}" "${PLUGIN_INSTALLER}" "${CONFIG_KEY_REMOVER}"; do test -f "${path}" || { echo "ERROR: missing ${path}" >&2; exit 1; }; done
 
 primary_provider="$(hermes -p "${PRIMARY_PROFILE}" config get model.provider 2>/dev/null | tail -n 1 | tr -d '\r')"
 primary_model="$(hermes -p "${PRIMARY_PROFILE}" config get model.default 2>/dev/null | tail -n 1 | tr -d '\r')"
@@ -34,6 +35,7 @@ hermes -p "${PROFILE}" plugins doctor "${EXECUTION_GUARD}" >/dev/null
 hermes -p "${PROFILE}" config set model.provider "${primary_provider}"
 hermes -p "${PROFILE}" config set model.default "${primary_model}"
 hermes -p "${PROFILE}" config set fallback_providers '[]'
+PYTHONDONTWRITEBYTECODE=1 python3 "${CONFIG_KEY_REMOVER}" "${PROFILE_DIR}/config.yaml" fallback_model model.fallback_model
 hermes -p "${PROFILE}" config set tool_loop_guardrails.hard_stop_enabled true
 hermes -p "${PROFILE}" config set agent.tool_use_enforcement auto
 hermes -p "${PROFILE}" config set toolsets '["terminal"]'
@@ -52,6 +54,14 @@ expect fallback_providers '[]'
 expect worktree 'false'
 expect worktree_sync 'false'
 expect tools.tool_search.enabled 'off'
+PYTHONDONTWRITEBYTECODE=1 python3 - "${PROFILE_DIR}/config.yaml" <<'PY'
+import pathlib, sys, yaml
+p=pathlib.Path(sys.argv[1]); data=yaml.safe_load(p.read_text()) or {}
+for key in ("fallback_model",):
+    if key in data: raise SystemExit(f"ERROR: legacy key remains: {key}")
+model=data.get("model") or {}
+if isinstance(model, dict) and "fallback_model" in model: raise SystemExit("ERROR: legacy model.fallback_model remains")
+PY
 
 toolsets_actual="$(get_config_full toolsets)"
 [[ "${toolsets_actual}" == *"terminal"* ]] || { echo "ERROR: ${PROFILE}:toolsets missing terminal, got '${toolsets_actual}'" >&2; exit 1; }
