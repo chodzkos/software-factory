@@ -27,9 +27,10 @@ WORKSPACE = "/tmp"
 CONTENT_STATE = ("1" * 40, "2" * 64)
 PROMPT = f"TASK_ID: t_guard\nRUN_ID: 77\nWORKSPACE: {WORKSPACE}\nPerform the assigned implementation."
 REVIEW_PROMPT = f"TASK_ID: t_guard\nRUN_ID: 77\nWORKSPACE: {WORKSPACE}\nReview the assigned change."
+CODER_TOOLS = PLUGIN._coder_tools(WORKSPACE)
 CODER_CMD = (
     f"claude -p '{PROMPT}' --model sonnet --output-format json --safe-mode "
-    f"--permission-mode acceptEdits --allowedTools '{PLUGIN._CODER_TOOLS}' --max-turns 2"
+    f"--permission-mode dontAsk --allowedTools '{CODER_TOOLS}' --max-turns 2"
 )
 REVIEW_CMD = (
     f"claude -p '{REVIEW_PROMPT}' --model sonnet --output-format json --safe-mode "
@@ -112,7 +113,8 @@ class ExecutionGuardTests(unittest.TestCase):
                     blocked = self._call(profile, "terminal", {"command": command})
                     self.assertEqual(blocked and blocked.get("action"), "block")
 
-    def test_coder_claude_requires_hardened_canonical_command_schema(self):
+    def test_coder_claude_requires_workspace_scoped_edit_schema(self):
+        self.assertEqual(CODER_TOOLS, "Read,Glob,Grep,Edit(//tmp/**)")
         self.assertIsNone(self._call("coder-claude", "terminal", {"command": CODER_CMD}))
         bad_commands = (
             CODER_CMD.replace("--model sonnet", "--model opus"),
@@ -120,9 +122,11 @@ class ExecutionGuardTests(unittest.TestCase):
             CODER_CMD.replace("claude ", "/tmp/claude ", 1),
             CODER_CMD + " --model opus",
             CODER_CMD.replace(" --safe-mode", ""),
-            CODER_CMD.replace("--permission-mode acceptEdits", "--permission-mode bypassPermissions"),
-            CODER_CMD.replace(f" --allowedTools '{PLUGIN._CODER_TOOLS}'", ""),
-            CODER_CMD.replace(PLUGIN._CODER_TOOLS, PLUGIN._CODER_TOOLS + ",Bash"),
+            CODER_CMD.replace("--permission-mode dontAsk", "--permission-mode acceptEdits"),
+            CODER_CMD.replace(f" --allowedTools '{CODER_TOOLS}'", ""),
+            CODER_CMD.replace(CODER_TOOLS, "Read,Write,Edit,Glob,Grep"),
+            CODER_CMD.replace(CODER_TOOLS, "Read,Glob,Grep,Edit(//tmp-other/**)"),
+            CODER_CMD.replace(CODER_TOOLS, CODER_TOOLS + ",Bash"),
             CODER_CMD + " --dangerously-skip-permissions",
             CODER_CMD + " --settings /tmp/settings.json",
             CODER_CMD + " --resume previous",
