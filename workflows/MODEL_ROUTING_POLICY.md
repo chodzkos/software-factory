@@ -120,7 +120,7 @@ RUN_ID: <exact-run-id>
 WORKSPACE: <exact-resolved-worktree>
 ```
 
-The Claude process cwd must equal the resolved worktree.
+Quoted multiline prompt arguments are allowed so those exact markers can remain separate lines; newline/CR outside shell quotes is rejected before execution as a command separator. The Claude process cwd must equal the resolved worktree.
 
 `coder-claude` exact tools:
 
@@ -152,7 +152,7 @@ A durable JSON file alone cannot unlock lifecycle. `kanban_request_review` / Cla
 
 `runtime-controller` has profile-scoped execution guards, only the terminal toolset, and can execute only installed `kanban_runtime_cli.sh` operations: `create`, `show`, `block`, `complete`, `validate-runtime`, `validate-routed-handoff`, `validate-routing-body`, `validate-routing-live`.
 
-Literal newline/CR, direct `hermes`, Git, Python, curl, file tools, shell operators and command substitution are blocked. Live validators accept task IDs, not caller-supplied snapshot bytes.
+Unquoted literal newline/CR, direct `hermes`, Git, Python, curl, file tools, shell operators and command substitution are blocked. Quoted multiline values remain single argv items and are still validated by the per-operation schema. Live validators accept task IDs, not caller-supplied snapshot bytes.
 
 ## 9. Plugin supply-chain transaction
 
