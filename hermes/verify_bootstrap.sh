@@ -13,11 +13,12 @@ MODEL_ROUTING="${ROOT_DIR}/hermes/model_routing_policy.py"
 GUARD="${ROOT_DIR}/hermes/plugins/factory-execution-guards/guard.py"
 GUARD_MANIFEST="${ROOT_DIR}/hermes/plugins/factory-execution-guards/plugin.yaml"
 GUARD_TESTS="${ROOT_DIR}/hermes/test_factory_execution_guards.py"
+GUARD_PROFILE_TESTS="${ROOT_DIR}/hermes/test_factory_execution_guard_profile_resolution.py"
 ORCHESTRATOR_SOUL="${ROOT_DIR}/hermes/profiles/orchestrator/SOUL.md"
 
 printf '[check] syntax and required sources\n'
 bash -n "${BOOTSTRAP}" "${RUNTIME_BOOTSTRAP}" "${PLUGIN_INSTALLER}" "${ANALYST_BOOTSTRAP}" "${ANALYST_VERIFY}"
-for path in "${STANDARD}" "${MODEL_POLICY}" "${MODEL_ROUTING}" "${GUARD}" "${GUARD_MANIFEST}" "${GUARD_TESTS}" "${PLUGIN_INSTALLER}"; do test -f "${path}"; done
+for path in "${STANDARD}" "${MODEL_POLICY}" "${MODEL_ROUTING}" "${GUARD}" "${GUARD_MANIFEST}" "${GUARD_TESTS}" "${GUARD_PROFILE_TESTS}" "${PLUGIN_INSTALLER}"; do test -f "${path}"; done
 
 printf '[check] pinned Claude policy\n'
 grep -Fq 'CLAUDE_SKILL="claude-code"' "${BOOTSTRAP}"
@@ -109,7 +110,7 @@ grep -Fq 'Nie masz terminala' "${ORCHESTRATOR_SOUL}"
 grep -Fq 'SECURITY_SENSITIVE: yes' "${ORCHESTRATOR_SOUL}"
 
 printf '[check] guard adversarial unit tests\n'
-(cd "${ROOT_DIR}" && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -q hermes.test_factory_execution_guards)
+(cd "${ROOT_DIR}" && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -q hermes.test_factory_execution_guards hermes.test_factory_execution_guard_profile_resolution)
 
 if command -v shellcheck >/dev/null 2>&1; then shellcheck "${BOOTSTRAP}" "${RUNTIME_BOOTSTRAP}" "${PLUGIN_INSTALLER}" "$0"; else echo '[info] shellcheck nie jest zainstalowany; pomijam'; fi
 printf 'OK: statyczna weryfikacja bootstrapu i sealed execution guards zakończona\n'
