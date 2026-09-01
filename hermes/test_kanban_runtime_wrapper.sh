@@ -51,6 +51,25 @@ do
   [[ ! -e "${HERMES_FAKE_LOG}" ]] || { echo "ERROR: unsafe operation invoked hermes: ${bad}" >&2; exit 1; }
 done
 
+# Targeted reviewer dispatch accepts exactly: dispatch-review --task-id <id>.
+# These malformed forms must fail before the wrapper attempts its pinned-Python helper.
+for bad in \
+  "dispatch-review" \
+  "dispatch-review --task-id" \
+  "dispatch-review --task-id --evil" \
+  "dispatch-review --task-id t_live extra" \
+  "dispatch-review --actual-json {}" \
+  "dispatch-review t_live"
+do
+  rm -f "${HERMES_FAKE_LOG}"
+  set +e
+  bash "${WRAPPER}" ${bad} >/dev/null 2>&1
+  rc=$?
+  set -e
+  [[ "${rc}" -eq 2 ]] || { echo "ERROR: malformed targeted dispatch unexpectedly accepted: ${bad}" >&2; exit 1; }
+  [[ ! -e "${HERMES_FAKE_LOG}" ]] || { echo "ERROR: malformed targeted dispatch invoked hermes: ${bad}" >&2; exit 1; }
+done
+
 NORMAL_BODY=$'## Task Contract\nTYPE: feature\nRISK: medium\nSECURITY_SENSITIVE: no\nASSIGNEE: coder\nREPOSITORY: owner/repo\nWORKSPACE: worktree:/repo\nIMPLEMENTER: coder\nREQUIRED_REVIEWERS: reviewer-claude\nOPTIONAL_REVIEWERS: none\nREQUIRED_EVIDENCE: tests\nACCEPTANCE_CRITERIA:\n- works\n'
 routing_body_ok="$(bash "${WRAPPER}" validate-routing-body --task-body "${NORMAL_BODY}")"
 [[ "${routing_body_ok}" == "MODEL_ROUTING_OK" ]] || { echo "ERROR: expected MODEL_ROUTING_OK, got ${routing_body_ok}" >&2; exit 1; }
@@ -75,4 +94,4 @@ set -e
 [[ "${rc}" -eq 2 ]]
 [[ "${routing_bad}" == MODEL_ROUTING_DRIFT:*anthropic_security_reviewer_forbidden* ]]
 
-printf 'OK: scoped runtime wrapper binds live validation to internal kanban show\n'
+printf 'OK: scoped runtime wrapper binds live validation to internal kanban show and seals targeted review dispatch\n'
