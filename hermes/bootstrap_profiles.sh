@@ -69,7 +69,8 @@ for dotted in sys.argv[2:]:
 PY
 }
 install_profile_soul() {
-  local profile="$1" soul_src="${ROOT_DIR}/hermes/profiles/${profile}/SOUL.md"
+  local profile="$1"
+  local soul_src="${ROOT_DIR}/hermes/profiles/${profile}/SOUL.md"
   [[ -f "${soul_src}" ]] || return 0
   if [[ "${profile}" != "orchestrator" ]]; then install -m 0644 "${soul_src}" "${PROFILE_ROOT}/${profile}/SOUL.md"; return 0; fi
   local tmp; tmp="$(mktemp)"
@@ -77,7 +78,8 @@ install_profile_soul() {
   install -m 0644 "${tmp}" "${PROFILE_ROOT}/${profile}/SOUL.md"; rm -f "${tmp}"
 }
 install_execution_guard() {
-  local profile="$1" dest="${PROFILE_ROOT}/${profile}/plugins"
+  local profile="$1"
+  local dest="${PROFILE_ROOT}/${profile}/plugins"
   HERMES_PLUGINS_DIR="${dest}" PYTHONDONTWRITEBYTECODE=1 bash "${PLUGIN_INSTALLER}" --plugin "${EXECUTION_GUARD}" --replace-reviewed
   hermes -p "${profile}" plugins enable "${EXECUTION_GUARD}" --no-allow-tool-override
   hermes -p "${profile}" plugins doctor "${EXECUTION_GUARD}" >/dev/null
