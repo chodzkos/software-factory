@@ -31,6 +31,7 @@ _RUNTIME_OPS = frozenset({
     "validate-routed-handoff",
     "validate-routing-body",
     "validate-routing-live",
+    "dispatch-review",
 })
 
 # Keep the underlying guard's constants synchronized with the hardened entrypoint.
@@ -104,7 +105,7 @@ def _runtime_terminal_allowed(command: str) -> bool:
     args = tokens[2:]
     if "--actual-json" in args:
         return False
-    if op in {"validate-routing-live", "validate-routed-handoff"}:
+    if op in {"validate-routing-live", "validate-routed-handoff", "dispatch-review"}:
         return len(args) == 2 and args[0] == "--task-id" and bool(args[1]) and not args[1].startswith("-")
     if op == "validate-routing-body":
         return len(args) == 2 and args[0] == "--task-body" and bool(args[1])
