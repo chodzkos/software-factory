@@ -126,7 +126,14 @@ ACCEPTANCE_CRITERIA:
 
 
 class TargetedReviewDispatchTests(unittest.TestCase):
-    def _fixture(self, *, status="review", auto_review=False, fail_spawn=False):
+    def _fixture(
+        self,
+        *,
+        status="review",
+        auto_review=False,
+        fail_spawn=False,
+        current_run_id=None,
+    ):
         td = tempfile.TemporaryDirectory()
         root = Path(td.name)
         repo = root / "repo"
@@ -141,7 +148,7 @@ class TargetedReviewDispatchTests(unittest.TestCase):
             workspace_kind="worktree",
             workspace_path=str(worktree),
             branch_name="e2e/t_live",
-            current_run_id=17,
+            current_run_id=current_run_id,
             skills=[],
         )
         kb = FakeKanbanDB(
@@ -180,6 +187,15 @@ class TargetedReviewDispatchTests(unittest.TestCase):
 
     def test_refuses_state_drift_before_claim(self):
         td, snap, kb = self._fixture(status="running")
+        self.addCleanup(td.cleanup)
+        with patch.object(dispatch, "_assert_expected_hermes_version", return_value=None):
+            rc = dispatch.dispatch_review("t_live", snapshot=snap, kb=kb)
+        self.assertEqual(rc, 2)
+        self.assertEqual(kb.claimed_ids, [])
+        self.assertEqual(kb.spawned, [])
+
+    def test_refuses_active_run_before_review_claim(self):
+        td, snap, kb = self._fixture(current_run_id=99)
         self.addCleanup(td.cleanup)
         with patch.object(dispatch, "_assert_expected_hermes_version", return_value=None):
             rc = dispatch.dispatch_review("t_live", snapshot=snap, kb=kb)
