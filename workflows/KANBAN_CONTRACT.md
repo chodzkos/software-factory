@@ -7,6 +7,7 @@ Ten dokument doprecyzowuje `standards/SOFTWARE_DEVELOPMENT_STANDARD.md` dla Soft
 - `kanban.auto_decompose=false`; dekompozycję wykonuje `task-decomposer`.
 - Każdy task ma jawnego `assignee`; nierozpoznany routing trafia do `routing-sink`.
 - `kanban.auto_subscribe_on_create=true`.
+- `kanban.review_dispatch=false`; Hermes 0.20.4 nie może automatycznie claimować kart z `review`, ponieważ provenance-bound routed-handoff gate musi wykonać się przed reviewer runem. Reviewer jest uruchamiany dopiero przez targetowane `runtime-controller dispatch-review --task-id <task-id>` po zielonych walidacjach.
 - Orchestrator koordynuje, ale nie implementuje i nie wykonuje independent review.
 - Mechaniczne operacje wymagające CLI wykonuje `runtime-controller`; orchestrator nie ma terminala.
 
@@ -63,11 +64,13 @@ Body nie potwierdza pól runtime. Każda niezgodność runtime kończy się `RUN
 ~/.hermes/profiles/runtime-controller/kanban_runtime_cli.sh <allowlisted-op> ...
 ```
 
-Allowlist: `create`, `show`, `block`, `complete`, `validate-runtime`, `validate-routed-handoff`, `validate-routing-body`, `validate-routing-live`.
+Allowlist: `create`, `show`, `block`, `complete`, `validate-runtime`, `validate-routed-handoff`, `validate-routing-body`, `validate-routing-live`, `dispatch-review`.
+
+`dispatch-review` ma wyłącznie postać `dispatch-review --task-id <task-id>`. Nie istnieje board-globalny dispatch review w chronionym runtime surface.
 
 Unquoted literal newline/CR, body-independent `validate-handoff`, bezpośrednie `hermes`, Git, Python, curl, file/code tools, shell operators, pipe/chaining i command substitution są mechanicznie blokowane. Quoted wieloliniowy argument jest dopuszczalny wyłącznie jako pojedynczy argument i nadal podlega dokładnej walidacji argv właściwej operacji.
 
-Pre-create routing używa tylko `validate-routing-body --task-body <exact-body>`. Wszystkie post-create/live walidacje używają `--task-id`; validator sam wykonuje `hermes kanban show <task-id> --json`. Runtime-controller nie może podać, przepisać ani sfabrykować `--actual-json` jako live evidence.
+Pre-create routing używa tylko `validate-routing-body --task-body <exact-body>`. Wszystkie post-create/live walidacje oraz targeted dispatch przyjmują `--task-id`; live state jest pobierany autorytatywnie. Runtime-controller nie może podać, przepisać ani sfabrykować `--actual-json` jako live evidence.
 
 ### 5.2 Sticky parent quarantine
 
@@ -83,14 +86,21 @@ Gate waliduje co najmniej `assignee`, `workspace_kind`, create-time `workspace_p
 
 Po claimie Hermes materializuje worktree. Implementer kończy run przez native `review_requested`; karta przechodzi do `status=review`, reviewer assignee i zachowuje ten sam resolved worktree.
 
-Przed dispatch review runtime-controller wykonuje:
+Software Factory utrzymuje `kanban.review_dispatch=false`, aby gateway Hermesa 0.20.4 nie przeszedł `review -> running` przed wykonaniem gate. Nie wolno chwilowo włączać auto-dispatchu ani używać board-globalnego `hermes kanban dispatch` do uruchomienia reviewera.
+
+Przed dispatch review runtime-controller wykonuje kolejno:
 
 ```text
 validate-routing-live --task-id <task-id>
 validate-routed-handoff --task-id <task-id>
+dispatch-review --task-id <task-id>
 ```
 
-Oba validate live state pobierają snapshot samodzielnie przez `hermes kanban show <task-id> --json` i używają strict duplicate-key decodera. Caller-supplied JSON nie jest security inputem.
+Pierwsze dwa kroki muszą zwrócić PASS przed trzecim. `dispatch-review` nie ufa wcześniejszemu wynikowi tekstowemu: ponownie pobiera i strict-decodes live task, ponownie wykonuje routed-handoff validation, sprawdza brak globalnego review auto-dispatchu, a następnie przez API Hermesa 0.20.4 atomowo claimuje **wyłącznie wskazany task** `review -> running`, zachowuje ten sam worktree, dodaje `sdlc-review` i uruchamia już wybranego assignee reviewera. Helper jest jawnie przypięty do Hermesa 0.20.4 i ma fail-closed przy brakujących/zmienionych private primitives.
+
+Targeted dispatcher przed claimem ponownie porównuje live `status`, reviewer assignee, `workspace_kind/path`, implementer `current_run_id` oraz task body z wcześniej zweryfikowanym snapshotem. Jeśli w tym oknie stan się zmieni, claim nie następuje. Sam `claim_review_task` ma dodatkowo atomowy CAS `status=review`.
+
+Live walidacje pobierają snapshot samodzielnie przez `hermes kanban show <task-id> --json` i używają strict duplicate-key decodera. Caller-supplied JSON nie jest security inputem.
 
 `validate-routed-handoff` wyprowadza implementera/reviewera wyłącznie z live body i wymaga: dokładnie jednego reviewera, `status=review`, właściwego `task.assignee`, dokładnie jednego `WORKSPACE: worktree:<base-repo>`, istniejący kanoniczny live workspace dokładnie `<base-repo>/.worktrees/<task-id>` bez `.`/`..`/duplicate separator/symlink escape, najnowszy `review_requested` z mandatory prawdziwym integer `run_id` (JSON boolean jest odrzucany), latest implementer run `outcome=review_requested` z tym samym ID oraz run metadata zawierającą exact `task_id` i exact resolved workspace.
 
@@ -98,7 +108,7 @@ Summary ani profile names przekazane osobno nie są security inputem. Przy `CHAN
 
 ## 7. Claude Code execution boundary
 
-`coder-claude`, `reviewer-claude`, `architect-claude-opus` mają profile-scoped `factory-execution-guards` v0.6.0.
+`coder-claude`, `reviewer-claude`, `architect-claude-opus` mają profile-scoped `factory-execution-guards` v0.7.0. Wersja 0.7.0 zachowuje v0.6.0 Claude confinement/content-attestation i rozszerza chroniony runtime-controller surface wyłącznie o exact targeted `dispatch-review --task-id <task-id>`.
 
 Outer GPT nie może używać terminala do `find`, Git, Python, grep ani innych helperów. Terminal przyjmuje wyłącznie literalne argv0 `claude`; `./claude`, `/tmp/claude` i alternatywne ścieżki są blokowane.
 
@@ -170,15 +180,15 @@ Reviewer kończy dokładnie jedną linią `DECISION: APPROVE` albo `DECISION: CH
 
 Normal feature:
 
-`repository-analyst? → architect? → task-decomposer → runtime-controller gate → coder|coder-claude → exact cross-vendor reviewer → required audits/evidence → release-manager? → done`
+`repository-analyst? → architect? → task-decomposer → runtime-controller create/runtime gate → coder|coder-claude → review_requested → runtime-controller routed-handoff gate → targeted exact reviewer dispatch → required audits/evidence → release-manager? → done`
 
 Security-sensitive feature:
 
-`repository-analyst → architect? → task-decomposer → runtime-controller gate → coder-claude → pinned reviewer-gpt → required security evidence/audits → release-manager → done`
+`repository-analyst → architect? → task-decomposer → runtime-controller create/runtime gate → coder-claude → review_requested → runtime-controller routed-handoff gate → targeted reviewer-gpt dispatch → required security evidence/audits → release-manager → done`
 
 ## 14. Deployment
 
-Canonical profile bootstrap zawiera repository-analyst isolation. Po merge:
+Canonical profile bootstrap zawiera repository-analyst isolation i ustawia `kanban.review_dispatch=false` na dispatcher profile. Po merge:
 
 ```bash
 PRIMARY_PROFILE=default DISPATCHER_PROFILE=default bash hermes/bootstrap_profiles.sh
