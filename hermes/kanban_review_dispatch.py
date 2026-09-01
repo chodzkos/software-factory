@@ -156,7 +156,13 @@ def dispatch_review(task_id: str, *, snapshot: Mapping[str, Any] | None = None, 
                 )
             if current.workspace_path != expected_workspace:
                 drift.append("review_workspace_changed_after_validation")
-            if current.current_run_id != expected_implementer_run:
+            # Hermes 0.20.4 closes the implementer run when request_review moves
+            # the card to review, so the canonical pre-review-claim state has
+            # current_run_id=None.  The implementer identity is already bound by
+            # validate_routed_review_handoff() to the latest review_requested
+            # event/run.  Any non-None current_run_id here means a new active run
+            # appeared after that validation and must fail closed.
+            if current.current_run_id is not None:
                 drift.append("implementer_run_changed_after_validation")
             if current.body != task_snapshot.get("body"):
                 drift.append("task_body_changed_after_validation")
