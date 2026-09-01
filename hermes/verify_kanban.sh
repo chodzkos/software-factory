@@ -11,12 +11,13 @@ MODEL_ROUTING="${ROOT_DIR}/hermes/model_routing_policy.py"
 REVIEW_DISPATCHER="${ROOT_DIR}/hermes/kanban_review_dispatch.py"
 RUNTIME_WRAPPER="${ROOT_DIR}/hermes/kanban_runtime_cli.sh"
 RUNTIME_WRAPPER_TEST="${ROOT_DIR}/hermes/test_kanban_runtime_wrapper.sh"
+PYTHON_BINDING_TEST="${ROOT_DIR}/hermes/test_kanban_runtime_python_binding.sh"
 REVIEW_DISPATCH_TEST="${ROOT_DIR}/hermes/test_kanban_review_dispatch.py"
 TARGETED_GUARD_TEST="${ROOT_DIR}/hermes/test_targeted_review_dispatch_guard.py"
 BOOTSTRAP_VERIFY="${ROOT_DIR}/hermes/verify_bootstrap.sh"
 
 printf '[check] bash syntax\n'
-bash -n "${CONFIGURE}" "${RUNTIME_WRAPPER}" "${RUNTIME_WRAPPER_TEST}"
+bash -n "${CONFIGURE}" "${RUNTIME_WRAPPER}" "${RUNTIME_WRAPPER_TEST}" "${PYTHON_BINDING_TEST}"
 
 printf '[check] dispatcher policy\n'
 grep -Fq 'config set kanban.auto_decompose false' "${CONFIGURE}"
@@ -64,6 +65,9 @@ if grep -Fq 'sub.add_parser("handoff")' "${RUNTIME_VALIDATOR}"; then echo 'ERROR
 printf '[check] gated targeted review dispatch\n'
 grep -Fq 'dispatch-review --task-id <task-id>' "${RUNTIME_WRAPPER}"
 grep -Fq 'REVIEW_DISPATCHER=' "${RUNTIME_WRAPPER}"
+grep -Fq 'resolve_python_from_bash_launcher' "${RUNTIME_WRAPPER}"
+grep -Fq "-I -c 'import hermes_cli'" "${RUNTIME_WRAPPER}"
+grep -Fq 'hermes-agent/venv/bin/python' "${RUNTIME_WRAPPER}"
 grep -Fq '_EXPECTED_HERMES_VERSION = "0.20.4"' "${REVIEW_DISPATCHER}"
 grep -Fq 'if kb.review_dispatch_enabled()' "${REVIEW_DISPATCHER}"
 grep -Fq 'validate_routed_review_handoff(live)' "${REVIEW_DISPATCHER}"
@@ -79,6 +83,8 @@ grep -Fq 'exec hermes kanban create "$@"' "${RUNTIME_WRAPPER}"
 grep -Fq 'block reason must not contain flag-shaped operands' "${RUNTIME_WRAPPER}"
 if grep -Fq 'eval ' "${RUNTIME_WRAPPER}"; then echo 'ERROR: runtime wrapper must not use eval' >&2; exit 1; fi
 PYTHONDONTWRITEBYTECODE=1 bash "${RUNTIME_WRAPPER_TEST}"
+printf '[check] Hermes Python launcher binding regression\n'
+PYTHONDONTWRITEBYTECODE=1 bash "${PYTHON_BINDING_TEST}"
 
 printf '[check] python syntax\n'
 PYTHONDONTWRITEBYTECODE=1 python3 - "${PARSER}" "${RUNTIME_VALIDATOR}" "${MODEL_ROUTING}" "${REVIEW_DISPATCHER}" "${REVIEW_DISPATCH_TEST}" "${TARGETED_GUARD_TEST}" <<'PY'
