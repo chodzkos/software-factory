@@ -66,7 +66,7 @@ printf '[check] gated targeted review dispatch\n'
 grep -Fq 'dispatch-review --task-id <task-id>' "${RUNTIME_WRAPPER}"
 grep -Fq 'REVIEW_DISPATCHER=' "${RUNTIME_WRAPPER}"
 grep -Fq 'resolve_python_from_bash_launcher' "${RUNTIME_WRAPPER}"
-grep -Fq "-I -c 'import hermes_cli'" "${RUNTIME_WRAPPER}"
+grep -Fq -- "-I -c 'import hermes_cli'" "${RUNTIME_WRAPPER}"
 grep -Fq 'hermes-agent/venv/bin/python' "${RUNTIME_WRAPPER}"
 grep -Fq '_EXPECTED_HERMES_VERSION = "0.20.4"' "${REVIEW_DISPATCHER}"
 grep -Fq 'if kb.review_dispatch_enabled()' "${REVIEW_DISPATCHER}"
