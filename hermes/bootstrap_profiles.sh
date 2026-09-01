@@ -153,6 +153,10 @@ hermes -p orchestrator config set agent.disabled_toolsets '["terminal","file","c
 hermes -p routing-sink config set agent.disabled_toolsets '["terminal","file","code_execution","web","browser","image_gen","delegation","computer_use","cronjob"]'
 hermes -p "${DISPATCHER_PROFILE}" config set kanban.orchestrator_profile orchestrator
 hermes -p "${DISPATCHER_PROFILE}" config set kanban.default_assignee routing-sink
+# Hermes 0.20.4 auto-claims review rows by default. Disable that global lane so
+# the provenance-bound runtime-controller handoff gate always runs before the
+# exact task is dispatched by dispatch-review.
+hermes -p "${DISPATCHER_PROFILE}" config set kanban.review_dispatch false
 
 expect_config reviewer-gpt model.provider "${SECURITY_REVIEW_PROVIDER}"
 expect_config reviewer-gpt model.default "${SECURITY_REVIEW_MODEL}"
@@ -167,6 +171,7 @@ expect_config critic model.provider "${GROK_PROVIDER}"; expect_config critic mod
 expect_config task-decomposer model.default "${GEMINI_MODEL}"; expect_config quick-reviewer model.default "${GEMINI_MODEL}"; expect_config docs model.default "${GEMINI_MODEL}"; expect_config repository-analyst model.default "${primary_model}"
 expect_config coder worktree "false"; expect_config coder worktree_sync "false"; expect_config coder-claude worktree "false"; expect_config coder-claude worktree_sync "false"
 expect_config "${DISPATCHER_PROFILE}" kanban.orchestrator_profile orchestrator; expect_config "${DISPATCHER_PROFILE}" kanban.default_assignee routing-sink
+expect_config "${DISPATCHER_PROFILE}" kanban.review_dispatch false
 if profile_exists auditor-ox; then
   expect_config auditor-ox model.provider disabled-legacy
   expect_config auditor-ox model.default disabled-legacy
