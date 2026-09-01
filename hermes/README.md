@@ -44,19 +44,22 @@ Reviewer set musi być dokładny. Security reviewer jest przypięty do OpenAI, `
 
 Profile Claude nie udają natywnego Anthropica w Hermesie. Outer Hermes koordynuje, ale właściwa praca musi przejść przez `claude-code`.
 
-`factory-execution-guards` v0.7.0 zachowuje v0.6.0 Claude confinement/content-attestation i dodaje wyłącznie chroniony targeted review dispatch runtime-controllera:
+`factory-execution-guards` v0.8.0 zachowuje v0.7.0 same-card targeted review dispatch oraz v0.6.0 Claude confinement/content-attestation i wzmacnia ich granice bezpieczeństwa:
 
 - blokuje direct outer-GPT write/patch/code execution,
 - terminal outer GPT pozwala wyłącznie na literalne `claude`; żaden `find`, Git, Python, grep ani inny helper binary nie jest dopuszczony,
 - każda delegacja wymaga `--safe-mode`, który wyłącza project/user `CLAUDE.md`, hooks, plugins, skills i MCP bez wyłączania OAuth,
 - coder wymaga `--permission-mode dontAsk` i dokładnych permission rules `Read,Glob,Grep,Edit(//<exact-resolved-worktree>/**)`; szerokie `Write`/`Edit`, Bash/Python/Git są zabronione,
+- resolved workspace musi należeć do małego przenośnego alfabetu bez przecinków, nawiasów, globów ani innych separatorów składni Claude permissions; niebezpieczna ścieżka jest odrzucana przed zbudowaniem `allowedTools`,
 - workspace-scoped `Edit(...)` jest mechanicznie wyliczany przez guard z resolved Kanban workspace; write poza worktree nie powinien przejść ani poprosić o rozszerzenie uprawnień,
 - reviewer-claude i architect-claude-opus wymagają `--permission-mode plan` i dokładnych `Read,Glob,Grep`,
 - odrzuca `./claude`, `/tmp/claude`, duplicate/unknown flags, permission bypass, settings/MCP/plugin/resume/worktree/debug/fallback,
 - prompt musi zawierać dokładnie po jednej osobnej linii `TASK_ID: ...`, `RUN_ID: ...`, `WORKSPACE: ...`, a cwd Claude musi być exact resolved worktree,
 - quoted multiline prompt jest dozwolony; newline/CR poza shell quotes jest blokowany przed wykonaniem jako separator poleceń,
 - przed Claude runem guard tworzy losowy in-process attestation i zapisuje Git HEAD + content-state digest,
-- content-state digest obejmuje staged diff oraz raw bytes/mode/symlink target wszystkich tracked i untracked paths, **także Git-ignored untracked**; `assume-unchanged`/`skip-worktree`/`.gitignore` nie ukrywają workspace content,
+- Git dla attestation jest wybierany z platformowego domyślnego PATH i uruchamiany z minimalnym, oczyszczonym środowiskiem; odziedziczone `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, config injection i worker PATH nie mogą przekierować pomiaru do innego repo,
+- content-state digest używa domenowo rozdzielonych, długościowo ramkowanych pól i osobnych hashy rekordów; obejmuje staged diff oraz bytes digest/mode/symlink target wszystkich tracked i untracked paths, **także Git-ignored untracked**,
+- regular files są otwierane bez podążania za symlinkiem, a stat przed/po odczycie wykrywa zmianę pliku podczas pomiaru,
 - evidence schema v5 wiąże task/run/profile, resolved workspace, Claude session, command hash, Claude binary path+SHA-256, Git HEAD/content-state before/after oraz attestation ID,
 - sam plik evidence nie odblokowuje lifecycle: wymagany jest też completed attestation nadal obecny w pamięci tego samego worker process,
 - zmiana zawartości workspace, HEAD, resolved workspace albo Claude binary po evidence unieważnia handoff/completion; rozpoczęcie kolejnego Claude command również unieważnia poprzedni attestation.
@@ -86,7 +89,11 @@ validate-runtime --task-id <task-id> ...
 
 Validator sam wykonuje `hermes kanban show <task-id> --json` i strict-decodes wynik. Model/runtime-controller nie może sfabrykować `--actual-json` jako live evidence.
 
-Software Factory wymusza `kanban.review_dispatch=false`. Po native `review_requested` karta pozostaje w `review`, dopóki runtime-controller nie uzyska `MODEL_ROUTING_OK` i `RUNTIME_CONTRACT_OK`. Dopiero wtedy `dispatch-review --task-id <id>` ponownie weryfikuje live handoff, wymaga wyłączonego globalnego review auto-dispatchu i atomowo claimuje wyłącznie wskazaną kartę przez mechanizm Hermesa 0.20.4. Nie istnieje chroniona operacja board-globalnego review dispatchu.
+Software Factory wymusza `kanban.review_dispatch=false`. Po native `review_requested` karta pozostaje w `review`, dopóki runtime-controller nie uzyska `MODEL_ROUTING_OK` i `RUNTIME_CONTRACT_OK`. Dopiero wtedy `dispatch-review --task-id <id>` ponownie weryfikuje live handoff i wymaga wyłączonego globalnego review auto-dispatchu.
+
+W v0.8.0 finalny odczyt task/event/run oraz natywny `claim_review_task` wykonują się pod jednym `BEGIN IMMEDIATE`. Wewnętrzna transakcja Hermesa jest bezpiecznie mapowana na savepoint, a wynik claimu jest ponownie sprawdzany przed commit. Assignee, body, branch, skills, worktree i provenance nie mogą zmienić się między walidacją i utworzeniem reviewer runu; spawn używa wyłącznie obiektu zwróconego przez atomowo zatwierdzony claim.
+
+Wrapper wyprowadza dokładny Hermes-managed Python ze zweryfikowanego launchera, a przed uruchomieniem helpera czyści `PYTHONPATH`, `PYTHONHOME`, `PYTHONSTARTUP` i `PYTHONINSPECT` oraz używa `-E -s`. Nie istnieje chroniona operacja board-globalnego review dispatchu.
 
 Targeted helper jest jawnie przypięty do Hermesa 0.20.4; brak oczekiwanych private primitives albo inna wersja kończy się fail-closed. Review worker zachowuje dokładnie ten sam worktree i otrzymuje `sdlc-review` tak jak natywny review lane Hermesa.
 
@@ -101,7 +108,9 @@ bootstrap_repository_analyst_isolation.sh
 verify_repository_analyst_isolation.sh --live
 ```
 
-Fresh deployment nie może pozostawić `repository-analyst` z szerokim surface odziedziczonym z primary profile. Re-run bootstrapu może zastąpić tylko exact current lub jawnie zatwierdzone reviewed predecessor bytes; runtime `__pycache__/*.pyc` jest jedynym tolerowanym noise.
+Fresh deployment nie może pozostawić `repository-analyst` z szerokim surface odziedziczonym z primary profile. Bootstrap usuwa odziedziczone `plugins.enabled`, `plugins.disabled` i `plugins.entries`, po czym ustawia dokładny allowlist jednego pluginu `factory-repository-readonly`, pusty disabled set i dokładnie jeden fail-closed entry z `allow_tool_override=false`. Zarówno effective config, jak i fizyczny YAML są sprawdzane dokładnie.
+
+Re-run bootstrapu może zastąpić tylko exact current lub jawnie zatwierdzone reviewed predecessor bytes; runtime `__pycache__/*.pyc` jest jedynym tolerowanym noise.
 
 ## Integrity skills
 
