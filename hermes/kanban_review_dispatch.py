@@ -90,9 +90,10 @@ def _load_kanban_db():
         "get_current_board",
         "get_task",
         "claim_review_task",
-        "resolve_workspace",
         "set_workspace_path",
+        "set_branch_name",
         "review_dispatch_enabled",
+        "_resolve_worktree_workspace",
         "_default_spawn",
         "_set_worker_pid",
         "_fire_worker_spawned_hook",
@@ -179,7 +180,10 @@ def dispatch_review(task_id: str, *, snapshot: Mapping[str, Any] | None = None, 
             return 2
 
         try:
-            workspace = kb.resolve_workspace(claimed, board=board)
+            workspace, resolved_branch_name = kb._resolve_worktree_workspace(
+                claimed,
+                board=board,
+            )
             resolved_workspace = str(Path(workspace).resolve(strict=True))
             if resolved_workspace != expected_workspace:
                 raise RuntimeError(
@@ -187,6 +191,13 @@ def dispatch_review(task_id: str, *, snapshot: Mapping[str, Any] | None = None, 
                     f"actual={resolved_workspace!r}"
                 )
             kb.set_workspace_path(conn, claimed.id, resolved_workspace)
+            kb.set_branch_name(
+                conn,
+                claimed.id,
+                resolved_branch_name
+                or (claimed.branch_name or "").strip()
+                or f"wt/{claimed.id}",
+            )
             claimed.skills = list(
                 dict.fromkeys([*(claimed.skills or []), "sdlc-review"])
             )
