@@ -7,7 +7,7 @@ Ta sekcja opisuje konfigurację profili Hermesa dla Software Factory. Kanoniczne
 | Profil | Rola | Backend/model |
 |---|---|---|
 | `orchestrator` | koordynacja Kanban | primary GPT |
-| `runtime-controller` | mechaniczny create/readback/runtime/model gate | primary GPT + guarded terminal only |
+| `runtime-controller` | mechaniczny create/readback/runtime/model/handoff gate + targeted review dispatch | primary GPT + guarded terminal only |
 | `architect` | wymagania/architektura | primary GPT |
 | `architect-claude-opus` | trudna architektura/hard reasoning | `claude-code` / pinned `opus` |
 | `repository-analyst` | analiza repo | primary GPT + mandatory isolated readonly tools |
@@ -44,7 +44,7 @@ Reviewer set musi być dokładny. Security reviewer jest przypięty do OpenAI, `
 
 Profile Claude nie udają natywnego Anthropica w Hermesie. Outer Hermes koordynuje, ale właściwa praca musi przejść przez `claude-code`.
 
-`factory-execution-guards` v0.6.0:
+`factory-execution-guards` v0.7.0 zachowuje v0.6.0 Claude confinement/content-attestation i dodaje wyłącznie chroniony targeted review dispatch runtime-controllera:
 
 - blokuje direct outer-GPT write/patch/code execution,
 - terminal outer GPT pozwala wyłącznie na literalne `claude`; żaden `find`, Git, Python, grep ani inny helper binary nie jest dopuszczony,
@@ -71,7 +71,7 @@ Brak Claude CLI/OAuth/evidence oznacza blocked; nie ma hidden fallbacku.
 ~/.hermes/profiles/runtime-controller/kanban_runtime_cli.sh <allowlisted-op> ...
 ```
 
-Operacje: `create`, `show`, `block`, `complete`, `validate-runtime`, `validate-routed-handoff`, `validate-routing-body`, `validate-routing-live`.
+Operacje: `create`, `show`, `block`, `complete`, `validate-runtime`, `validate-routed-handoff`, `validate-routing-body`, `validate-routing-live`, `dispatch-review`.
 
 Unquoted literal newline/CR i shell separators są blokowane. Quoted multiline argument pozostaje pojedynczym argv i nadal podlega walidacji konkretnej operacji. Body-independent `validate-handoff` został usunięty.
 
@@ -80,10 +80,15 @@ Pre-create routing może sprawdzić przekazany body przez `validate-routing-body
 ```text
 validate-routing-live --task-id <task-id>
 validate-routed-handoff --task-id <task-id>
+dispatch-review --task-id <task-id>
 validate-runtime --task-id <task-id> ...
 ```
 
 Validator sam wykonuje `hermes kanban show <task-id> --json` i strict-decodes wynik. Model/runtime-controller nie może sfabrykować `--actual-json` jako live evidence.
+
+Software Factory wymusza `kanban.review_dispatch=false`. Po native `review_requested` karta pozostaje w `review`, dopóki runtime-controller nie uzyska `MODEL_ROUTING_OK` i `RUNTIME_CONTRACT_OK`. Dopiero wtedy `dispatch-review --task-id <id>` ponownie weryfikuje live handoff, wymaga wyłączonego globalnego review auto-dispatchu i atomowo claimuje wyłącznie wskazaną kartę przez mechanizm Hermesa 0.20.4. Nie istnieje chroniona operacja board-globalnego review dispatchu.
+
+Targeted helper jest jawnie przypięty do Hermesa 0.20.4; brak oczekiwanych private primitives albo inna wersja kończy się fail-closed. Review worker zachowuje dokładnie ten sam worktree i otrzymuje `sdlc-review` tak jak natywny review lane Hermesa.
 
 Routed handoff wiąże live body z assignee/event/run/worktree. `WORKSPACE: worktree:<base-repo>` z body musi odpowiadać istniejącemu, kanonicznemu i niesymlinkowanemu live `<base-repo>/.worktrees/<task-id>`, run IDs muszą być prawdziwymi integerami (nie JSON bool), a implementer-run metadata musi zawierać exact `task_id` i exact resolved workspace.
 
@@ -140,7 +145,7 @@ PRIMARY_PROFILE=default bash hermes/bootstrap_runtime_controller.sh
 DISPATCHER_PROFILE=default bash hermes/configure_kanban.sh
 ```
 
-`bootstrap_profiles.sh` zawiera live repository-analyst isolation gate. Po bootstrapie nadal wymagane są live negative/positive probes execution guarda i provenance-bound routed handoffu przed VERIFIED.
+`bootstrap_profiles.sh` zawiera live repository-analyst isolation gate i już podczas bootstrapu wyłącza globalny review auto-dispatch na dispatcher profile. `bootstrap_runtime_controller.sh` instaluje targetowany review dispatcher i również wymaga `review_dispatch=false` w runtime-controller profile. Po bootstrapie nadal wymagane są live negative/positive probes execution guarda i provenance-bound routed handoffu przed VERIFIED.
 
 ## Założenia procesu
 
