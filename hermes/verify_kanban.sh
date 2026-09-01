@@ -62,37 +62,54 @@ if grep -F -A4 'validate-routed-handoff)' "${RUNTIME_WRAPPER}" | grep -Fq -- '--
 if grep -F -A4 'validate-routing-live)' "${RUNTIME_WRAPPER}" | grep -Fq -- '--actual-json'; then echo 'ERROR: live routing still accepts caller JSON' >&2; exit 1; fi
 if grep -Fq 'sub.add_parser("handoff")' "${RUNTIME_VALIDATOR}"; then echo 'ERROR: legacy handoff CLI remains exposed' >&2; exit 1; fi
 
-printf '[check] gated targeted review dispatch\n'
+printf '[check] atomic gated targeted review dispatch\n'
 grep -Fq 'dispatch-review --task-id <task-id>' "${RUNTIME_WRAPPER}"
 grep -Fq 'REVIEW_DISPATCHER=' "${RUNTIME_WRAPPER}"
 grep -Fq 'resolve_python_from_bash_launcher' "${RUNTIME_WRAPPER}"
 grep -Fq -- "-I -c 'import hermes_cli'" "${RUNTIME_WRAPPER}"
+grep -Fq 'unset PYTHONPATH PYTHONHOME PYTHONSTARTUP PYTHONINSPECT' "${RUNTIME_WRAPPER}"
+grep -Fq 'exec "${hermes_python}" -E -s "${REVIEW_DISPATCHER}" "$@"' "${RUNTIME_WRAPPER}"
 grep -Fq 'hermes-agent/venv/bin/python' "${RUNTIME_WRAPPER}"
 grep -Fq '_EXPECTED_HERMES_VERSION = "0.20.4"' "${REVIEW_DISPATCHER}"
 grep -Fq 'if kb.review_dispatch_enabled()' "${REVIEW_DISPATCHER}"
 grep -Fq 'validate_routed_review_handoff(live)' "${REVIEW_DISPATCHER}"
-grep -Fq 'kb.claim_review_task(conn, task_id)' "${REVIEW_DISPATCHER}"
+grep -Fq 'with kb.write_txn(conn)' "${REVIEW_DISPATCHER}"
+grep -Fq 'kb.claim_review_task(_SavepointConnection(conn), task_id)' "${REVIEW_DISPATCHER}"
 grep -Fq 'kb._default_spawn(claimed, resolved_workspace, board=board)' "${REVIEW_DISPATCHER}"
 grep -Fq 'task_body_changed_after_validation' "${REVIEW_DISPATCHER}"
-grep -Fq 'implementer_run_changed_after_validation' "${REVIEW_DISPATCHER}"
+grep -Fq 'claimed_review_assignee_mismatch' "${REVIEW_DISPATCHER}"
+grep -Fq 'review_requested_event_changed_after_validation' "${REVIEW_DISPATCHER}"
 if grep -Fq 'hermes kanban dispatch' "${RUNTIME_WRAPPER}"; then echo 'ERROR: runtime wrapper exposes board-global dispatch' >&2; exit 1; fi
 
 printf '[check] scoped runtime wrapper\n'
 grep -Fq 'case "${op}" in' "${RUNTIME_WRAPPER}"
 grep -Fq 'exec hermes kanban create "$@"' "${RUNTIME_WRAPPER}"
 grep -Fq 'block reason must not contain flag-shaped operands' "${RUNTIME_WRAPPER}"
-# Match eval only when it appears as a shell token on a non-comment line.
-# This avoids treating documentation such as "non-eval shape" as executable code.
-if awk '
-  /^[[:space:]]*#/ { next }
-  /(^|[;&|()[:space:]])eval([[:space:]]|$)/ { found=1 }
-  END { exit(found ? 0 : 1) }
-' "${RUNTIME_WRAPPER}"; then
-  echo 'ERROR: runtime wrapper must not use eval' >&2
+contains_eval_text() {
+  awk '
+    /^[[:space:]]*#/ { next }
+    /eval/ { found=1 }
+    END { exit(found ? 0 : 1) }
+  ' "$1"
+}
+if contains_eval_text "${RUNTIME_WRAPPER}"; then
+  echo 'ERROR: runtime wrapper must not contain executable eval text' >&2
   exit 1
 fi
+EVAL_FIXTURE_DIR="$(mktemp -d)"
+trap 'rm -rf "${EVAL_FIXTURE_DIR}"' EXIT
+printf '%s\n' '# eval${IFS} is only a full-line comment' >"${EVAL_FIXTURE_DIR}/comment.sh"
+printf '%s\n' 'eval${IFS}'"'"'printf EXECUTED'"'"'' >"${EVAL_FIXTURE_DIR}/command.sh"
+if contains_eval_text "${EVAL_FIXTURE_DIR}/comment.sh"; then
+  echo 'ERROR: full-line comment was treated as executable eval text' >&2
+  exit 1
+fi
+contains_eval_text "${EVAL_FIXTURE_DIR}/command.sh" || {
+  echo 'ERROR: eval${IFS} command form escaped the verifier' >&2
+  exit 1
+}
 PYTHONDONTWRITEBYTECODE=1 bash "${RUNTIME_WRAPPER_TEST}"
-printf '[check] Hermes Python launcher binding regression\n'
+printf '[check] Hermes Python launcher binding and env-sanitization regression\n'
 PYTHONDONTWRITEBYTECODE=1 bash "${PYTHON_BINDING_TEST}"
 
 printf '[check] python syntax\n'
@@ -119,4 +136,4 @@ printf '[check] effective execution guard adversarial tests\n'
 printf '[check] bootstrap compatibility\n'
 bash "${BOOTSTRAP_VERIFY}"
 
-printf 'OK: weryfikacja Kanban, provenance-bound routed handoff, gated targeted review dispatch i hardened execution guards zakończona\n'
+printf 'OK: weryfikacja Kanban, atomic provenance-bound review claim i hardened execution guards zakończona\n'

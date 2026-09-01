@@ -23,7 +23,7 @@ Live validators fetch authoritative Kanban JSON themselves. The caller never
 supplies live snapshot bytes. Review dispatch is deliberately task-id-targeted
 and may run only after the provenance-bound routed-handoff gate. This wrapper
 intentionally exposes only the Software Factory runtime-control operations and
-never evals input.
+never interprets input as shell source.
 EOF
   exit 2
 }
@@ -48,7 +48,7 @@ resolve_python_from_bash_launcher() {
 
   # Hermes Agent 0.20.4 installs a PATH shim whose shebang is bash and whose
   # final command is a literal, quoted exec of the venv Python + inner Hermes
-  # entrypoint. Parse only that exact non-eval shape. Any shell expansion,
+  # entrypoint. Parse only that exact literal-exec shape. Any shell expansion,
   # extra argv, command substitution, relative path, or multiple matching exec
   # lines is rejected rather than interpreted.
   while IFS= read -r line; do
@@ -143,7 +143,11 @@ run_review_dispatcher() {
     echo "ERROR: unable to resolve Hermes Python runtime capable of importing hermes_cli" >&2
     exit 2
   fi
-  exec "${hermes_python}" "${REVIEW_DISPATCHER}" "$@"
+  # Match the isolation assumptions used by the interpreter probe while
+  # retaining the script directory needed for the reviewed sibling modules.
+  unset PYTHONPATH PYTHONHOME PYTHONSTARTUP PYTHONINSPECT
+  export PYTHONDONTWRITEBYTECODE=1
+  exec "${hermes_python}" -E -s "${REVIEW_DISPATCHER}" "$@"
 }
 
 [[ $# -ge 1 ]] || usage

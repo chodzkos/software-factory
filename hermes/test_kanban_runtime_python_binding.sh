@@ -17,6 +17,13 @@ if [[ "$#" -eq 3 && "$1" == "-I" && "$2" == "-c" && "$3" == "import hermes_cli" 
   exit 0
 fi
 printf '%s\n' "$@" >"${HERMES_TEST_PY_LOG:?}"
+{
+  printf 'PYTHONPATH=%s\n' "${PYTHONPATH-<unset>}"
+  printf 'PYTHONHOME=%s\n' "${PYTHONHOME-<unset>}"
+  printf 'PYTHONSTARTUP=%s\n' "${PYTHONSTARTUP-<unset>}"
+  printf 'PYTHONINSPECT=%s\n' "${PYTHONINSPECT-<unset>}"
+  printf 'PYTHONDONTWRITEBYTECODE=%s\n' "${PYTHONDONTWRITEBYTECODE-<unset>}"
+} >"${HERMES_TEST_ENV_LOG:?}"
 exit 37
 EOF
   chmod +x "${path}"
@@ -25,26 +32,35 @@ EOF
 expect_helper_exec() {
   local label="$1"
   local rc
-  rm -f "${HERMES_TEST_PY_LOG}"
+  rm -f "${HERMES_TEST_PY_LOG}" "${HERMES_TEST_ENV_LOG}"
   set +e
-  bash "${WRAPPER}" dispatch-review --task-id t_probe >/dev/null 2>&1
+  PYTHONPATH="${TMP_DIR}/attacker-path" \
+  PYTHONHOME="${TMP_DIR}/attacker-home" \
+  PYTHONSTARTUP="${TMP_DIR}/attacker-startup" \
+  PYTHONINSPECT=1 \
+    bash "${WRAPPER}" dispatch-review --task-id t_probe >/dev/null 2>&1
   rc=$?
   set -e
   [[ ${rc} -eq 37 ]] || { echo "ERROR: ${label}: expected fake Hermes Python rc=37, got ${rc}" >&2; exit 1; }
   mapfile -t argv <"${HERMES_TEST_PY_LOG}"
-  local expected=("${ROOT_DIR}/hermes/kanban_review_dispatch.py" "--task-id" "t_probe")
+  local expected=("-E" "-s" "${ROOT_DIR}/hermes/kanban_review_dispatch.py" "--task-id" "t_probe")
   [[ ${#argv[@]} -eq ${#expected[@]} ]] || { echo "ERROR: ${label}: helper argv length mismatch" >&2; exit 1; }
   local i
   for i in "${!expected[@]}"; do
     [[ "${argv[$i]}" == "${expected[$i]}" ]] || { echo "ERROR: ${label}: argv[$i] mismatch" >&2; exit 1; }
   done
+  grep -Fxq 'PYTHONPATH=<unset>' "${HERMES_TEST_ENV_LOG}"
+  grep -Fxq 'PYTHONHOME=<unset>' "${HERMES_TEST_ENV_LOG}"
+  grep -Fxq 'PYTHONSTARTUP=<unset>' "${HERMES_TEST_ENV_LOG}"
+  grep -Fxq 'PYTHONINSPECT=<unset>' "${HERMES_TEST_ENV_LOG}"
+  grep -Fxq 'PYTHONDONTWRITEBYTECODE=1' "${HERMES_TEST_ENV_LOG}"
   echo "OK: ${label}"
 }
 
 expect_fail_closed() {
   local label="$1"
   local rc
-  rm -f "${HERMES_TEST_PY_LOG}"
+  rm -f "${HERMES_TEST_PY_LOG}" "${HERMES_TEST_ENV_LOG}"
   set +e
   bash "${WRAPPER}" dispatch-review --task-id t_probe >/dev/null 2>&1
   rc=$?
@@ -55,6 +71,7 @@ expect_fail_closed() {
 }
 
 export HERMES_TEST_PY_LOG="${TMP_DIR}/python-argv.log"
+export HERMES_TEST_ENV_LOG="${TMP_DIR}/python-env.log"
 FAKE_PY="${TMP_DIR}/python-hermes-test"
 INNER="${TMP_DIR}/inner-hermes"
 make_fake_python "${FAKE_PY}"
@@ -73,7 +90,7 @@ EOF
 chmod +x "${TMP_DIR}/hermes"
 PATH="${TMP_DIR}:${ORIGINAL_PATH}"
 export PATH
-expect_helper_exec "Hermes 0.20.4 bash launcher resolves literal venv Python"
+expect_helper_exec "Hermes 0.20.4 bash launcher resolves literal venv Python and sanitizes helper env"
 
 # Direct env-python launchers remain supported, but only after import probe.
 cat >"${TMP_DIR}/hermes" <<'EOF'
@@ -128,4 +145,4 @@ PATH="${FAKE_HOME}/.local/bin:${ORIGINAL_PATH}"
 export HOME PATH
 expect_helper_exec "managed Hermes venv fallback"
 
-printf 'OK: targeted review helper binds to a Hermes Python runtime, including the production bash-wrapper shape\n'
+printf 'OK: targeted review helper binds to a sanitized Hermes Python runtime, including the production bash-wrapper shape\n'

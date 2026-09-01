@@ -59,7 +59,7 @@ grep -Fq 'expect_config reviewer-gpt fallback_providers' "${BOOTSTRAP}"
 grep -Fq 'CONFIG_KEY_REMOVER=' "${RUNTIME_BOOTSTRAP}"
 grep -Fq 'fallback_model model.fallback_model' "${RUNTIME_BOOTSTRAP}"
 
-printf '[check] gated same-card review dispatch bootstrap\n'
+printf '[check] atomic same-card review dispatch bootstrap\n'
 grep -Fq 'config set kanban.review_dispatch false' "${BOOTSTRAP}"
 grep -Fq 'expect_config "${DISPATCHER_PROFILE}" kanban.review_dispatch false' "${BOOTSTRAP}"
 grep -Fq 'REVIEW_DISPATCH_SRC=' "${RUNTIME_BOOTSTRAP}"
@@ -71,7 +71,17 @@ grep -Fq 'dispatch-review --task-id <task-id>' "${RUNTIME_CONTROLLER_SOUL}"
 grep -Fq 'dispatch-review --task-id <task-id>' "${ORCHESTRATOR_SOUL}"
 grep -Fq '_EXPECTED_HERMES_VERSION = "0.20.4"' "${REVIEW_DISPATCHER}"
 grep -Fq 'if kb.review_dispatch_enabled()' "${REVIEW_DISPATCHER}"
-grep -Fq 'kb.claim_review_task(conn, task_id)' "${REVIEW_DISPATCHER}"
+grep -Fq 'with kb.write_txn(conn)' "${REVIEW_DISPATCHER}"
+grep -Fq 'kb.claim_review_task(_SavepointConnection(conn), task_id)' "${REVIEW_DISPATCHER}"
+grep -Fq 'def _locked_provenance_drift' "${REVIEW_DISPATCHER}"
+grep -Fq 'def _claimed_task_drift' "${REVIEW_DISPATCHER}"
+grep -Fq 'claimed_review_assignee_mismatch' "${REVIEW_DISPATCHER}"
+grep -Fq 'active_run_appeared_after_validation' "${REVIEW_DISPATCHER}"
+grep -Fq '"write_txn",' "${REVIEW_DISPATCHER}"
+
+printf '[check] sanitized targeted helper Python execution\n'
+grep -Fq 'unset PYTHONPATH PYTHONHOME PYTHONSTARTUP PYTHONINSPECT' "${RUNTIME_WRAPPER}"
+grep -Fq 'exec "${hermes_python}" -E -s "${REVIEW_DISPATCHER}" "$@"' "${RUNTIME_WRAPPER}"
 
 printf '[check] transactional reviewed plugin upgrade\n'
 grep -Fq 'verify_reviewed_provenance' "${PLUGIN_INSTALLER}"
@@ -90,18 +100,18 @@ import json, pathlib, sys
 path=pathlib.Path(sys.argv[1]); data=json.loads(path.read_text())
 plugin=data["plugins"]["factory-execution-guards"]
 expected={
+    "plugin.yaml":"5da8fdd7fb27017599c830c816945a89f5de5928",
+    "__init__.py":"33aa6723ede689fbd25ed54e22ce9c52341da2cb",
+    "guard.py":"fb2109da908740b63d62ba7951b38ef44505c905",
+}
+predecessor={
     "plugin.yaml":"8887d7cf9d5ac0460cb95655a28687dcf6dc1ae7",
     "__init__.py":"b2af45c1c427d7a9684e640154eabe4d2e8aa38b",
     "guard.py":"fb2109da908740b63d62ba7951b38ef44505c905",
 }
-predecessor={
-    "plugin.yaml":"2ec6370b04237d6c5db8b22bcbb63de48ad657ea",
-    "__init__.py":"33e776e5177e0e17307f4f8b4d95a24ab4d4d5b9",
-    "guard.py":"fb2109da908740b63d62ba7951b38ef44505c905",
-}
-if plugin.get("files") != expected: raise SystemExit("ERROR: v0.7.0 current execution-guard pins mismatch")
+if plugin.get("files") != expected: raise SystemExit("ERROR: v0.8.0 current execution-guard pins mismatch")
 replace=plugin.get("replace_from") or []
-if not replace or replace[0] != predecessor: raise SystemExit("ERROR: v0.6.0 is not the immediate reviewed predecessor")
+if not replace or replace[0] != predecessor: raise SystemExit("ERROR: v0.7.0 is not the immediate reviewed predecessor")
 PY
 
 printf '[check] legacy Ox inference kill switch and inherited config cleanup\n'
@@ -126,9 +136,11 @@ grep -Fq 'validate-routing-live' "${GUARD_ENTRY}"
 grep -Fq '"dispatch-review"' "${GUARD_ENTRY}"
 if grep -Fq '"validate-handoff"' "${GUARD_ENTRY}"; then echo 'ERROR: legacy handoff remains in effective runtime allowlist' >&2; exit 1; fi
 
-printf '[check] sealed Claude execution/evidence boundary v0.7.0\n'
-grep -Fq 'version: 0.7.0' "${GUARD_MANIFEST}"
+printf '[check] sealed Claude execution/evidence boundary v0.8.0\n'
+grep -Fq 'version: 0.8.0' "${GUARD_MANIFEST}"
 grep -Fq '_CODER_READ_TOOLS = "Read,Glob,Grep"' "${GUARD_ENTRY}"
+grep -Fq '_SAFE_WORKSPACE_RE' "${GUARD_ENTRY}"
+grep -Fq 'workspace contains characters unsafe for Claude permission grammar' "${GUARD_ENTRY}"
 grep -Fq 'return f"Edit(/{workspace}/**)"' "${GUARD_ENTRY}"
 grep -Fq 'expected_mode = "dontAsk" if profile == "coder-claude" else "plan"' "${GUARD_ENTRY}"
 grep -Fq '_READONLY_TOOLS = "Read,Glob,Grep"' "${GUARD_ENTRY}"
@@ -138,15 +150,26 @@ grep -Fq '_exact_marker(prompt, "RUN_ID", run_id)' "${GUARD_ENTRY}"
 grep -Fq '_exact_marker(prompt, "WORKSPACE", workspace)' "${GUARD_ENTRY}"
 grep -Fq '["ls-files", "-c", "-o", "-z"]' "${GUARD_ENTRY}"
 if grep -Fq 'ls-files", "-c", "-o", "--exclude-standard"' "${GUARD_ENTRY}"; then echo 'ERROR: ignored untracked paths are excluded from attestation' >&2; exit 1; fi
+grep -Fq '_CONTENT_STATE_DOMAIN = b"software-factory-content-state-v2"' "${GUARD_ENTRY}"
+grep -Fq 'def _frame' "${GUARD_ENTRY}"
+grep -Fq '_frame(digest, b"entry-sha256", record)' "${GUARD_ENTRY}"
+grep -Fq 'def _sanitized_git_env' "${GUARD_ENTRY}"
+grep -Fq 'env=_sanitized_git_env()' "${GUARD_ENTRY}"
+grep -Fq 'shutil.which("git", path=os.defpath)' "${GUARD_ENTRY}"
+grep -Fq 'os.O_NOFOLLOW' "${GUARD_ENTRY}"
 grep -Fq '_guard._workspace_content_state = _hardened_workspace_content_state' "${GUARD_ENTRY}"
 grep -Fq '_guard._parse_claude_argv = _hardened_parse_claude_argv' "${GUARD_ENTRY}"
 grep -Fq '_PENDING_ATTESTATIONS' "${GUARD}"
 grep -Fq '_COMPLETED_ATTESTATIONS' "${GUARD}"
 grep -Fq 'data.get("schema") == 5' "${GUARD}"
 
-printf '[check] fresh bootstrap activates repository-analyst isolation\n'
+printf '[check] fresh bootstrap enforces exact repository-analyst plugin isolation\n'
 grep -Fq 'bash "${ANALYST_BOOTSTRAP}"' "${BOOTSTRAP}"
 grep -Fq 'bash "${ANALYST_VERIFY}" --live' "${BOOTSTRAP}"
+grep -Fq 'plugins.enabled plugins.disabled plugins.entries' "${ANALYST_BOOTSTRAP}"
+grep -Fq 'expect_list_exact plugins.enabled "${PLUGIN}"' "${ANALYST_BOOTSTRAP}"
+grep -Fq 'expect_list_exact plugins.disabled' "${ANALYST_BOOTSTRAP}"
+PYTHONDONTWRITEBYTECODE=1 bash "${ANALYST_VERIFY}"
 
 printf '[check] routing policy shape\n'
 grep -Fq 'security_sensitive_openai_implementer_forbidden' "${MODEL_ROUTING}"
@@ -169,5 +192,5 @@ printf '[check] targeted review dispatcher unit tests\n'
 printf '[check] guard adversarial unit tests\n'
 (cd "${ROOT_DIR}" && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -q hermes.test_factory_execution_guards hermes.test_factory_execution_guard_profile_resolution hermes.test_targeted_review_dispatch_guard)
 
-if command -v shellcheck >/dev/null 2>&1; then shellcheck --severity=warning "${BOOTSTRAP}" "${RUNTIME_BOOTSTRAP}" "${PLUGIN_INSTALLER}" "${RUNTIME_WRAPPER}" "$0"; else echo '[info] shellcheck nie jest zainstalowany; pomijam'; fi
-printf 'OK: statyczna weryfikacja bootstrapu, gated targeted review dispatch i sealed execution guards v0.7.0 zakończona\n'
+if command -v shellcheck >/dev/null 2>&1; then shellcheck --severity=warning "${BOOTSTRAP}" "${RUNTIME_BOOTSTRAP}" "${PLUGIN_INSTALLER}" "${ANALYST_BOOTSTRAP}" "${ANALYST_VERIFY}" "${RUNTIME_WRAPPER}" "$0"; else echo '[info] shellcheck nie jest zainstalowany; pomijam'; fi
+printf 'OK: statyczna weryfikacja bootstrapu, atomic targeted review dispatch i sealed execution guards v0.8.0 zakończona\n'

@@ -42,23 +42,33 @@ for denied in terminal file code_execution web browser image_gen delegation comp
   grep -Fq "${denied}" "${BOOTSTRAP}" || { echo "ERROR: missing denied toolset ${denied}" >&2; exit 1; }
 done
 
+echo '[check] repository-analyst plugin selection is reset to one exact reviewed plugin'
+grep -Fq 'plugins.enabled plugins.disabled plugins.entries' "${BOOTSTRAP}"
+grep -Fq "config set --force plugins.enabled '[]'" "${BOOTSTRAP}"
+grep -Fq "config set --force plugins.disabled '[]'" "${BOOTSTRAP}"
+grep -Fq "config set --force plugins.entries '{}'" "${BOOTSTRAP}"
+grep -Fq 'expect_list_exact plugins.enabled "${PLUGIN}"' "${BOOTSTRAP}"
+grep -Fq 'expect_list_exact plugins.disabled' "${BOOTSTRAP}"
+grep -Fq 'set(entries) != {plugin}' "${BOOTSTRAP}"
+
 echo '[check] plugin is installed and enabled in repository-analyst profile scope'
 grep -Fq 'PROFILE_HOME="${HOME}/.hermes/profiles/${PROFILE}"' "${BOOTSTRAP}"
 grep -Fq 'DEST_ROOT="${PROFILE_HOME}/plugins"' "${BOOTSTRAP}"
 grep -Fq 'HERMES_PLUGINS_DIR="${DEST_ROOT}" PYTHONDONTWRITEBYTECODE=1 bash "${INSTALLER}" --plugin "${PLUGIN}" --replace-reviewed' "${BOOTSTRAP}"
 grep -Fq 'plugins enable "${PLUGIN}" --no-allow-tool-override' "${BOOTSTRAP}"
 
-echo '[check] plugin install, profile enable and doctor precede worker cutover'
+echo '[check] plugin install, exact reset, enable and doctor precede worker cutover'
 python3 - "${BOOTSTRAP}" <<'PY'
 from pathlib import Path
 import sys
 text=Path(sys.argv[1]).read_text()
 install=text.index('HERMES_PLUGINS_DIR="${DEST_ROOT}" PYTHONDONTWRITEBYTECODE=1 bash "${INSTALLER}" --plugin "${PLUGIN}" --replace-reviewed')
+reset=text.index('plugins.enabled plugins.disabled plugins.entries')
 enable=text.index('plugins enable "${PLUGIN}" --no-allow-tool-override')
 doctor=text.index('plugins doctor "${TARGET}" --ci')
 cutover=text.index('config set platform_toolsets.cli "${EXPECTED_CLI_TOOLSETS}"')
-assert install < enable < doctor < cutover
-print('OK: reviewed replace -> explicit non-override enable -> doctor -> worker cutover ordering')
+assert install < reset < enable < doctor < cutover
+print('OK: reviewed replace -> exact plugin reset -> non-override enable -> doctor -> worker cutover')
 PY
 
 echo '[check] no generic execution/tool-management toolset is enabled by bootstrap'
@@ -93,6 +103,32 @@ print("OK: live reviewed plugin files exact; only __pycache__/*.pyc ignored")
 PY
 }
 
+verify_exact_plugin_config() {
+  local config="$1" plugin="$2"
+  python3 - "${config}" "${plugin}" <<'PY'
+from pathlib import Path
+import sys, yaml
+path, plugin = Path(sys.argv[1]), sys.argv[2]
+if path.is_symlink() or not path.is_file():
+    raise SystemExit(f"ERROR: profile config missing/symlinked: {path}")
+data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+plugins = data.get("plugins")
+if not isinstance(plugins, dict):
+    raise SystemExit("ERROR: physical plugins config is not a mapping")
+if plugins.get("enabled") != [plugin]:
+    raise SystemExit(f"ERROR: enabled plugin set is not exact: {plugins.get('enabled')!r}")
+if plugins.get("disabled") != []:
+    raise SystemExit(f"ERROR: disabled plugin set is not empty: {plugins.get('disabled')!r}")
+entries = plugins.get("entries")
+if not isinstance(entries, dict) or set(entries) != {plugin}:
+    raise SystemExit(f"ERROR: plugin entry set is not exact: {entries!r}")
+entry = entries.get(plugin)
+if not isinstance(entry, dict) or entry.get("allow_tool_override") is not False:
+    raise SystemExit(f"ERROR: reviewed plugin entry is not fail-closed: {entry!r}")
+print("OK: live repository-analyst plugin allowlist is exact")
+PY
+}
+
 resolve_hermes_python() {
   local hermes_bin hermes_real shebang candidate
   hermes_bin="$(command -v hermes)"
@@ -114,11 +150,9 @@ if [[ ${LIVE} -eq 1 ]]; then
   TARGET="${PROFILE_HOME}/plugins/${PLUGIN}"
   SOURCE="${ROOT_DIR}/hermes/plugins/${PLUGIN}"
   verify_installed_tree "${SOURCE}" "${TARGET}"
+  verify_exact_plugin_config "${PROFILE_HOME}/config.yaml" "${PLUGIN}"
   PYTHONDONTWRITEBYTECODE=1 hermes -p "${PROFILE}" plugins doctor "${TARGET}" --ci
 
-  hermes -p "${PROFILE}" config get plugins.enabled 2>/dev/null | tr -d '\r' | sed -n 's/^- //p' | grep -Fxq -- "${PLUGIN}" || {
-    echo "ERROR: live ${PROFILE}:plugins.enabled missing ${PLUGIN}" >&2; exit 1;
-  }
   get_scalar() { hermes -p "${PROFILE}" config get "$1" 2>/dev/null | tail -n 1 | tr -d '\r'; }
   expect_list_exact() {
     local key="$1"; shift
@@ -129,6 +163,8 @@ if [[ ${LIVE} -eq 1 ]]; then
     for i in "${!expected[@]}"; do [[ "${actual[$i]}" == "${expected[$i]}" ]] || { echo "ERROR: live ${PROFILE}:${key} item $i mismatch" >&2; exit 1; }; done
   }
 
+  expect_list_exact plugins.enabled "${PLUGIN}"
+  expect_list_exact plugins.disabled
   expect_list_exact platform_toolsets.cli factory-repository-readonly no_mcp
   [[ "$(get_scalar mcp_servers)" == '{}' ]]
   expect_list_exact toolsets factory-repository-readonly

@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
+import shutil
 import stat
 import subprocess
 from pathlib import Path
@@ -33,6 +35,12 @@ _RUNTIME_OPS = frozenset({
     "validate-routing-live",
     "dispatch-review",
 })
+
+# Claude's permission language is comma/parenthesis/glob structured.  A
+# filesystem path interpolated into that grammar must use a deliberately small
+# portable alphabet rather than attempting ad-hoc escaping.
+_SAFE_WORKSPACE_RE = re.compile(r"^/(?:[A-Za-z0-9._@%+=:-]+/)*[A-Za-z0-9._@%+=:-]+$")
+_CONTENT_STATE_DOMAIN = b"software-factory-content-state-v2"
 
 # Keep the underlying guard's constants synchronized with the hardened entrypoint.
 _guard.RUNTIME_OPS = _RUNTIME_OPS
@@ -116,21 +124,162 @@ def _runtime_terminal_allowed(command: str) -> bool:
     return bool(args)
 
 
+def _trusted_git_binary() -> str | None:
+    """Resolve Git from the platform default PATH, never the worker's PATH."""
+    located = shutil.which("git", path=os.defpath)
+    if not located:
+        return None
+    try:
+        resolved = Path(located).resolve(strict=True)
+    except OSError:
+        return None
+    if not resolved.is_file() or not os.access(resolved, os.X_OK):
+        return None
+    return str(resolved)
+
+
+def _sanitized_git_env() -> dict[str, str]:
+    """Return a minimal environment that cannot redirect Git to another repo."""
+    return {
+        "PATH": os.defpath,
+        "HOME": "/nonexistent",
+        "LANG": "C",
+        "LC_ALL": "C",
+        "XDG_CONFIG_HOME": "/nonexistent",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_TERMINAL_PROMPT": "0",
+        "GIT_OPTIONAL_LOCKS": "0",
+    }
+
+
 def _run_git(workspace: str, args: list[str], *, text: bool = False) -> str | bytes:
+    git = _trusted_git_binary()
+    if git is None:
+        raise OSError("trusted git executable unavailable")
     return subprocess.run(
-        ["git", "-C", workspace, *args],
+        [
+            git,
+            "-c", "core.fsmonitor=false",
+            "-c", "core.hooksPath=/dev/null",
+            "-c", "diff.external=",
+            "-c", "core.attributesfile=/dev/null",
+            "-C", workspace,
+            *args,
+        ],
         check=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
         text=text,
         timeout=20,
+        env=_sanitized_git_env(),
+        close_fds=True,
     ).stdout
 
 
+def _frame(hasher: "hashlib._Hash", tag: bytes, payload: bytes) -> None:
+    """Append one unambiguously length-framed typed value."""
+    if len(tag) > 0xFFFF or len(payload) > 0xFFFFFFFFFFFFFFFF:
+        raise ValueError("content-state frame too large")
+    hasher.update(len(tag).to_bytes(2, "big"))
+    hasher.update(tag)
+    hasher.update(len(payload).to_bytes(8, "big"))
+    hasher.update(payload)
+
+
+def _stat_identity(st: os.stat_result) -> tuple[int, int, int, int, int, int]:
+    return (
+        int(st.st_dev),
+        int(st.st_ino),
+        int(st.st_mode),
+        int(st.st_size),
+        int(st.st_mtime_ns),
+        int(st.st_ctime_ns),
+    )
+
+
+def _regular_file_payload(path: Path, expected: os.stat_result) -> bytes | None:
+    """Hash a regular file through a no-follow descriptor and detect read races."""
+    flags = os.O_RDONLY
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        fd = os.open(path, flags)
+    except OSError:
+        return None
+    try:
+        before = os.fstat(fd)
+        if not stat.S_ISREG(before.st_mode) or _stat_identity(before) != _stat_identity(expected):
+            return None
+        digest = hashlib.sha256()
+        total = 0
+        while True:
+            chunk = os.read(fd, 1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+            total += len(chunk)
+        after = os.fstat(fd)
+        if _stat_identity(before) != _stat_identity(after) or total != int(after.st_size):
+            return None
+        return total.to_bytes(8, "big") + digest.digest()
+    finally:
+        os.close(fd)
+
+
+def _symlink_payload(path: Path, expected: os.stat_result) -> bytes | None:
+    try:
+        target = os.fsencode(os.readlink(path))
+        after = path.lstat()
+    except OSError:
+        return None
+    if _stat_identity(expected) != _stat_identity(after) or not stat.S_ISLNK(after.st_mode):
+        return None
+    return target
+
+
+def _content_record(root: Path, raw: bytes) -> bytes | None:
+    rel = Path(os.fsdecode(raw))
+    if rel.is_absolute() or ".." in rel.parts:
+        return None
+    path = root / rel
+    record = hashlib.sha256()
+    _frame(record, b"path", raw)
+    try:
+        st = path.lstat()
+    except FileNotFoundError:
+        _frame(record, b"type", b"deleted")
+        return record.digest()
+    except OSError:
+        return None
+
+    _frame(record, b"mode", int(st.st_mode).to_bytes(8, "big"))
+    if stat.S_ISLNK(st.st_mode):
+        payload = _symlink_payload(path, st)
+        if payload is None:
+            return None
+        _frame(record, b"type", b"symlink")
+        _frame(record, b"target", payload)
+    elif stat.S_ISREG(st.st_mode):
+        payload = _regular_file_payload(path, st)
+        if payload is None:
+            return None
+        _frame(record, b"type", b"file")
+        _frame(record, b"content-sha256", payload)
+    else:
+        return None
+    return record.digest()
+
+
 def _hardened_workspace_content_state(workspace: str) -> tuple[str, str] | None:
-    """Hash HEAD, staged bytes, and every tracked/untracked path, including ignored paths."""
+    """Hash HEAD, index and all tracked/untracked paths with canonical framing."""
     try:
         root = Path(workspace).resolve(strict=True)
+        top_level = str(_run_git(str(root), ["rev-parse", "--show-toplevel"], text=True)).strip()
+        if str(Path(top_level).resolve(strict=True)) != str(root):
+            return None
         head = str(_run_git(str(root), ["rev-parse", "HEAD"], text=True)).strip()
         staged = bytes(_run_git(
             str(root), ["diff", "--cached", "--binary", "--no-ext-diff", "--no-textconv", "HEAD", "--"]
@@ -143,31 +292,19 @@ def _hardened_workspace_content_state(workspace: str) -> tuple[str, str] | None:
     if len(head) != 40 or any(ch not in "0123456789abcdef" for ch in head.lower()):
         return None
 
-    h = hashlib.sha256()
-    h.update(b"HEAD\0" + head.encode("ascii") + b"\0STAGED\0" + staged + b"\0FILES\0")
-    for raw in sorted(path for path in raw_paths.split(b"\0") if path):
-        rel = Path(os.fsdecode(raw))
-        if rel.is_absolute() or ".." in rel.parts:
-            return None
-        path = root / rel
-        h.update(raw + b"\0")
-        try:
-            st = path.lstat()
-        except FileNotFoundError:
-            h.update(b"DELETED\0")
-            continue
-        h.update(f"MODE:{stat.S_IFMT(st.st_mode):o}:{stat.S_IMODE(st.st_mode):o}\0".encode("ascii"))
-        if stat.S_ISLNK(st.st_mode):
-            h.update(b"SYMLINK\0" + os.fsencode(os.readlink(path)) + b"\0")
-        elif stat.S_ISREG(st.st_mode):
-            h.update(b"FILE\0")
-            with path.open("rb") as handle:
-                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-                    h.update(chunk)
-            h.update(b"\0")
-        else:
-            return None
-    return head, h.hexdigest()
+    digest = hashlib.sha256()
+    try:
+        _frame(digest, b"domain", _CONTENT_STATE_DOMAIN)
+        _frame(digest, b"head", head.encode("ascii"))
+        _frame(digest, b"staged", staged)
+        for raw in sorted(path for path in raw_paths.split(b"\0") if path):
+            record = _content_record(root, raw)
+            if record is None:
+                return None
+            _frame(digest, b"entry-sha256", record)
+    except (OSError, ValueError):
+        return None
+    return head, digest.hexdigest()
 
 
 def _exact_marker(prompt: str, name: str, value: str) -> bool:
@@ -176,9 +313,9 @@ def _exact_marker(prompt: str, name: str, value: str) -> bool:
 
 
 def _claude_edit_rule(workspace: str) -> str:
-    """Return Claude Code absolute permission rule confining all built-in edits to workspace."""
-    if not workspace.startswith("/") or any(ch in workspace for ch in "\r\n"):
-        raise ValueError("invalid workspace for Claude edit rule")
+    """Return one injection-safe absolute Claude Edit permission rule."""
+    if not _SAFE_WORKSPACE_RE.fullmatch(workspace):
+        raise ValueError("workspace contains characters unsafe for Claude permission grammar")
     # Claude permission syntax uses // for filesystem-absolute Edit rules.
     return f"Edit(/{workspace}/**)"
 

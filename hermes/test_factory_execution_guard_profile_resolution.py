@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import os
+import stat
 import subprocess
 import sys
 import tempfile
@@ -95,6 +97,24 @@ class ProfileResolutionTests(unittest.TestCase):
                 self.assertIsNone(PLUGIN._hardened_parse_claude_argv("coder-claude", command.replace(exact_tools, exact_tools+",Bash")))
                 self.assertIsNone(PLUGIN._hardened_parse_claude_argv("coder-claude", command.replace("dontAsk", "acceptEdits")))
 
+    def test_workspace_permission_grammar_injection_is_rejected(self):
+        with tempfile.TemporaryDirectory() as td:
+            workspace = (Path(td) / "repo),Bash(*),Edit(").resolve()
+            workspace.mkdir()
+            with self.assertRaises(ValueError):
+                PLUGIN._coder_tools(str(workspace))
+            injected_tools = f"Read,Glob,Grep,Edit(/{workspace}/**)"
+            self.assertIn("Bash(*)", injected_tools)
+            prompt = f"TASK_ID: t_guard\nRUN_ID: 77\nWORKSPACE: {workspace}\nPerform the assigned task."
+            command = (
+                f"claude -p '{prompt}' --model sonnet --output-format json --safe-mode "
+                f"--permission-mode dontAsk --allowedTools '{injected_tools}' --max-turns 2"
+            )
+            with patch.dict(os.environ, {"HERMES_KANBAN_TASK":"t_guard","HERMES_KANBAN_RUN_ID":"77","HERMES_KANBAN_WORKSPACE":str(workspace)}, clear=False), \
+                 patch.object(PLUGIN._guard, "_canonical_claude_identity", return_value=("/opt/claude","a"*64)), \
+                 patch.object(PLUGIN.Path, "cwd", return_value=workspace):
+                self.assertIsNone(PLUGIN._hardened_parse_claude_argv("coder-claude", command))
+
     def test_readonly_profiles_require_plan_mode(self):
         with tempfile.TemporaryDirectory() as td:
             workspace=Path(td).resolve()
@@ -105,13 +125,26 @@ class ProfileResolutionTests(unittest.TestCase):
                 self.assertIsNotNone(PLUGIN._hardened_parse_claude_argv("reviewer-claude", command))
                 self.assertIsNone(PLUGIN._hardened_parse_claude_argv("reviewer-claude", command.replace("--permission-mode plan", "--permission-mode acceptEdits")))
 
-    def _init_repo(self, repo: Path) -> None:
+    def _init_repo(self, repo: Path, content: str = "before\n") -> None:
         subprocess.run(["git","init","-q",str(repo)],check=True)
         subprocess.run(["git","-C",str(repo),"config","user.email","test@example.invalid"],check=True)
         subprocess.run(["git","-C",str(repo),"config","user.name","Test"],check=True)
-        tracked=repo/"tracked.txt"; tracked.write_text("before\n")
+        tracked=repo/"tracked.txt"; tracked.write_text(content)
         subprocess.run(["git","-C",str(repo),"add","tracked.txt"],check=True)
         subprocess.run(["git","-C",str(repo),"commit","-qm","init"],check=True)
+
+    def _legacy_ambiguous_content_state(self, repo: Path) -> str:
+        head=subprocess.run(["git","-C",str(repo),"rev-parse","HEAD"],check=True,text=True,stdout=subprocess.PIPE).stdout.strip()
+        staged=subprocess.run(["git","-C",str(repo),"diff","--cached","--binary","--no-ext-diff","--no-textconv","HEAD","--"],check=True,stdout=subprocess.PIPE).stdout
+        raw_paths=subprocess.run(["git","-C",str(repo),"ls-files","-c","-o","-z"],check=True,stdout=subprocess.PIPE).stdout
+        digest=hashlib.sha256()
+        digest.update(b"HEAD\0"+head.encode("ascii")+b"\0STAGED\0"+staged+b"\0FILES\0")
+        for raw in sorted(path for path in raw_paths.split(b"\0") if path):
+            path=repo/Path(os.fsdecode(raw)); st=path.lstat()
+            digest.update(raw+b"\0")
+            digest.update(f"MODE:{stat.S_IFMT(st.st_mode):o}:{stat.S_IMODE(st.st_mode):o}\0".encode("ascii"))
+            digest.update(b"FILE\0"+path.read_bytes()+b"\0")
+        return digest.hexdigest()
 
     def test_content_state_detects_assume_unchanged_tracked_mutation(self):
         with tempfile.TemporaryDirectory() as td:
@@ -140,6 +173,46 @@ class ProfileResolutionTests(unittest.TestCase):
             self.assertIsNotNone(before); self.assertIsNotNone(hidden); self.assertIsNotNone(changed)
             self.assertNotEqual(before[1], hidden[1])
             self.assertNotEqual(hidden[1], changed[1])
+
+    def test_content_state_uses_collision_free_record_framing(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo=Path(td); self._init_repo(repo)
+            record_prefix=b"\0b\0MODE:100000:644\0FILE\0"
+            (repo/"a").write_bytes(b"X"+record_prefix+b"Y")
+            legacy_one=self._legacy_ambiguous_content_state(repo)
+            hardened_one=PLUGIN._hardened_workspace_content_state(str(repo))
+            (repo/"a").write_bytes(b"X")
+            (repo/"b").write_bytes(b"Y")
+            legacy_two=self._legacy_ambiguous_content_state(repo)
+            hardened_two=PLUGIN._hardened_workspace_content_state(str(repo))
+            self.assertEqual(legacy_one, legacy_two)
+            self.assertIsNotNone(hardened_one); self.assertIsNotNone(hardened_two)
+            self.assertNotEqual(hardened_one[1], hardened_two[1])
+
+    def test_content_state_ignores_inherited_git_repository_selection(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td)
+            target=root/"target"; decoy=root/"decoy"
+            self._init_repo(target, "target-before\n")
+            self._init_repo(decoy, "decoy\n")
+            target_head=subprocess.run(["git","-C",str(target),"rev-parse","HEAD"],check=True,text=True,stdout=subprocess.PIPE).stdout.strip()
+            baseline=PLUGIN._hardened_workspace_content_state(str(target))
+            hostile={
+                "GIT_DIR": str(decoy/".git"),
+                "GIT_WORK_TREE": str(decoy),
+                "GIT_INDEX_FILE": str(decoy/".git/index"),
+                "GIT_CONFIG_COUNT": "1",
+                "GIT_CONFIG_KEY_0": "core.hooksPath",
+                "GIT_CONFIG_VALUE_0": str(decoy),
+            }
+            with patch.dict(os.environ, hostile, clear=False):
+                before=PLUGIN._hardened_workspace_content_state(str(target))
+                (target/"tracked.txt").write_text("target-after\n")
+                after=PLUGIN._hardened_workspace_content_state(str(target))
+            self.assertIsNotNone(baseline); self.assertIsNotNone(before); self.assertIsNotNone(after)
+            self.assertEqual(before[0], target_head)
+            self.assertEqual(baseline, before)
+            self.assertNotEqual(before[1], after[1])
 
 
 if __name__ == "__main__":
