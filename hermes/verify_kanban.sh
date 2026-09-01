@@ -81,7 +81,12 @@ printf '[check] scoped runtime wrapper\n'
 grep -Fq 'case "${op}" in' "${RUNTIME_WRAPPER}"
 grep -Fq 'exec hermes kanban create "$@"' "${RUNTIME_WRAPPER}"
 grep -Fq 'block reason must not contain flag-shaped operands' "${RUNTIME_WRAPPER}"
-if grep -Fq 'eval ' "${RUNTIME_WRAPPER}"; then echo 'ERROR: runtime wrapper must not use eval' >&2; exit 1; fi
+# Match eval only when it appears as a shell token on a non-comment line.
+# This avoids treating documentation such as "non-eval shape" as executable code.
+if grep -Ev '^[[:space:]]*#' "${RUNTIME_WRAPPER}" | grep -Eq '(^|[;&|()[:space:]])eval([[:space:]]|$)'; then
+  echo 'ERROR: runtime wrapper must not use eval' >&2
+  exit 1
+fi
 PYTHONDONTWRITEBYTECODE=1 bash "${RUNTIME_WRAPPER_TEST}"
 printf '[check] Hermes Python launcher binding regression\n'
 PYTHONDONTWRITEBYTECODE=1 bash "${PYTHON_BINDING_TEST}"
