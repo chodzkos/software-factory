@@ -60,7 +60,7 @@ expect fallback_providers '[]'
 expect worktree 'false'
 expect worktree_sync 'false'
 expect tools.tool_search.enabled 'off'
-expect kanban.review_dispatch 'off'
+expect kanban.review_dispatch 'false'
 PYTHONDONTWRITEBYTECODE=1 python3 - "${PROFILE_DIR}/config.yaml" <<'PY'
 import pathlib, sys, yaml
 p=pathlib.Path(sys.argv[1]); data=yaml.safe_load(p.read_text()) or {}
