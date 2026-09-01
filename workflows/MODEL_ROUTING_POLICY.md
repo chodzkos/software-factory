@@ -78,7 +78,10 @@ Post-create/live validation never trusts caller-supplied JSON. Runtime-controlle
 ```text
 validate-routing-live --task-id <task-id>
 validate-routed-handoff --task-id <task-id>
+dispatch-review --task-id <task-id>
 ```
+
+`kanban.review_dispatch=false` is mandatory for the Software Factory dispatcher and runtime-controller. Hermes 0.20.4 must not auto-claim the review lane before provenance validation. The first two operations above must succeed while the card is still `status=review`; only then may the exact task be started through `dispatch-review`.
 
 The runtime validator itself executes `hermes kanban show <task-id> --json` and strict-decodes the result. There is no production runtime-controller operation accepting `--actual-json` and no body-independent `validate-handoff` operation.
 
@@ -91,9 +94,11 @@ Routed handoff requires:
 - latest implementer run with `outcome=review_requested` and identical true integer run ID,
 - mandatory run metadata containing exact `task_id` and exact resolved workspace.
 
+The targeted dispatcher does not trust a previous text result. It re-fetches live state, re-runs routed-handoff validation, requires `review_dispatch=false`, rechecks task status/assignee/workspace/current implementer run/body immediately before claim, then uses the Hermes 0.20.4 exact-task `claim_review_task` path and native review spawn primitives. The helper is version-pinned and fails closed if those primitives drift or disappear. Board-global review dispatch is not exposed through the guarded runtime-controller surface.
+
 ## 7. Claude Code mechanical execution boundary
 
-Claude-backed profiles use profile-scoped `factory-execution-guards` v0.6.0.
+Claude-backed profiles use profile-scoped `factory-execution-guards` v0.7.0. Version 0.7.0 preserves the v0.6.0 Claude permission/content-attestation contract and expands the runtime-controller allowlist only with exact `dispatch-review --task-id <task-id>`.
 
 Outer GPT terminal access is **Claude-only**: no `find`, Git, Python, grep or other helper executable is permitted. Direct file/code mutation tools are blocked.
 
@@ -150,9 +155,11 @@ A durable JSON file alone cannot unlock lifecycle. `kanban_request_review` / Cla
 
 ## 8. Runtime-controller mechanical boundary
 
-`runtime-controller` has profile-scoped execution guards, only the terminal toolset, and can execute only installed `kanban_runtime_cli.sh` operations: `create`, `show`, `block`, `complete`, `validate-runtime`, `validate-routed-handoff`, `validate-routing-body`, `validate-routing-live`.
+`runtime-controller` has profile-scoped execution guards, only the terminal toolset, and can execute only installed `kanban_runtime_cli.sh` operations: `create`, `show`, `block`, `complete`, `validate-runtime`, `validate-routed-handoff`, `validate-routing-body`, `validate-routing-live`, `dispatch-review`.
 
-Unquoted literal newline/CR, direct `hermes`, Git, Python, curl, file tools, shell operators and command substitution are blocked. Quoted multiline values remain single argv items and are still validated by the per-operation schema. Live validators accept task IDs, not caller-supplied snapshot bytes.
+`dispatch-review` accepts exactly `--task-id <task-id>` and launches only the already-routed card after revalidation. It is not a general shell/Python escape and does not expose board-global `hermes kanban dispatch`.
+
+Unquoted literal newline/CR, direct `hermes`, Git, Python, curl, file tools, shell operators and command substitution are blocked. Quoted multiline values remain single argv items and are still validated by the per-operation schema. Live validators/dispatcher accept task IDs, not caller-supplied snapshot bytes.
 
 ## 9. Plugin supply-chain transaction
 
