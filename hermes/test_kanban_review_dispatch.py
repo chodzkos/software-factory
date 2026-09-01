@@ -21,6 +21,7 @@ class FakeKanbanDB:
         self.worker_pids: list[tuple[str, int]] = []
         self.hooks: list[tuple[str, int | None]] = []
         self.failures: list[tuple[str, str]] = []
+        self.branch_updates: list[tuple[str, str]] = []
 
     def review_dispatch_enabled(self):
         return self.auto_review
@@ -42,11 +43,15 @@ class FakeKanbanDB:
         self.task.current_run_id = 18
         return self.task
 
-    def resolve_workspace(self, claimed, *, board=None):
-        return Path(self.workspace)
+    def _resolve_worktree_workspace(self, claimed, *, board=None):
+        return Path(self.workspace), claimed.branch_name
 
     def set_workspace_path(self, conn, task_id, workspace):
         self.task.workspace_path = workspace
+
+    def set_branch_name(self, conn, task_id, branch_name):
+        self.task.branch_name = branch_name
+        self.branch_updates.append((task_id, branch_name))
 
     def _default_spawn(self, claimed, workspace, *, board=None):
         if self.fail_spawn:
@@ -135,6 +140,7 @@ class TargetedReviewDispatchTests(unittest.TestCase):
             status=status,
             workspace_kind="worktree",
             workspace_path=str(worktree),
+            branch_name="e2e/t_live",
             current_run_id=17,
             skills=[],
         )
@@ -159,6 +165,7 @@ class TargetedReviewDispatchTests(unittest.TestCase):
         self.assertEqual(profile, "reviewer-gpt")
         self.assertEqual(workspace, snap["task"]["workspace_path"])
         self.assertIn("sdlc-review", skills)
+        self.assertEqual(kb.branch_updates, [("t_live", "e2e/t_live")])
         self.assertEqual(kb.worker_pids, [("t_live", 4242)])
         self.assertEqual(kb.hooks, [("t_live", 4242)])
         self.assertEqual(kb.failures, [])
