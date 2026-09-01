@@ -83,7 +83,11 @@ grep -Fq 'exec hermes kanban create "$@"' "${RUNTIME_WRAPPER}"
 grep -Fq 'block reason must not contain flag-shaped operands' "${RUNTIME_WRAPPER}"
 # Match eval only when it appears as a shell token on a non-comment line.
 # This avoids treating documentation such as "non-eval shape" as executable code.
-if grep -Ev '^[[:space:]]*#' "${RUNTIME_WRAPPER}" | grep -Eq '(^|[;&|()[:space:]])eval([[:space:]]|$)'; then
+if awk '
+  /^[[:space:]]*#/ { next }
+  /(^|[;&|()[:space:]])eval([[:space:]]|$)/ { found=1 }
+  END { exit(found ? 0 : 1) }
+' "${RUNTIME_WRAPPER}"; then
   echo 'ERROR: runtime wrapper must not use eval' >&2
   exit 1
 fi
