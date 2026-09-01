@@ -1,6 +1,6 @@
 name: factory-execution-guards
-version: 0.6.0
-description: Fail-closed execution, live-state provenance, workspace-scoped Claude edits, and complete attestation guards for privileged Software Factory profiles.
+version: 0.7.0
+description: Fail-closed execution, live-state provenance, gated targeted review dispatch, workspace-scoped Claude edits, and complete attestation guards for privileged Software Factory profiles.
 entrypoint: __init__:register
 provides_hooks:
   - pre_tool_call
