@@ -28,33 +28,122 @@ EOF
   exit 2
 }
 
-run_review_dispatcher() {
-  [[ -f "${REVIEW_DISPATCHER}" ]] || { echo "ERROR: missing ${REVIEW_DISPATCHER}" >&2; exit 2; }
-  local hermes_bin shebang interpreter env_name
-  hermes_bin="$(command -v hermes)" || { echo "ERROR: hermes not found in PATH" >&2; exit 2; }
-  shebang="$(head -n 1 "${hermes_bin}" 2>/dev/null || true)"
+probe_hermes_python() {
+  local candidate="$1"
+  [[ "${candidate}" == /* && -x "${candidate}" ]] || return 1
+  if PYTHONDONTWRITEBYTECODE=1 "${candidate}" -I -c 'import hermes_cli' >/dev/null 2>&1; then
+    printf '%s\n' "${candidate}"
+    return 0
+  fi
+  return 1
+}
+
+resolve_python_from_bash_launcher() {
+  local launcher="$1"
+  local line candidate inner inner_shebang resolved
+  local matches=0
+  local exec_re='^exec[[:space:]]+"(/[^"[:space:]]+)"[[:space:]]+"(/[^"[:space:]]+)"[[:space:]]+"\$@"[[:space:]]*$'
+  candidate=""
+  inner=""
+
+  # Hermes Agent 0.20.4 installs a PATH shim whose shebang is bash and whose
+  # final command is a literal, quoted exec of the venv Python + inner Hermes
+  # entrypoint. Parse only that exact non-eval shape. Any shell expansion,
+  # extra argv, command substitution, relative path, or multiple matching exec
+  # lines is rejected rather than interpreted.
+  while IFS= read -r line; do
+    if [[ "${line}" =~ ${exec_re} ]]; then
+      matches=$((matches + 1))
+      candidate="${BASH_REMATCH[1]}"
+      inner="${BASH_REMATCH[2]}"
+    fi
+  done <"${launcher}"
+
+  if [[ ${matches} -eq 1 && -r "${inner}" ]]; then
+    inner_shebang="$(head -n 1 "${inner}" 2>/dev/null || true)"
+    if [[ "${inner_shebang}" == '#!'*python* ]]; then
+      if resolved="$(probe_hermes_python "${candidate}")"; then
+        printf '%s\n' "${resolved}"
+        return 0
+      fi
+    fi
+  fi
+
+  # Controlled compatibility fallback for the standard Hermes managed install
+  # layout. It is considered only for a launcher under the user's Hermes/local
+  # installation roots, and every candidate must prove it can import hermes_cli
+  # in isolated Python mode before it is accepted.
+  case "${launcher}" in
+    "${HOME}/.local/bin/hermes"|"${HOME}/.hermes/"*) ;;
+    *) return 1 ;;
+  esac
+  for candidate in \
+    "${HOME}/.hermes/hermes-agent/.venv/bin/python" \
+    "${HOME}/.hermes/hermes-agent/venv/bin/python"
+  do
+    if resolved="$(probe_hermes_python "${candidate}")"; then
+      printf '%s\n' "${resolved}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+resolve_hermes_python() {
+  local hermes_bin hermes_real shebang payload candidate resolved base
+  hermes_bin="$(command -v hermes)" || return 1
+  hermes_real="$(readlink -f "${hermes_bin}" 2>/dev/null || printf '%s' "${hermes_bin}")"
+  [[ "${hermes_real}" == /* && -r "${hermes_real}" ]] || return 1
+  shebang="$(head -n 1 "${hermes_real}" 2>/dev/null || true)"
+
   case "${shebang}" in
     '#!/usr/bin/env '*)
-      env_name="${shebang#\#!/usr/bin/env }"
-      [[ -n "${env_name}" && "${env_name}" != -* && "${env_name}" != *[[:space:]]* ]] || {
-        echo "ERROR: unsupported hermes env shebang" >&2
-        exit 2
-      }
-      exec /usr/bin/env "${env_name}" "${REVIEW_DISPATCHER}" "$@"
+      payload="${shebang#\#!/usr/bin/env }"
+      [[ -n "${payload}" && "${payload}" != -* && "${payload}" != *[[:space:]]* ]] || return 1
+      case "${payload}" in
+        bash)
+          resolve_python_from_bash_launcher "${hermes_real}"
+          return $?
+          ;;
+        python*)
+          candidate="$(command -v "${payload}" 2>/dev/null || true)"
+          [[ -n "${candidate}" ]] || return 1
+          resolved="$(probe_hermes_python "${candidate}")" || return 1
+          printf '%s\n' "${resolved}"
+          return 0
+          ;;
+        *) return 1 ;;
+      esac
       ;;
     '#!'*)
-      interpreter="${shebang#\#!}"
-      [[ "${interpreter}" == /* && "${interpreter}" != *[[:space:]]* && -x "${interpreter}" ]] || {
-        echo "ERROR: unsupported hermes interpreter shebang" >&2
-        exit 2
-      }
-      exec "${interpreter}" "${REVIEW_DISPATCHER}" "$@"
+      candidate="${shebang#\#!}"
+      [[ "${candidate}" == /* && "${candidate}" != *[[:space:]]* && -x "${candidate}" ]] || return 1
+      base="$(basename "${candidate}")"
+      case "${base}" in
+        bash)
+          resolve_python_from_bash_launcher "${hermes_real}"
+          return $?
+          ;;
+        python*)
+          resolved="$(probe_hermes_python "${candidate}")" || return 1
+          printf '%s\n' "${resolved}"
+          return 0
+          ;;
+        *) return 1 ;;
+      esac
       ;;
-    *)
-      echo "ERROR: unable to resolve hermes Python interpreter" >&2
-      exit 2
-      ;;
+    *) return 1 ;;
   esac
+}
+
+run_review_dispatcher() {
+  [[ -f "${REVIEW_DISPATCHER}" ]] || { echo "ERROR: missing ${REVIEW_DISPATCHER}" >&2; exit 2; }
+  local hermes_python
+  if ! hermes_python="$(resolve_hermes_python)"; then
+    echo "ERROR: unable to resolve Hermes Python runtime capable of importing hermes_cli" >&2
+    exit 2
+  fi
+  exec "${hermes_python}" "${REVIEW_DISPATCHER}" "$@"
 }
 
 [[ $# -ge 1 ]] || usage
