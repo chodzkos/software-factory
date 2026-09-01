@@ -24,10 +24,11 @@ EOF
 
 expect_helper_exec() {
   local label="$1"
+  local rc
   rm -f "${HERMES_TEST_PY_LOG}"
   set +e
   bash "${WRAPPER}" dispatch-review --task-id t_probe >/dev/null 2>&1
-  local rc=$?
+  rc=$?
   set -e
   [[ ${rc} -eq 37 ]] || { echo "ERROR: ${label}: expected fake Hermes Python rc=37, got ${rc}" >&2; exit 1; }
   mapfile -t argv <"${HERMES_TEST_PY_LOG}"
@@ -42,10 +43,11 @@ expect_helper_exec() {
 
 expect_fail_closed() {
   local label="$1"
+  local rc
   rm -f "${HERMES_TEST_PY_LOG}"
   set +e
   bash "${WRAPPER}" dispatch-review --task-id t_probe >/dev/null 2>&1
-  local rc=$?
+  rc=$?
   set -e
   [[ ${rc} -eq 2 ]] || { echo "ERROR: ${label}: expected rc=2, got ${rc}" >&2; exit 1; }
   [[ ! -e "${HERMES_TEST_PY_LOG}" ]] || { echo "ERROR: ${label}: invalid launcher reached helper interpreter" >&2; exit 1; }
