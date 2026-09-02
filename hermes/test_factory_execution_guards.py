@@ -55,9 +55,12 @@ class ExecutionGuardTests(unittest.TestCase):
         return {"HERMES_PROFILE": profile, "HERMES_KANBAN_TASK": task, "HERMES_KANBAN_RUN_ID": "77", "HERMES_KANBAN_WORKSPACE": WORKSPACE}
 
     def _call(self, profile: str, tool: str, args=None, *, task="t_guard", content_state=CONTENT_STATE):
+        effective_args = dict(args or {})
+        if profile in {"coder-claude", "reviewer-claude", "architect-claude-opus"} and tool == "terminal":
+            effective_args.setdefault("workdir", WORKSPACE)
         patches=self._guard_patches(content_state=content_state)
         with patch.dict(os.environ, self._env(profile, task), clear=False), patches[0], patches[1], patches[2], patches[3]:
-            return PLUGIN.on_pre_tool_call(tool_name=tool, args=args or {}, task_id=task)
+            return PLUGIN.on_pre_tool_call(tool_name=tool, args=effective_args, task_id=task)
 
     def _execute_claude(
         self,
@@ -72,16 +75,17 @@ class ExecutionGuardTests(unittest.TestCase):
         after_state=CONTENT_STATE,
     ):
         env = self._env(profile, kanban_task_id)
-        result = json.dumps({"output": terminal_output, "exit_code": exit_code})
+        result = json.dumps({"output": terminal_output, "exit_code": exit_code, "cwd": WORKSPACE})
+        terminal_args = {"command": command, "workdir": WORKSPACE}
         patches=self._guard_patches(content_state=before_state)
         with patch.dict(os.environ, env, clear=False), patches[0], patches[1], patches[2], patches[3]:
-            pre = PLUGIN.on_pre_tool_call(tool_name="terminal", args={"command": command}, task_id=hook_task_id)
+            pre = PLUGIN.on_pre_tool_call(tool_name="terminal", args=terminal_args, task_id=hook_task_id)
         if pre is not None:
             return pre
         patches=self._guard_patches(content_state=after_state)
         with patch.dict(os.environ, env, clear=False), patches[0], patches[1], patches[2], patches[3]:
             PLUGIN.on_post_tool_call(
-                tool_name="terminal", args={"command": command}, result=result,
+                tool_name="terminal", args=terminal_args, result=result,
                 task_id=hook_task_id, duration_ms=1,
             )
         return None
@@ -171,7 +175,7 @@ class ExecutionGuardTests(unittest.TestCase):
             evidence = list(Path(td).glob("*.json"))
             self.assertEqual(len(evidence), 1)
             payload = json.loads(evidence[0].read_text())
-            self.assertEqual(payload["schema"], 5)
+            self.assertEqual(payload["schema"], 6)
             self.assertEqual(payload["task_id"], "t_guard")
             self.assertEqual(payload["run_id"], "77")
             self.assertEqual(payload["workspace"], WORKSPACE)
@@ -181,11 +185,12 @@ class ExecutionGuardTests(unittest.TestCase):
             root = Path(td)
             with patch.object(GUARD, "EVIDENCE_ROOT", root):
                 fake = {
-                    "schema": 5, "profile": "coder-claude", "task_id": "t_guard", "run_id": "77",
+                    "schema": 6, "profile": "coder-claude", "task_id": "t_guard", "run_id": "77",
                     "model_class": "sonnet", "workspace": WORKSPACE, "claude_binary": FAKE_CLAUDE[0],
                     "claude_binary_sha256": FAKE_CLAUDE[1], "session_id": "forged", "command_sha256": "c" * 64,
                     "attestation_id": "d" * 64, "git_head_after": CONTENT_STATE[0],
                     "workspace_content_state_after_sha256": CONTENT_STATE[1], "success": True,
+                    "execution_cwd": WORKSPACE, "terminal_args_sha256": "e" * 64,
                 }
                 (root / "t_guard__77__coder-claude.json").write_text(json.dumps(fake))
                 blocked = self._call("coder-claude", "kanban_request_review", {"summary": "ready"})

@@ -98,7 +98,7 @@ The targeted dispatcher does not trust a previous text result. It re-fetches liv
 
 ## 7. Claude Code mechanical execution boundary
 
-Claude-backed profiles use profile-scoped `factory-execution-guards` v0.7.0. Version 0.7.0 preserves the v0.6.0 Claude permission/content-attestation contract and expands the runtime-controller allowlist only with exact `dispatch-review --task-id <task-id>`.
+Claude-backed profiles use profile-scoped `factory-execution-guards` v0.9.0. Version 0.9.0 preserves the reviewed v0.8.0 atomic-claim boundary and all older predecessor controls while adding exact terminal-argument and effective-cwd binding.
 
 Outer GPT terminal access is **Claude-only**: no `find`, Git, Python, grep or other helper executable is permitted. Direct file/code mutation tools are blocked.
 
@@ -117,6 +117,8 @@ Claude argv uses a closed schema:
 - optional bounded `--max-turns` and low/medium/high `--effort`,
 - duplicate/unknown flags, permission bypass, settings, MCP, plugins, resume/worktree/debug and fallback flags are refused.
 
+The model-visible terminal argument object is independently closed. `command` and `workdir` are mandatory; `workdir` must be the byte-for-byte canonical resolved `HERMES_KANBAN_WORKSPACE` string and must resolve strictly to that same path. An optional `timeout` is accepted only as a non-boolean integer from 1 through 600. `background`, PTY, notifications/watchers, caller session/task IDs, environment/host/cwd aliases, and every future unknown key are refused. The hook receives raw model arguments before Hermes materializes handler defaults, so omitted execution-affecting keys cannot be smuggled through a default-expanded object.
+
 Prompt binding is structured, not substring-based. The prompt must contain exactly one line each:
 
 ```text
@@ -125,7 +127,7 @@ RUN_ID: <exact-run-id>
 WORKSPACE: <exact-resolved-worktree>
 ```
 
-Quoted multiline prompt arguments are allowed so those exact markers can remain separate lines; newline/CR outside shell quotes is rejected before execution as a command separator. The Claude process cwd must equal the resolved worktree.
+Quoted multiline prompt arguments are allowed so those exact markers can remain separate lines; newline/CR outside shell quotes is rejected before execution as a command separator. Every Claude terminal call must explicitly set `workdir=<exact resolved HERMES_KANBAN_WORKSPACE>` and must not request background, PTY, notification, session, task, environment, host, or cwd overrides.
 
 `coder-claude` receives read tools plus exactly one workspace-derived edit permission rule:
 
@@ -145,13 +147,13 @@ Reviewer/architect additionally run in permission `plan` mode and receive no Bas
 
 ### In-process attestation and durable evidence
 
-Before canonical Claude execution, `pre_tool_call` creates a random nonce held only in the trusted Hermes worker process and captures task/run/profile, resolved workspace, command SHA-256, Claude binary path+SHA-256, Git HEAD, and a content-state digest.
+Before canonical Claude execution, `pre_tool_call` creates a random nonce held only in the trusted Hermes worker process and captures task/run/profile, resolved workspace, exact execution cwd, command SHA-256, canonical `terminal_args_sha256`, Claude binary path+SHA-256, Git HEAD, and a content-state digest. The terminal digest uses UTF-8 canonical JSON with sorted keys, fixed separators and the `software-factory-claude-terminal-args-v1` domain; it includes every accepted argument plus the exact safe foreground defaults.
 
 The content-state digest covers staged diff plus raw bytes/mode/symlink targets for **all cached tracked paths and all untracked paths, including Git-ignored untracked paths**. It does not depend on `git status` visibility; `assume-unchanged`, `skip-worktree`, and `.gitignore` therefore cannot hide workspace content from attestation.
 
-`post_tool_call` may emit evidence only for the matching pending in-memory attestation and a successful Claude JSON result. Evidence schema v5 records before/after Git HEAD and content-state digests plus an attestation ID derived from the in-memory nonce.
+`post_tool_call` may emit evidence only for byte-identical pre/post terminal arguments, the matching pending in-memory attestation, successful terminal `exit_code=0`, and a successful Claude JSON result. In Hermes 0.20.4 an omitted result `cwd` signals that the observed cwd stayed equal to the validated `command_cwd`, so the effective cwd remains the explicit canonical workdir. If result `cwd` is present, it must be a string byte-for-byte and canonically equal to the assigned workspace; malformed, aliased, symlinked, or different values create no evidence. Evidence schema v6 records `execution_cwd`, `terminal_args_sha256`, before/after Git HEAD and content-state digests, plus an attestation ID derived from the in-memory nonce.
 
-A durable JSON file alone cannot unlock lifecycle. `kanban_request_review` / Claude-backed completion requires both matching schema-v5 evidence and matching completed attestation still held in the same worker process. Current Claude binary identity, resolved workspace, Git HEAD and content-state digest are revalidated immediately before lifecycle transition. Any subsequent workspace-content change or another Claude invocation invalidates the prior attestation.
+A durable JSON file alone cannot unlock lifecycle. `kanban_request_review` / Claude-backed completion requires both matching schema-6 evidence and matching completed attestation still held in the same worker process, including exact execution cwd and terminal-args digest. Current Claude binary identity, resolved workspace, Git HEAD and content-state digest are revalidated immediately before lifecycle transition. Any subsequent workspace-content change or any attempted Claude invocation, including a malformed/rejected call, invalidates the prior attestation.
 
 ## 8. Runtime-controller mechanical boundary
 

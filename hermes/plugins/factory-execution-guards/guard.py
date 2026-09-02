@@ -29,6 +29,10 @@ CLAUDE_ALLOWED_TOOLS = {
 CODER_CLAUDE_TOOLS = "Read,Write,Edit,Glob,Grep,Bash(git status *),Bash(git diff *),Bash(git rev-parse *),Bash(python3 *)"
 READONLY_CLAUDE_TOOLS = "Read,Glob,Grep"
 EVIDENCE_ROOT = Path.home() / ".hermes" / "factory-evidence" / "claude-code"
+EVIDENCE_SCHEMA = 6
+TERMINAL_ARGS_DOMAIN = "software-factory-claude-terminal-args-v1"
+CLAUDE_TERMINAL_ARG_KEYS = frozenset({"command", "workdir", "timeout"})
+CLAUDE_TERMINAL_TIMEOUT_MAX = 600
 SHELL_OPERATORS = frozenset({";", "&&", "||", "|", "&", ">", ">>", "<", "<<", "(", ")"})
 FORBIDDEN_CLAUDE_FLAGS = frozenset({
     "--dangerously-skip-permissions", "--settings", "--setting-sources", "--mcp-config", "--strict-mcp-config",
@@ -152,6 +156,80 @@ def _command_from_args(args: Any) -> str:
     return command
 
 
+def _canonical_terminal_context(args: Any) -> dict[str, str] | None:
+    """Waliduj pełny modelowy obiekt terminala i zwiąż jego kontekst."""
+    if not isinstance(args, dict) or set(args) - CLAUDE_TERMINAL_ARG_KEYS:
+        return None
+    try:
+        command = _command_from_args(args)
+    except ValueError:
+        return None
+
+    workspace = _workspace()
+    workdir = args.get("workdir")
+    if not workspace or not isinstance(workdir, str) or not workdir:
+        return None
+    if workdir != workspace:
+        return None
+    try:
+        resolved = str(Path(workdir).resolve(strict=True))
+    except OSError:
+        return None
+    if resolved != workspace:
+        return None
+
+    timeout = args.get("timeout")
+    if "timeout" in args:
+        if type(timeout) is not int or not 1 <= timeout <= CLAUDE_TERMINAL_TIMEOUT_MAX:
+            return None
+
+    # Pola niewysłane przez model są jawnie utrwalone z dokładnymi wartościami,
+    # które Hermes 0.20.4 przekazuje do foreground terminal_tool.
+    canonical_args = {
+        "background": False,
+        "command": command,
+        "notify_on_complete": False,
+        "pty": False,
+        "timeout": timeout,
+        "watch_patterns": None,
+        "workdir": workdir,
+    }
+    framed = {
+        "domain": TERMINAL_ARGS_DOMAIN,
+        "terminal_args": canonical_args,
+    }
+    encoded = json.dumps(
+        framed,
+        ensure_ascii=False,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return {
+        "command": command,
+        "execution_cwd": workdir,
+        "terminal_args_sha256": hashlib.sha256(encoded).hexdigest(),
+    }
+
+
+def _invalidate_claude_attempt(profile: str, task_id: str) -> None:
+    """Każda próba terminala Claude unieważnia wcześniejszy handoff."""
+    run_id = _run_id()
+    if not task_id or not run_id:
+        return
+    key = _attestation_key(profile, task_id, run_id)
+    _PENDING_ATTESTATIONS.pop(key, None)
+    _COMPLETED_ATTESTATIONS.pop(key, None)
+
+
+def _is_sha256(value: Any) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(char in "0123456789abcdef" for char in value)
+    )
+
+
 def _shell_tokens(command: str) -> list[str]:
     lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|<>()")
     lexer.whitespace_split = True
@@ -234,7 +312,7 @@ def _evidence_path(task_id: str, run_id: str, profile: str) -> Path:
     return EVIDENCE_ROOT / f"{task_id}__{run_id}__{profile}.json"
 
 
-def _start_attestation(profile: str, command: str, task_id: str) -> bool:
+def _start_attestation(profile: str, context: dict[str, str], task_id: str) -> bool:
     run_id = _run_id()
     workspace = _workspace()
     identity = _canonical_claude_identity()
@@ -244,10 +322,11 @@ def _start_attestation(profile: str, command: str, task_id: str) -> bool:
     binary_path, binary_sha256 = identity
     git_head, content_before = state
     key = _attestation_key(profile, task_id, run_id)
-    _COMPLETED_ATTESTATIONS.pop(key, None)
     _PENDING_ATTESTATIONS[key] = {
         "nonce": secrets.token_hex(32),
-        "command_sha256": hashlib.sha256(command.encode("utf-8")).hexdigest(),
+        "command_sha256": hashlib.sha256(context["command"].encode("utf-8")).hexdigest(),
+        "execution_cwd": context["execution_cwd"],
+        "terminal_args_sha256": context["terminal_args_sha256"],
         "workspace": workspace,
         "claude_binary": binary_path,
         "claude_binary_sha256": binary_sha256,
@@ -274,12 +353,16 @@ def _evidence_exists(profile: str, task_id: str) -> bool:
     except (OSError, json.JSONDecodeError):
         return False
     return (
-        data.get("schema") == 5
+        data.get("schema") == EVIDENCE_SCHEMA
         and data.get("profile") == profile
         and data.get("task_id") == task_id
         and data.get("run_id") == run_id
         and data.get("model_class") == _claude_model(profile)
         and data.get("workspace") == workspace
+        and data.get("execution_cwd") == workspace
+        and data.get("execution_cwd") == completed.get("execution_cwd")
+        and _is_sha256(data.get("terminal_args_sha256"))
+        and data.get("terminal_args_sha256") == completed.get("terminal_args_sha256")
         and data.get("claude_binary") == binary_path
         and data.get("claude_binary_sha256") == binary_sha256
         and data.get("git_head_after") == current_head
@@ -304,7 +387,7 @@ def _parse_claude_result(output: str) -> dict[str, Any] | None:
     return value
 
 
-def _terminal_result_output(result: str) -> str | None:
+def _terminal_result_output(result: str, expected_cwd: str) -> tuple[str, str] | None:
     try:
         payload = json.loads(result)
     except (TypeError, json.JSONDecodeError):
@@ -312,26 +395,51 @@ def _terminal_result_output(result: str) -> str | None:
     if not isinstance(payload, dict) or payload.get("exit_code") != 0:
         return None
     output = payload.get("output")
-    return output if isinstance(output, str) else None
+    if not isinstance(output, str):
+        return None
+    if "cwd" not in payload:
+        # Hermes 0.20.4 pomija cwd, gdy zaobserwowany katalog nie zmienił się
+        # względem command_cwd, którym jest zwalidowany jawny workdir.
+        execution_cwd = expected_cwd
+    else:
+        execution_cwd = payload.get("cwd")
+        if not isinstance(execution_cwd, str) or execution_cwd != expected_cwd:
+            return None
+        try:
+            if str(Path(execution_cwd).resolve(strict=True)) != expected_cwd:
+                return None
+        except OSError:
+            return None
+    return output, execution_cwd
 
 
 def on_post_tool_call(tool_name: str = "", args: Any = None, result: str = "", task_id: str = "", **_: Any) -> None:
     profile = _profile()
     if profile not in CLAUDE_PROFILES or tool_name != "terminal":
         return None
+    tid = _task_id(task_id)
+    rid = _run_id()
+    key = _attestation_key(profile, tid, rid)
+    pending = _PENDING_ATTESTATIONS.pop(key, None)
+    _COMPLETED_ATTESTATIONS.pop(key, None)
     try:
-        command = _command_from_args(args)
+        context = _canonical_terminal_context(args)
+        if context is None:
+            return None
+        command = context["command"]
         if _parse_claude_argv(profile, command) is None:
             return None
-        tid = _task_id(task_id)
-        rid = _run_id()
-        key = _attestation_key(profile, tid, rid)
-        pending = _PENDING_ATTESTATIONS.get(key)
-        if not pending or pending.get("command_sha256") != hashlib.sha256(command.encode("utf-8")).hexdigest():
+        if (
+            not pending
+            or pending.get("command_sha256") != hashlib.sha256(command.encode("utf-8")).hexdigest()
+            or pending.get("execution_cwd") != context["execution_cwd"]
+            or pending.get("terminal_args_sha256") != context["terminal_args_sha256"]
+        ):
             return None
-        output = _terminal_result_output(result)
-        if output is None:
+        terminal_result = _terminal_result_output(result, context["execution_cwd"])
+        if terminal_result is None:
             return None
+        output, execution_cwd = terminal_result
         parsed = _parse_claude_result(output)
         if parsed is None:
             return None
@@ -351,12 +459,14 @@ def on_post_tool_call(tool_name: str = "", args: Any = None, result: str = "", t
         attestation_id = hashlib.sha256(pending["nonce"].encode("ascii")).hexdigest()
         EVIDENCE_ROOT.mkdir(parents=True, exist_ok=True)
         payload = {
-            "schema": 5,
+            "schema": EVIDENCE_SCHEMA,
             "profile": profile,
             "task_id": tid,
             "run_id": rid,
             "model_class": _claude_model(profile),
             "workspace": workspace,
+            "execution_cwd": execution_cwd,
+            "terminal_args_sha256": pending["terminal_args_sha256"],
             "claude_binary": binary_path,
             "claude_binary_sha256": binary_sha256,
             "session_id": parsed["session_id"],
@@ -376,8 +486,9 @@ def on_post_tool_call(tool_name: str = "", args: Any = None, result: str = "", t
         _COMPLETED_ATTESTATIONS[key] = {
             "attestation_id": attestation_id,
             "command_sha256": pending["command_sha256"],
+            "execution_cwd": execution_cwd,
+            "terminal_args_sha256": pending["terminal_args_sha256"],
         }
-        _PENDING_ATTESTATIONS.pop(key, None)
     except Exception:
         return None
     return None
@@ -400,10 +511,15 @@ def on_pre_tool_call(tool_name: str = "", args: Any = None, task_id: str = "", *
         if tool_name not in CLAUDE_ALLOWED_TOOLS[profile]:
             return _block(f"{profile} tool refused: Claude-backed profile capability boundary")
         if tool_name == "terminal":
-            command = _command_from_args(args)
+            tid = _task_id(task_id)
+            _invalidate_claude_attempt(profile, tid)
+            context = _canonical_terminal_context(args)
+            if context is None:
+                return _block(f"{profile} terminal arguments refused by closed execution schema")
+            command = context["command"]
             if not _claude_terminal_allowed(profile, command):
                 return _block(f"{profile} terminal command refused by mechanical allowlist")
-            if not _start_attestation(profile, command, _task_id(task_id)):
+            if not _start_attestation(profile, context, tid):
                 return _block(f"{profile} Claude attestation could not be initialized")
             return None
         tid = _task_id(task_id)

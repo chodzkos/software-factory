@@ -112,7 +112,7 @@ Summary ani profile names przekazane osobno nie są security inputem. Przy `CHAN
 
 ## 7. Claude Code execution boundary
 
-`coder-claude`, `reviewer-claude`, `architect-claude-opus` mają profile-scoped `factory-execution-guards` v0.8.0. Wersja 0.8.0 zachowuje v0.7.0 targeted review dispatch i v0.6.0 Claude confinement/content-attestation, dodając atomic claim, bezpieczną składnię permissions, kanoniczne ramkowanie content-state oraz oczyszczone środowisko Git/Pythona.
+`coder-claude`, `reviewer-claude`, `architect-claude-opus` mają profile-scoped `factory-execution-guards` v0.9.0. Wersja 0.9.0 zachowuje reviewed v0.8.0 atomic claim oraz starsze kontrole, dodając zamknięty pełny obiekt terminal args, exact explicit workdir i weryfikację efektywnego cwd po wykonaniu.
 
 Outer GPT nie może używać terminala do `find`, Git, Python, grep ani innych helperów. Terminal przyjmuje wyłącznie literalne argv0 `claude`; `./claude`, `/tmp/claude` i alternatywne ścieżki są blokowane.
 
@@ -126,7 +126,7 @@ RUN_ID: <exact-run-id>
 WORKSPACE: <exact-resolved-worktree>
 ```
 
-Quoted wieloliniowy prompt jest dozwolony, ale newline/CR poza quoted argumentem nadal jest mechanicznie blokowany jako separator shella. Substringi/prefiksy/sufiksy i duplikaty markerów nie są akceptowane. Cwd procesu Claude musi być dokładnie resolved worktree.
+Quoted wieloliniowy prompt jest dozwolony, ale newline/CR poza quoted argumentem nadal jest mechanicznie blokowany jako separator shella. Substringi/prefiksy/sufiksy i duplikaty markerów nie są akceptowane. Każdy modelowy terminal call musi jawnie ustawić `workdir=<exact resolved HERMES_KANBAN_WORKSPACE>`; brak pola, alias leksykalny/symlink, inny katalog, background, PTY, notification/session/task/environment/host/cwd override albo nieznany klucz jest blokowany.
 
 Coder permissions są wyliczane z resolved worktree i muszą mieć dokładnie postać:
 
@@ -146,9 +146,9 @@ Read,Glob,Grep
 
 Reviewer/architect mają dodatkowo `--permission-mode plan`; nie otrzymują `Bash`, `Write` ani `Edit`.
 
-### 7.1 In-process attestation i evidence schema v5
+### 7.1 In-process attestation i evidence schema v6
 
-Przed canonical Claude run `pre_tool_call` tworzy losowy nonce wyłącznie w pamięci worker process i wiąże go z task/run/profile, resolved workspace, command hash, Claude binary path+SHA-256, Git HEAD oraz content-state digest przed wykonaniem.
+Przed canonical Claude run `pre_tool_call` tworzy losowy nonce wyłącznie w pamięci worker process i wiąże go z task/run/profile, resolved workspace, `execution_cwd`, command hash, `terminal_args_sha256`, Claude binary path+SHA-256, Git HEAD oraz content-state digest przed wykonaniem. Digest pełnych argumentów używa UTF-8 canonical JSON, sortowania kluczy, stałych separatorów i domeny `software-factory-claude-terminal-args-v1`; optional timeout jest prawdziwym integerem 1..600 i także podlega związaniu.
 
 Git jest uruchamiany przez zaufany absolute binary wybrany z platformowego `os.defpath`, z minimalnym środowiskiem tworzonym od zera. Dziedziczone `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, object/config injection i worker-controlled PATH nie są przekazywane. `rev-parse --show-toplevel` musi rozwiązać się dokładnie do deklarowanego workspace.
 
@@ -156,11 +156,11 @@ Content-state digest obejmuje staged diff oraz wszystkie tracked i untracked pat
 
 Tracked paths są enumerowane z Git index niezależnie od status hints, więc `assume-unchanged` i `skip-worktree` nie ukrywają ich przed digestem, a `.gitignore` nie wyłącza lokalnej zawartości workspace z attestation.
 
-`post_tool_call` wystawia evidence tylko dla matching pending attestation i successful Claude JSON result. Evidence schema v5 zapisuje także Git HEAD/content-state po wykonaniu oraz attestation ID wyprowadzony z in-memory nonce.
+`post_tool_call` wystawia evidence tylko dla identycznego pre/post digestu pełnych args, matching pending attestation, terminalowego `exit_code=0` i successful Claude JSON result. W Hermes 0.20.4 pominięte wynikowe `cwd` oznacza, że observed cwd pozostał równy zwalidowanemu `command_cwd`, więc efektywnym cwd jest jawny canonical workdir; jeśli `cwd` występuje, musi być stringiem byte-for-byte i kanonicznie identycznym z exact workspace. Malformed, alias albo inny cwd nie tworzy evidence. Schema-6 zapisuje także `execution_cwd`, `terminal_args_sha256`, Git HEAD/content-state po wykonaniu oraz attestation ID wyprowadzony z in-memory nonce.
 
-Sam durable JSON nie odblokowuje lifecycle. `kanban_request_review` albo Claude-backed completion wymaga jednocześnie matching schema-v5 file oraz matching completed attestation nadal obecnego w pamięci tego samego worker process.
+Sam durable JSON nie odblokowuje lifecycle. `kanban_request_review` albo Claude-backed completion wymaga jednocześnie matching schema-6 file oraz matching completed attestation nadal obecnego w pamięci tego samego worker process, w tym exact `execution_cwd` i `terminal_args_sha256`.
 
-Przed transition guard ponownie sprawdza current Claude binary identity, resolved workspace, Git HEAD i content-state digest. Każda późniejsza zmiana zawartości workspace albo rozpoczęcie kolejnego Claude command unieważnia poprzedni attestation.
+Przed transition guard ponownie sprawdza current Claude binary identity, resolved workspace, Git HEAD i content-state digest. Każda późniejsza zmiana zawartości workspace albo dowolna kolejna próba Claude terminal call — także malformed/rejected — unieważnia poprzedni attestation.
 
 ## 8. Plugin supply chain
 

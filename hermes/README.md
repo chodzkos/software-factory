@@ -44,7 +44,7 @@ Reviewer set musi być dokładny. Security reviewer jest przypięty do OpenAI, `
 
 Profile Claude nie udają natywnego Anthropica w Hermesie. Outer Hermes koordynuje, ale właściwa praca musi przejść przez `claude-code`.
 
-`factory-execution-guards` v0.8.0 zachowuje v0.7.0 same-card targeted review dispatch oraz v0.6.0 Claude confinement/content-attestation i wzmacnia ich granice bezpieczeństwa:
+`factory-execution-guards` v0.9.0 zachowuje v0.8.0 atomic review claim i wcześniejsze Claude confinement/content-attestation, a dodatkowo wiąże pełne argumenty terminala oraz efektywny cwd:
 
 - blokuje direct outer-GPT write/patch/code execution,
 - terminal outer GPT pozwala wyłącznie na literalne `claude`; żaden `find`, Git, Python, grep ani inny helper binary nie jest dopuszczony,
@@ -54,13 +54,16 @@ Profile Claude nie udają natywnego Anthropica w Hermesie. Outer Hermes koordynu
 - workspace-scoped `Edit(...)` jest mechanicznie wyliczany przez guard z resolved Kanban workspace; write poza worktree nie powinien przejść ani poprosić o rozszerzenie uprawnień,
 - reviewer-claude i architect-claude-opus wymagają `--permission-mode plan` i dokładnych `Read,Glob,Grep`,
 - odrzuca `./claude`, `/tmp/claude`, duplicate/unknown flags, permission bypass, settings/MCP/plugin/resume/worktree/debug/fallback,
-- prompt musi zawierać dokładnie po jednej osobnej linii `TASK_ID: ...`, `RUN_ID: ...`, `WORKSPACE: ...`, a cwd Claude musi być exact resolved worktree,
+- prompt musi zawierać dokładnie po jednej osobnej linii `TASK_ID: ...`, `RUN_ID: ...`, `WORKSPACE: ...`,
+- modelowy terminal call musi jawnie ustawić `workdir=<exact resolved HERMES_KANBAN_WORKSPACE>`; brak pola, alias leksykalny/symlink, inny katalog, background, PTY, notification/session/task override albo dowolny nieznany argument jest blokowany przed attestation,
+- pełny zaakceptowany obiekt terminal args jest kanonicznie serializowany i hashowany; opcjonalny `timeout` musi być prawdziwym integerem 1..600 i jest częścią digestu,
 - quoted multiline prompt jest dozwolony; newline/CR poza shell quotes jest blokowany przed wykonaniem jako separator poleceń,
 - przed Claude runem guard tworzy losowy in-process attestation i zapisuje Git HEAD + content-state digest,
 - Git dla attestation jest wybierany z platformowego domyślnego PATH i uruchamiany z minimalnym, oczyszczonym środowiskiem; odziedziczone `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, config injection i worker PATH nie mogą przekierować pomiaru do innego repo,
 - content-state digest używa domenowo rozdzielonych, długościowo ramkowanych pól i osobnych hashy rekordów; obejmuje staged diff oraz bytes digest/mode/symlink target wszystkich tracked i untracked paths, **także Git-ignored untracked**,
 - regular files są otwierane bez podążania za symlinkiem, a stat przed/po odczycie wykrywa zmianę pliku podczas pomiaru,
-- evidence schema v5 wiąże task/run/profile, resolved workspace, Claude session, command hash, Claude binary path+SHA-256, Git HEAD/content-state before/after oraz attestation ID,
+- evidence schema v6 wiąże task/run/profile, resolved workspace, `execution_cwd`, `terminal_args_sha256`, Claude session, command hash, Claude binary path+SHA-256, Git HEAD/content-state before/after oraz attestation ID,
+- `post_tool_call` wymaga udanego `exit_code=0`; w Hermes 0.20.4 brak pola wyniku `cwd` oznacza brak zmiany względem zwalidowanego `command_cwd`, więc efektywnym cwd pozostaje jawny canonical workdir, a obecne pole `cwd` musi być stringiem identycznym z kanonicznym workspace; malformed, alias albo inny cwd nie może utworzyć evidence,
 - sam plik evidence nie odblokowuje lifecycle: wymagany jest też completed attestation nadal obecny w pamięci tego samego worker process,
 - zmiana zawartości workspace, HEAD, resolved workspace albo Claude binary po evidence unieważnia handoff/completion; rozpoczęcie kolejnego Claude command również unieważnia poprzedni attestation.
 

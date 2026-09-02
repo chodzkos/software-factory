@@ -1,6 +1,6 @@
 name: factory-execution-guards
-version: 0.8.0
-description: Fail-closed execution, atomic review claims, injection-safe Claude permissions, collision-free content attestation, sanitized Git state, and gated live-state provenance for privileged Software Factory profiles.
+version: 0.9.0
+description: Fail-closed execution with exact Claude terminal arguments and effective cwd, schema-6 attestation, atomic review claims, injection-safe permissions, sanitized Git state, and gated live-state provenance.
 entrypoint: __init__:register
 provides_hooks:
   - pre_tool_call

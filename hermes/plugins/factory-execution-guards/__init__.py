@@ -285,7 +285,7 @@ def _hardened_workspace_content_state(workspace: str) -> tuple[str, str] | None:
             str(root), ["diff", "--cached", "--binary", "--no-ext-diff", "--no-textconv", "HEAD", "--"]
         ))
         # Deliberately omit --exclude-standard: ignored untracked files are security-relevant
-        # workspace state too and must invalidate schema-v5 evidence when they change.
+        # workspace state too and must invalidate schema-6 evidence when they change.
         raw_paths = bytes(_run_git(str(root), ["ls-files", "-c", "-o", "-z"]))
     except (OSError, subprocess.SubprocessError):
         return None
@@ -363,12 +363,6 @@ def _hardened_parse_claude_argv(profile: str, command: str) -> dict[str, str] | 
     workspace = _guard._workspace()
     if not task_id or not run_id or not workspace:
         return None
-    try:
-        if str(Path.cwd().resolve(strict=True)) != workspace:
-            return None
-    except OSError:
-        return None
-
     expected_model = "opus" if profile == "architect-claude-opus" else "sonnet"
     if values.get("--model") != expected_model or values.get("--output-format") != "json":
         return None

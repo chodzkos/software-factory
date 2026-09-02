@@ -15,6 +15,7 @@ PYTHON_BINDING_TEST="${ROOT_DIR}/hermes/test_kanban_runtime_python_binding.sh"
 REVIEW_DISPATCH_TEST="${ROOT_DIR}/hermes/test_kanban_review_dispatch.py"
 TARGETED_GUARD_TEST="${ROOT_DIR}/hermes/test_targeted_review_dispatch_guard.py"
 BOOTSTRAP_VERIFY="${ROOT_DIR}/hermes/verify_bootstrap.sh"
+GUARD_VERSION_VERIFY="${ROOT_DIR}/hermes/verify_execution_guard_version.py"
 
 printf '[check] bash syntax\n'
 bash -n "${CONFIGURE}" "${RUNTIME_WRAPPER}" "${RUNTIME_WRAPPER_TEST}" "${PYTHON_BINDING_TEST}"
@@ -47,6 +48,7 @@ grep -Fq 'actual_json_duplicate_key:' "${MODEL_ROUTING}"
 grep -Fq 'strict_json_loads' "${MODEL_ROUTING}"
 grep -Fq '`coder` | `yes` | **forbidden**' "${MODEL_POLICY_DOC}"
 grep -Fq '`coder-claude` | `yes` | `reviewer-gpt`' "${MODEL_POLICY_DOC}"
+PYTHONDONTWRITEBYTECODE=1 python3 "${GUARD_VERSION_VERIFY}" --root "${ROOT_DIR}"
 
 printf '[check] provenance-bound live handoff\n'
 grep -Fq 'def _live_snapshot(task_id: str)' "${RUNTIME_VALIDATOR}"
@@ -132,7 +134,7 @@ printf '[check] routed handoff adversarial regression\n'
 printf '[check] model routing tests from repo root\n'
 (cd "${ROOT_DIR}" && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -q hermes.test_model_routing_policy)
 printf '[check] effective execution guard adversarial tests\n'
-(cd "${ROOT_DIR}" && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -q hermes.test_factory_execution_guards hermes.test_factory_execution_guard_profile_resolution hermes.test_targeted_review_dispatch_guard)
+(cd "${ROOT_DIR}" && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -q hermes.test_factory_execution_guards hermes.test_factory_execution_guard_profile_resolution hermes.test_factory_execution_guard_terminal_args hermes.test_execution_guard_version_consistency hermes.test_targeted_review_dispatch_guard)
 printf '[check] bootstrap compatibility\n'
 bash "${BOOTSTRAP_VERIFY}"
 

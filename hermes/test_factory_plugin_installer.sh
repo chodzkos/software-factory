@@ -31,8 +31,8 @@ make_fixture() {
 make_known_execution_guard_predecessor() {
   local target="$1"
   mkdir -p "$target"
-  git -C "$ROOT_DIR" cat-file blob a179b118c5481942504f8ab7932a8bd9cbd05dca >"$target/plugin.yaml"
-  git -C "$ROOT_DIR" cat-file blob 80be85634dee187f056243d6124aaa3458c160f5 >"$target/__init__.py"
+  git -C "$ROOT_DIR" cat-file blob 5da8fdd7fb27017599c830c816945a89f5de5928 >"$target/plugin.yaml"
+  git -C "$ROOT_DIR" cat-file blob 33aa6723ede689fbd25ed54e22ce9c52341da2cb >"$target/__init__.py"
   git -C "$ROOT_DIR" cat-file blob fb2109da908740b63d62ba7951b38ef44505c905 >"$target/guard.py"
 }
 
