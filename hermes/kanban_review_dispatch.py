@@ -29,34 +29,51 @@ class _SavepointConnection:
 
     ``dispatch_review`` holds an outer ``BEGIN IMMEDIATE`` while it validates
     security-relevant task/provenance fields and calls Hermes' native
-    ``claim_review_task``.  Hermes' helper opens its own transaction, so this
-    proxy translates only those transaction-control statements to a savepoint;
-    every other connection operation is delegated unchanged.
+    ``claim_review_task``. Hermes' helper opens its own transaction, so this
+    proxy hides the already-open outer transaction from that helper, reports
+    only its own savepoint state through ``in_transaction``, and translates
+    only its transaction-control statements. Every other connection operation
+    is delegated unchanged.
     """
 
     def __init__(self, conn):
         self._conn = conn
         self._active = False
 
+    @property
+    def in_transaction(self) -> bool:
+        """Expose only the nested savepoint state, not the outer transaction.
+
+        Hermes 0.20.4 ``write_txn`` refuses implicit nesting by checking this
+        attribute before issuing ``BEGIN IMMEDIATE``. Returning ``False`` until
+        the proxy intercepts that BEGIN lets the native helper reach the
+        savepoint adapter. Returning ``True`` while the savepoint is active also
+        preserves Hermes' exception-time rollback guard.
+        """
+        return self._active
+
     def execute(self, sql: str, parameters=()):
         normalized = " ".join(str(sql).strip().upper().split())
         if normalized == "BEGIN IMMEDIATE":
             if self._active:
                 raise RuntimeError("nested targeted-review savepoint already active")
+            result = self._conn.execute(f"SAVEPOINT {_SAVEPOINT_NAME}")
             self._active = True
-            return self._conn.execute(f"SAVEPOINT {_SAVEPOINT_NAME}")
+            return result
         if normalized == "COMMIT":
             if not self._active:
                 raise RuntimeError("targeted-review savepoint commit without begin")
+            result = self._conn.execute(f"RELEASE SAVEPOINT {_SAVEPOINT_NAME}")
             self._active = False
-            return self._conn.execute(f"RELEASE SAVEPOINT {_SAVEPOINT_NAME}")
+            return result
         if normalized == "ROLLBACK":
             if not self._active:
                 return self._conn.execute("SELECT 1")
             try:
-                return self._conn.execute(f"ROLLBACK TO SAVEPOINT {_SAVEPOINT_NAME}")
-            finally:
+                result = self._conn.execute(f"ROLLBACK TO SAVEPOINT {_SAVEPOINT_NAME}")
                 self._conn.execute(f"RELEASE SAVEPOINT {_SAVEPOINT_NAME}")
+                return result
+            finally:
                 self._active = False
         return self._conn.execute(sql, parameters)
 
@@ -236,7 +253,7 @@ def _task_drift(
     if current.workspace_path != expected_workspace:
         drift.append("review_workspace_changed_after_validation")
     # Hermes 0.20.4 closes the implementer run when request_review moves the
-    # card to review, so the canonical pre-review-claim state is None.  Any
+    # card to review, so the canonical pre-review-claim state is None. Any
     # active run at this point means state changed after routed validation.
     if current.current_run_id is not None:
         drift.append("active_run_appeared_after_validation")

@@ -177,12 +177,21 @@ class ProfileResolutionTests(unittest.TestCase):
     def test_content_state_uses_collision_free_record_framing(self):
         with tempfile.TemporaryDirectory() as td:
             repo=Path(td); self._init_repo(repo)
-            record_prefix=b"\0b\0MODE:100000:644\0FILE\0"
-            (repo/"a").write_bytes(b"X"+record_prefix+b"Y")
+            a=repo/"a"; b=repo/"b"
+            a.write_bytes(b"")
+            a.chmod(0o640)
+            a_stat=a.lstat()
+            record_prefix=(
+                b"\0b\0"
+                + f"MODE:{stat.S_IFMT(a_stat.st_mode):o}:{stat.S_IMODE(a_stat.st_mode):o}\0".encode("ascii")
+                + b"FILE\0"
+            )
+            a.write_bytes(b"X"+record_prefix+b"Y")
             legacy_one=self._legacy_ambiguous_content_state(repo)
             hardened_one=PLUGIN._hardened_workspace_content_state(str(repo))
-            (repo/"a").write_bytes(b"X")
-            (repo/"b").write_bytes(b"Y")
+            a.write_bytes(b"X")
+            b.write_bytes(b"Y")
+            b.chmod(stat.S_IMODE(a_stat.st_mode))
             legacy_two=self._legacy_ambiguous_content_state(repo)
             hardened_two=PLUGIN._hardened_workspace_content_state(str(repo))
             self.assertEqual(legacy_one, legacy_two)

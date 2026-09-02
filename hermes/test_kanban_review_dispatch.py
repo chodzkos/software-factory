@@ -3,8 +3,11 @@ from __future__ import annotations
 import contextlib
 import copy
 import json
+import os
 import sqlite3
+import subprocess
 import tempfile
+import textwrap
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -307,12 +310,154 @@ class TargetedReviewDispatchTests(unittest.TestCase):
         conn.execute("CREATE TABLE values_table(value TEXT)")
         conn.execute("BEGIN IMMEDIATE")
         proxy = dispatch._SavepointConnection(conn)
+        self.assertFalse(proxy.in_transaction)
         proxy.execute("BEGIN IMMEDIATE")
+        self.assertTrue(proxy.in_transaction)
         proxy.execute("INSERT INTO values_table(value) VALUES ('inside')")
         proxy.execute("COMMIT")
+        self.assertFalse(proxy.in_transaction)
         self.assertEqual(conn.execute("SELECT value FROM values_table").fetchone()[0], "inside")
         conn.execute("ROLLBACK")
         self.assertEqual(conn.execute("SELECT COUNT(*) FROM values_table").fetchone()[0], 0)
+
+    def test_native_hermes_write_txn_and_claim_review_task_compose(self):
+        candidates = (
+            Path.home() / ".hermes" / "hermes-agent" / "venv" / "bin" / "python",
+            Path.home() / ".hermes" / "hermes-agent" / ".venv" / "bin" / "python",
+        )
+        hermes_python = next(
+            (
+                candidate
+                for candidate in candidates
+                if candidate.is_file() and os.access(candidate, os.X_OK)
+            ),
+            None,
+        )
+        if hermes_python is None:
+            self.skipTest("Hermes-managed Python is unavailable for native claim regression")
+
+        repo_root = Path(__file__).resolve().parents[1]
+        script = textwrap.dedent(
+            r"""
+            import os
+            import sys
+            import tempfile
+            from pathlib import Path
+            from unittest.mock import patch
+
+            repo_root = Path(sys.argv[1]).resolve()
+            sys.path.insert(0, str(repo_root / "hermes"))
+            import kanban_review_dispatch as dispatch
+
+            class ExpectedOuterRollback(RuntimeError):
+                pass
+
+            with tempfile.TemporaryDirectory() as td:
+                root = Path(td)
+                home = root / ".hermes"
+                home.mkdir()
+                os.environ["HOME"] = str(root)
+                os.environ["HERMES_HOME"] = str(home)
+
+                with patch.object(Path, "home", return_value=root):
+                    from hermes_cli import kanban_db as kb
+
+                    kb.init_db()
+                    with kb.connect() as conn:
+                        task_id = kb.create_task(
+                            conn,
+                            title="native targeted review savepoint regression",
+                            assignee="coder-claude",
+                        )
+                        implementation = kb.claim_task(conn, task_id)
+                        assert implementation is not None
+                        implementer_run_id = kb.get_task(conn, task_id).current_run_id
+                        assert type(implementer_run_id) is int
+                        assert kb.request_review(
+                            conn,
+                            task_id,
+                            summary="ready for native review claim",
+                            reviewer="reviewer-gpt",
+                            expected_run_id=implementer_run_id,
+                        ) is True
+
+                        before_runs = conn.execute(
+                            "SELECT COUNT(*) FROM task_runs WHERE task_id = ?",
+                            (task_id,),
+                        ).fetchone()[0]
+                        before_events = conn.execute(
+                            "SELECT COUNT(*) FROM task_events WHERE task_id = ?",
+                            (task_id,),
+                        ).fetchone()[0]
+
+                        try:
+                            with kb.write_txn(conn):
+                                proxy = dispatch._SavepointConnection(conn)
+                                assert proxy.in_transaction is False
+                                review = kb.claim_review_task(proxy, task_id)
+                                assert review is not None
+                                assert review.assignee == "reviewer-gpt"
+                                assert type(review.current_run_id) is int
+                                assert review.current_run_id != implementer_run_id
+                                assert proxy.in_transaction is False
+                                raise ExpectedOuterRollback("prove native claim rollback")
+                        except ExpectedOuterRollback:
+                            pass
+
+                        rolled_back = kb.get_task(conn, task_id)
+                        assert rolled_back.status == "review"
+                        assert rolled_back.assignee == "reviewer-gpt"
+                        assert rolled_back.current_run_id is None
+                        assert conn.execute(
+                            "SELECT COUNT(*) FROM task_runs WHERE task_id = ?",
+                            (task_id,),
+                        ).fetchone()[0] == before_runs
+                        assert conn.execute(
+                            "SELECT COUNT(*) FROM task_events WHERE task_id = ?",
+                            (task_id,),
+                        ).fetchone()[0] == before_events
+
+                        with kb.write_txn(conn):
+                            proxy = dispatch._SavepointConnection(conn)
+                            assert proxy.in_transaction is False
+                            review = kb.claim_review_task(proxy, task_id)
+                            assert review is not None
+                            assert proxy.in_transaction is False
+
+                        committed = kb.get_task(conn, task_id)
+                        assert committed.status == "running"
+                        assert committed.assignee == "reviewer-gpt"
+                        assert type(committed.current_run_id) is int
+                        assert committed.current_run_id != implementer_run_id
+                        assert conn.execute(
+                            "SELECT COUNT(*) FROM task_runs WHERE task_id = ?",
+                            (task_id,),
+                        ).fetchone()[0] == before_runs + 1
+                        assert conn.execute(
+                            "SELECT COUNT(*) FROM task_events WHERE task_id = ?",
+                            (task_id,),
+                        ).fetchone()[0] == before_events + 1
+
+            print("NATIVE_HERMES_WRITE_TXN_CLAIM_OK")
+            """
+        )
+        result = subprocess.run(
+            [str(hermes_python), "-I", "-c", script, str(repo_root)],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=60,
+            env={
+                "HOME": str(Path.home()),
+                "PATH": os.defpath,
+                "LANG": "C",
+                "LC_ALL": "C",
+                "PYTHONDONTWRITEBYTECODE": "1",
+            },
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stdout)
+        self.assertIn("NATIVE_HERMES_WRITE_TXN_CLAIM_OK", result.stdout)
 
 
 if __name__ == "__main__":
