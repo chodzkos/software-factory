@@ -93,12 +93,13 @@ Routed handoff requires:
 - latest `review_requested` with matching profiles and mandatory true integer `run_id` (JSON booleans rejected),
 - latest implementer run with `outcome=review_requested` and identical true integer run ID,
 - mandatory run metadata containing exact `task_id` and exact resolved workspace.
+- for `coder-claude`, one strict handoff schema v1 record binding the exact HEAD/content, execution evidence schema v6, native event, and PID/start identity, with the implementer process proven exited.
 
-The targeted dispatcher does not trust a previous text result. It re-fetches live state, re-runs routed-handoff validation, requires `review_dispatch=false`, rechecks task status/assignee/workspace/current implementer run/body immediately before claim, then uses the Hermes 0.20.4 exact-task `claim_review_task` path and native review spawn primitives. The helper is version-pinned and fails closed if those primitives drift or disappear. Board-global review dispatch is not exposed through the guarded runtime-controller surface.
+The targeted dispatcher does not trust a previous text result. It re-fetches live state, re-runs routed-handoff validation, requires `review_dispatch=false`, and rechecks task/provenance plus sealed content/process identity under the final writer lock, after the native savepoint claim, and immediately before spawn. The reviewer run metadata binds the handoff schema, seal ID, content digest, and implementer run. Pre-commit drift rolls back; post-commit drift records a spawn failure and launches no reviewer. The helper is pinned to Hermes 0.20.4 and fails closed if primitives drift or disappear. Board-global review dispatch is not exposed.
 
 ## 7. Claude Code mechanical execution boundary
 
-Claude-backed profiles use profile-scoped `factory-execution-guards` v0.9.0. Version 0.9.0 preserves the reviewed v0.8.0 atomic-claim boundary and all older predecessor controls while adding exact terminal-argument and effective-cwd binding.
+Software Factory profiles use profile-scoped `factory-execution-guards` v0.10.0. Version 0.10.0 preserves the reviewed v0.9.0 execution evidence schema v6 and all older predecessor controls while adding exact active-run authorization, handoff schema v1, implementer process-exit proof, and reviewer approval byte binding.
 
 Outer GPT terminal access is **Claude-only**: no `find`, Git, Python, grep or other helper executable is permitted. Direct file/code mutation tools are blocked.
 
@@ -154,6 +155,12 @@ The content-state digest covers staged diff plus raw bytes/mode/symlink targets 
 `post_tool_call` may emit evidence only for byte-identical pre/post terminal arguments, the matching pending in-memory attestation, successful terminal `exit_code=0`, and a successful Claude JSON result. In Hermes 0.20.4 an omitted result `cwd` signals that the observed cwd stayed equal to the validated `command_cwd`, so the effective cwd remains the explicit canonical workdir. If result `cwd` is present, it must be a string byte-for-byte and canonically equal to the assigned workspace; malformed, aliased, symlinked, or different values create no evidence. Evidence schema v6 records `execution_cwd`, `terminal_args_sha256`, before/after Git HEAD and content-state digests, plus an attestation ID derived from the in-memory nonce.
 
 A durable JSON file alone cannot unlock lifecycle. `kanban_request_review` / Claude-backed completion requires both matching schema-6 evidence and matching completed attestation still held in the same worker process, including exact execution cwd and terminal-args digest. Current Claude binary identity, resolved workspace, Git HEAD and content-state digest are revalidated immediately before lifecycle transition. Any subsequent workspace-content change or any attempted Claude invocation, including a malformed/rejected call, invalidates the prior attestation.
+
+Before every mutation-capable `coder-claude` tool call, the guard independently reads the board selected by the worker environment and requires the exact task/run/workspace to remain active (`running`, assignee/current run exact, no end/outcome, matching metadata). A second terminal call after review handoff is therefore blocked before process launch, new attestation, or evidence replacement.
+
+Only a strict successful native request-review result plus matching durable task/run/event and unchanged schema-6 evidence creates the separate handoff schema v1 record. It is published atomically without following symlinks and binds task/run/profiles/workspace, HEAD/content, evidence file hash, attestation/command/terminal identities, native event, PID, and Linux process-start token. The in-process seal clears prior authorization; `HERMES_KANBAN_STOP_NUDGE=0` suppresses generic Hermes 0.20.4 nudges only as defense in depth.
+
+Routed validation and dispatch require that exact implementer process to have exited and all sealed bytes to remain unchanged. Final `reviewer-gpt` approval/completion is refused unless its exact reviewer run metadata and current workspace still match the same seal. Requesting changes remains available without falsely approving drifted bytes.
 
 ## 8. Runtime-controller mechanical boundary
 

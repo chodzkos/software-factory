@@ -42,24 +42,26 @@ class ExecutionGuardTests(unittest.TestCase):
     def setUp(self) -> None:
         GUARD._PENDING_ATTESTATIONS.clear()
         GUARD._COMPLETED_ATTESTATIONS.clear()
+        GUARD._SEALED_CODER_RUNS.clear()
 
-    def _guard_patches(self, *, content_state=CONTENT_STATE):
+    def _guard_patches(self, *, content_state=CONTENT_STATE, active_run=True):
         return (
             patch.object(GUARD, "_canonical_claude_identity", return_value=FAKE_CLAUDE),
             patch.object(GUARD, "_workspace", return_value=WORKSPACE),
             patch.object(GUARD, "_workspace_content_state", return_value=content_state),
             patch.object(PLUGIN.Path, "cwd", return_value=Path(WORKSPACE)),
+            patch.object(GUARD, "_active_coder_run_matches", return_value=active_run),
         )
 
     def _env(self, profile: str, task: str = "t_guard") -> dict[str, str]:
         return {"HERMES_PROFILE": profile, "HERMES_KANBAN_TASK": task, "HERMES_KANBAN_RUN_ID": "77", "HERMES_KANBAN_WORKSPACE": WORKSPACE}
 
-    def _call(self, profile: str, tool: str, args=None, *, task="t_guard", content_state=CONTENT_STATE):
+    def _call(self, profile: str, tool: str, args=None, *, task="t_guard", content_state=CONTENT_STATE, active_run=True):
         effective_args = dict(args or {})
         if profile in {"coder-claude", "reviewer-claude", "architect-claude-opus"} and tool == "terminal":
             effective_args.setdefault("workdir", WORKSPACE)
-        patches=self._guard_patches(content_state=content_state)
-        with patch.dict(os.environ, self._env(profile, task), clear=False), patches[0], patches[1], patches[2], patches[3]:
+        patches=self._guard_patches(content_state=content_state, active_run=active_run)
+        with patch.dict(os.environ, self._env(profile, task), clear=False), patches[0], patches[1], patches[2], patches[3], patches[4]:
             return PLUGIN.on_pre_tool_call(tool_name=tool, args=effective_args, task_id=task)
 
     def _execute_claude(
@@ -78,12 +80,12 @@ class ExecutionGuardTests(unittest.TestCase):
         result = json.dumps({"output": terminal_output, "exit_code": exit_code, "cwd": WORKSPACE})
         terminal_args = {"command": command, "workdir": WORKSPACE}
         patches=self._guard_patches(content_state=before_state)
-        with patch.dict(os.environ, env, clear=False), patches[0], patches[1], patches[2], patches[3]:
+        with patch.dict(os.environ, env, clear=False), patches[0], patches[1], patches[2], patches[3], patches[4]:
             pre = PLUGIN.on_pre_tool_call(tool_name="terminal", args=terminal_args, task_id=hook_task_id)
         if pre is not None:
             return pre
         patches=self._guard_patches(content_state=after_state)
-        with patch.dict(os.environ, env, clear=False), patches[0], patches[1], patches[2], patches[3]:
+        with patch.dict(os.environ, env, clear=False), patches[0], patches[1], patches[2], patches[3], patches[4]:
             PLUGIN.on_post_tool_call(
                 tool_name="terminal", args=terminal_args, result=result,
                 task_id=hook_task_id, duration_ms=1,
@@ -212,6 +214,73 @@ class ExecutionGuardTests(unittest.TestCase):
             self.assertIsNone(self._call("coder-claude", "terminal", {"command": CODER_CMD}))
             blocked = self._call("coder-claude", "kanban_request_review", {"summary": "ready"})
             self.assertEqual(blocked and blocked.get("action"), "block")
+
+    def test_post_review_second_claude_call_is_blocked_before_attestation(self):
+        blocked = self._call(
+            "coder-claude",
+            "terminal",
+            {"command": CODER_CMD},
+            active_run=False,
+        )
+        self.assertEqual(blocked and blocked.get("action"), "block")
+        self.assertEqual(GUARD._PENDING_ATTESTATIONS, {})
+        self.assertEqual(GUARD._COMPLETED_ATTESTATIONS, {})
+
+    def test_successful_review_handoff_seals_process_and_disables_stop_nudge(self):
+        env = self._env("coder-claude")
+        with patch.dict(os.environ, env, clear=False), patch.object(
+            PLUGIN._handoff,
+            "create_handoff_seal",
+            return_value={"seal_id": "a" * 64},
+        ), patch.object(GUARD, "_evidence_exists", return_value=True):
+            os.environ.pop("HERMES_KANBAN_STOP_NUDGE", None)
+            PLUGIN.on_post_tool_call(
+                tool_name="kanban_request_review",
+                args={"summary": "ready"},
+                result=json.dumps({"ok": True, "task_id": "t_guard", "run_id": 77, "status": "review"}),
+                task_id="t_guard",
+            )
+            self.assertEqual(os.environ.get("HERMES_KANBAN_STOP_NUDGE"), "0")
+            self.assertIn(("coder-claude", "t_guard", "77"), GUARD._SEALED_CODER_RUNS)
+            self.assertEqual(GUARD._COMPLETED_ATTESTATIONS, {})
+        blocked = self._call("coder-claude", "terminal", {"command": CODER_CMD}, active_run=True)
+        self.assertEqual(blocked and blocked.get("action"), "block")
+        self.assertIn("review handoff sealed", blocked.get("message", ""))
+        self.assertEqual(GUARD._PENDING_ATTESTATIONS, {})
+
+    def test_failed_review_handoff_does_not_disable_stop_nudge(self):
+        env = self._env("coder-claude")
+        with patch.dict(os.environ, env, clear=False), patch.object(
+            PLUGIN._handoff,
+            "create_handoff_seal",
+            side_effect=PLUGIN._handoff.HandoffError("failed"),
+        ):
+            os.environ.pop("HERMES_KANBAN_STOP_NUDGE", None)
+            PLUGIN.on_post_tool_call(
+                tool_name="kanban_request_review",
+                result=json.dumps({"ok": False}),
+                task_id="t_guard",
+            )
+            self.assertNotIn("HERMES_KANBAN_STOP_NUDGE", os.environ)
+
+    def test_reviewer_gpt_completion_requires_exact_sealed_bytes(self):
+        with patch.dict(os.environ, self._env("reviewer-gpt"), clear=False), patch.object(
+            PLUGIN._handoff,
+            "reviewer_completion_authorized",
+            return_value=False,
+        ):
+            blocked = PLUGIN.on_pre_tool_call(
+                tool_name="kanban_complete", args={"summary": "approve"}, task_id="t_guard"
+            )
+        self.assertEqual(blocked and blocked.get("action"), "block")
+        with patch.dict(os.environ, self._env("reviewer-gpt"), clear=False), patch.object(
+            PLUGIN._handoff,
+            "reviewer_completion_authorized",
+            return_value=True,
+        ):
+            self.assertIsNone(PLUGIN.on_pre_tool_call(
+                tool_name="kanban_complete", args={"summary": "approve"}, task_id="t_guard"
+            ))
 
     def test_failed_or_malformed_terminal_result_does_not_create_evidence(self):
         with tempfile.TemporaryDirectory() as td, patch.object(GUARD, "EVIDENCE_ROOT", Path(td)):

@@ -1,6 +1,6 @@
 name: factory-execution-guards
-version: 0.9.0
-description: Fail-closed execution with exact Claude terminal arguments and effective cwd, schema-6 attestation, atomic review claims, injection-safe permissions, sanitized Git state, and gated live-state provenance.
+version: 0.10.0
+description: Fail-closed Claude execution with active-run authorization, schema-6 attestation, schema-1 handoff sealing, process-exit proof, and reviewer byte binding.
 entrypoint: __init__:register
 provides_hooks:
   - pre_tool_call

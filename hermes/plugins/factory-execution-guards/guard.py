@@ -13,6 +13,8 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
+from . import handoff as _handoff
+
 RUNTIME_PROFILE = "runtime-controller"
 CLAUDE_NORMAL_PROFILES = frozenset({"coder-claude", "reviewer-claude"})
 CLAUDE_DEEP_PROFILES = frozenset({"architect-claude-opus"})
@@ -43,6 +45,10 @@ VALUE_FLAGS = frozenset({"-p", "--print", "--model", "--output-format", "--allow
 
 _PENDING_ATTESTATIONS: dict[tuple[str, str, str], dict[str, str]] = {}
 _COMPLETED_ATTESTATIONS: dict[tuple[str, str, str], dict[str, str]] = {}
+_SEALED_CODER_RUNS: set[tuple[str, str, str]] = set()
+
+# Alias jawnie testowany przez efektywny entrypoint.
+_active_coder_run_matches = _handoff.active_coder_run_matches
 
 
 def _block(message: str) -> dict[str, str]:
@@ -349,8 +355,10 @@ def _evidence_exists(profile: str, task_id: str) -> bool:
     binary_path, binary_sha256 = identity
     current_head, current_content_state = state
     try:
-        data = json.loads(_evidence_path(task_id, run_id, profile).read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        data = _handoff.strict_json_loads(
+            _evidence_path(task_id, run_id, profile).read_text(encoding="utf-8")
+        )
+    except (OSError, json.JSONDecodeError, _handoff.DuplicateJsonKey):
         return False
     return (
         data.get("schema") == EVIDENCE_SCHEMA
@@ -377,8 +385,8 @@ def _evidence_exists(profile: str, task_id: str) -> bool:
 
 def _parse_claude_result(output: str) -> dict[str, Any] | None:
     try:
-        value = json.loads(output)
-    except json.JSONDecodeError:
+        value = _handoff.strict_json_loads(output)
+    except (json.JSONDecodeError, _handoff.DuplicateJsonKey):
         return None
     if not isinstance(value, dict) or value.get("type") != "result" or value.get("subtype") != "success":
         return None
@@ -389,10 +397,14 @@ def _parse_claude_result(output: str) -> dict[str, Any] | None:
 
 def _terminal_result_output(result: str, expected_cwd: str) -> tuple[str, str] | None:
     try:
-        payload = json.loads(result)
-    except (TypeError, json.JSONDecodeError):
+        payload = _handoff.strict_json_loads(result)
+    except (TypeError, json.JSONDecodeError, _handoff.DuplicateJsonKey):
         return None
-    if not isinstance(payload, dict) or payload.get("exit_code") != 0:
+    if (
+        not isinstance(payload, dict)
+        or type(payload.get("exit_code")) is not int
+        or payload.get("exit_code") != 0
+    ):
         return None
     output = payload.get("output")
     if not isinstance(output, str):
@@ -415,6 +427,23 @@ def _terminal_result_output(result: str, expected_cwd: str) -> tuple[str, str] |
 
 def on_post_tool_call(tool_name: str = "", args: Any = None, result: str = "", task_id: str = "", **_: Any) -> None:
     profile = _profile()
+    if profile == "coder-claude" and tool_name == "kanban_request_review":
+        tid = _task_id(task_id)
+        rid = _run_id()
+        key = _attestation_key(profile, tid, rid)
+        if key in _SEALED_CODER_RUNS or not _evidence_exists(profile, tid):
+            return None
+        try:
+            _handoff.create_handoff_seal(result, content_state=_workspace_content_state)
+        except Exception:
+            return None
+        _SEALED_CODER_RUNS.add(key)
+        _PENDING_ATTESTATIONS.pop(key, None)
+        _COMPLETED_ATTESTATIONS.pop(key, None)
+        # Dokładny opt-out Hermes 0.20.4 jest tylko dodatkową ochroną;
+        # autorytatywna bramka stanu poniżej pozostaje właściwym zabezpieczeniem.
+        os.environ["HERMES_KANBAN_STOP_NUDGE"] = "0"
+        return None
     if profile not in CLAUDE_PROFILES or tool_name != "terminal":
         return None
     tid = _task_id(task_id)
@@ -510,8 +539,13 @@ def on_pre_tool_call(tool_name: str = "", args: Any = None, task_id: str = "", *
             return None
         if tool_name not in CLAUDE_ALLOWED_TOOLS[profile]:
             return _block(f"{profile} tool refused: Claude-backed profile capability boundary")
+        tid = _task_id(task_id)
+        if profile == "coder-claude" and tool_name not in {"read_file", "search_files", "skill", "kanban_show"}:
+            if _attestation_key(profile, tid, _run_id()) in _SEALED_CODER_RUNS:
+                return _block("coder-claude mutation refused: review handoff sealed this process")
+            if not _active_coder_run_matches():
+                return _block("coder-claude mutation refused: exact implementation run is not active")
         if tool_name == "terminal":
-            tid = _task_id(task_id)
             _invalidate_claude_attempt(profile, tid)
             context = _canonical_terminal_context(args)
             if context is None:
@@ -522,7 +556,6 @@ def on_pre_tool_call(tool_name: str = "", args: Any = None, task_id: str = "", *
             if not _start_attestation(profile, context, tid):
                 return _block(f"{profile} Claude attestation could not be initialized")
             return None
-        tid = _task_id(task_id)
         if profile == "coder-claude" and tool_name == "kanban_request_review" and not _evidence_exists(profile, tid):
             return _block("coder-claude review request requires successful in-process attested Claude Code evidence")
         if profile in {"reviewer-claude", "architect-claude-opus"} and tool_name == "kanban_complete" and not _evidence_exists(profile, tid):

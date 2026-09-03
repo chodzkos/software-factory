@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from kanban_runtime_contract import (
+    _HANDOFF,
     normalize_snapshot,
     resolved_implementation_worktree,
     validate_routed_review_handoff,
@@ -18,6 +19,7 @@ from model_routing_policy import DuplicateJsonKey, route_from_payload, strict_js
 _EXPECTED_HERMES_VERSION = "0.20.4"
 _TASK_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 _SAVEPOINT_NAME = "software_factory_targeted_review_claim"
+_TEST_MUTATION_HOOK = None
 
 
 class _AtomicClaimDrift(RuntimeError):
@@ -103,6 +105,13 @@ def _json_mapping(value: Any) -> Mapping[str, Any] | None:
     except (DuplicateJsonKey, json.JSONDecodeError):
         return None
     return parsed if isinstance(parsed, Mapping) else None
+
+
+def _metadata_workspace(metadata: Mapping[str, Any]) -> str | None:
+    values = [metadata[key] for key in ("workspace_path", "workspace") if key in metadata]
+    if not values or not all(isinstance(value, str) and value == values[0] for value in values):
+        return None
+    return values[0]
 
 
 def _row_value(row: Any, key: str) -> Any:
@@ -221,7 +230,7 @@ def _locked_provenance_drift(
     else:
         if metadata.get("task_id") != task_id:
             drift.append("implementer_run_task_changed_after_validation")
-        metadata_workspace = metadata.get("workspace_path") or metadata.get("workspace")
+        metadata_workspace = _metadata_workspace(metadata)
         if metadata_workspace != expected_workspace:
             drift.append("implementer_run_workspace_changed_after_validation")
     return drift
@@ -332,6 +341,33 @@ def _load_kanban_db():
     return kb
 
 
+def _seal_drift(
+    *,
+    task_id: str,
+    run_id: int,
+    implementer: str,
+    reviewer: str,
+    workspace: str,
+    seal_id: str,
+    content_state_sha256: str,
+) -> list[str]:
+    current_seal, errors = _HANDOFF.validate_handoff_seal(
+        task_id=task_id,
+        run_id=run_id,
+        implementer=implementer,
+        reviewer=reviewer,
+        workspace=workspace,
+        content_state=_HANDOFF.workspace_content_state,
+        require_process_exit=True,
+    )
+    if current_seal is not None and (
+        current_seal.get("seal_id") != seal_id
+        or current_seal.get("content_state_sha256") != content_state_sha256
+    ):
+        errors.append("handoff_seal_identity_changed")
+    return errors
+
+
 def dispatch_review(task_id: str, *, snapshot: Mapping[str, Any] | None = None, kb=None) -> int:
     """Atomically validate and spawn exactly one routed same-card reviewer."""
     _assert_expected_hermes_version()
@@ -361,6 +397,18 @@ def dispatch_review(task_id: str, *, snapshot: Mapping[str, Any] | None = None, 
     if not expected_workspace or expected_implementer_run is None:
         print("RUNTIME_CONTRACT_DRIFT: handoff_provenance_missing")
         return 2
+    seal, seal_errors = _HANDOFF.validate_handoff_seal(
+        task_id=task_id,
+        run_id=expected_implementer_run,
+        implementer=expected_implementer,
+        reviewer=expected_reviewer,
+        workspace=expected_workspace,
+        content_state=_HANDOFF.workspace_content_state,
+        require_process_exit=True,
+    )
+    if seal is None or seal_errors:
+        print("RUNTIME_CONTRACT_DRIFT: " + "; ".join(seal_errors or ["handoff_seal_missing"]))
+        return 2
 
     board = kb.get_current_board()
     claimed = None
@@ -370,6 +418,8 @@ def dispatch_review(task_id: str, *, snapshot: Mapping[str, Any] | None = None, 
             # BEGIN IMMEDIATE serializes every writer from the final durable
             # provenance recheck through Hermes' native exact-task claim.
             with kb.write_txn(conn):
+                if callable(_TEST_MUTATION_HOOK):
+                    _TEST_MUTATION_HOOK("before_locked_validation")
                 current = kb.get_task(conn, task_id)
                 drift = _task_drift(
                     current,
@@ -390,8 +440,34 @@ def dispatch_review(task_id: str, *, snapshot: Mapping[str, Any] | None = None, 
                 )
                 if drift:
                     raise _AtomicClaimDrift("; ".join(dict.fromkeys(drift)))
+                locked_seal_errors = _seal_drift(
+                    task_id=task_id,
+                    run_id=expected_implementer_run,
+                    implementer=expected_implementer,
+                    reviewer=expected_reviewer,
+                    workspace=expected_workspace,
+                    seal_id=seal["seal_id"],
+                    content_state_sha256=seal["content_state_sha256"],
+                )
+                if locked_seal_errors:
+                    raise _AtomicClaimDrift("; ".join(locked_seal_errors))
+                if callable(_TEST_MUTATION_HOOK):
+                    _TEST_MUTATION_HOOK("before_claim")
+                preclaim_seal_errors = _seal_drift(
+                    task_id=task_id,
+                    run_id=expected_implementer_run,
+                    implementer=expected_implementer,
+                    reviewer=expected_reviewer,
+                    workspace=expected_workspace,
+                    seal_id=seal["seal_id"],
+                    content_state_sha256=seal["content_state_sha256"],
+                )
+                if preclaim_seal_errors:
+                    raise _AtomicClaimDrift("; ".join(preclaim_seal_errors))
 
                 claimed = kb.claim_review_task(_SavepointConnection(conn), task_id)
+                if callable(_TEST_MUTATION_HOOK):
+                    _TEST_MUTATION_HOOK("during_claim")
                 post_claim_drift = _claimed_task_drift(
                     claimed,
                     task_id=task_id,
@@ -403,6 +479,42 @@ def dispatch_review(task_id: str, *, snapshot: Mapping[str, Any] | None = None, 
                 if post_claim_drift:
                     raise _AtomicClaimDrift("; ".join(post_claim_drift))
                 reviewer_run_id = claimed.current_run_id
+                postclaim_seal_errors = _seal_drift(
+                    task_id=task_id,
+                    run_id=expected_implementer_run,
+                    implementer=expected_implementer,
+                    reviewer=expected_reviewer,
+                    workspace=expected_workspace,
+                    seal_id=seal["seal_id"],
+                    content_state_sha256=seal["content_state_sha256"],
+                )
+                if postclaim_seal_errors:
+                    raise _AtomicClaimDrift("; ".join(postclaim_seal_errors))
+                reviewer_row = conn.execute(
+                    "SELECT metadata FROM task_runs WHERE id = ? AND task_id = ?",
+                    (reviewer_run_id, task_id),
+                ).fetchone()
+                reviewer_metadata = dict(_json_mapping(_row_value(reviewer_row, "metadata")) or {})
+                reviewer_metadata.update(
+                    {
+                        "factory_handoff_schema": _HANDOFF.HANDOFF_SCHEMA,
+                        "factory_handoff_seal_id": seal["seal_id"],
+                        "factory_handoff_content_state_sha256": seal["content_state_sha256"],
+                        "factory_handoff_implementer_run_id": expected_implementer_run,
+                    }
+                )
+                updated = conn.execute(
+                    "UPDATE task_runs SET metadata = ? WHERE id = ? AND task_id = ?",
+                    (json.dumps(reviewer_metadata, sort_keys=True), reviewer_run_id, task_id),
+                )
+                if getattr(updated, "rowcount", None) != 1:
+                    raise _AtomicClaimDrift("reviewer_run_metadata_update_failed")
+                stored_row = conn.execute(
+                    "SELECT metadata FROM task_runs WHERE id = ? AND task_id = ?",
+                    (reviewer_run_id, task_id),
+                ).fetchone()
+                if _json_mapping(_row_value(stored_row, "metadata")) != reviewer_metadata:
+                    raise _AtomicClaimDrift("reviewer_run_metadata_readback_mismatch")
         except _AtomicClaimDrift as exc:
             print(f"RUNTIME_CONTRACT_DRIFT: {exc}")
             return 2
@@ -410,6 +522,19 @@ def dispatch_review(task_id: str, *, snapshot: Mapping[str, Any] | None = None, 
         # The committed claim object contains the atomically authorized values;
         # later row mutations cannot substitute a different spawned profile.
         try:
+            if callable(_TEST_MUTATION_HOOK):
+                _TEST_MUTATION_HOOK("before_spawn")
+            spawn_seal_errors = _seal_drift(
+                task_id=task_id,
+                run_id=expected_implementer_run,
+                implementer=expected_implementer,
+                reviewer=expected_reviewer,
+                workspace=expected_workspace,
+                seal_id=seal["seal_id"],
+                content_state_sha256=seal["content_state_sha256"],
+            )
+            if spawn_seal_errors:
+                raise RuntimeError("; ".join(spawn_seal_errors))
             workspace, resolved_branch_name = kb._resolve_worktree_workspace(
                 claimed,
                 board=board,
@@ -431,6 +556,17 @@ def dispatch_review(task_id: str, *, snapshot: Mapping[str, Any] | None = None, 
             claimed.skills = list(
                 dict.fromkeys([*(claimed.skills or []), "sdlc-review"])
             )
+            final_seal_errors = _seal_drift(
+                task_id=task_id,
+                run_id=expected_implementer_run,
+                implementer=expected_implementer,
+                reviewer=expected_reviewer,
+                workspace=expected_workspace,
+                seal_id=seal["seal_id"],
+                content_state_sha256=seal["content_state_sha256"],
+            )
+            if final_seal_errors:
+                raise RuntimeError("; ".join(final_seal_errors))
             pid = kb._default_spawn(claimed, resolved_workspace, board=board)
             if pid:
                 kb._set_worker_pid(conn, claimed.id, int(pid))

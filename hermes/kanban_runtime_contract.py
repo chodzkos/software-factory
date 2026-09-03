@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import re
 import subprocess
@@ -12,6 +13,23 @@ try:
     from .model_routing_policy import DuplicateJsonKey, format_route, route_from_payload, strict_json_loads
 except ImportError:
     from model_routing_policy import DuplicateJsonKey, format_route, route_from_payload, strict_json_loads
+
+
+def _load_handoff_module():
+    try:
+        import factory_handoff_seal as module
+        return module
+    except ImportError:
+        path = Path(__file__).resolve().parent / "plugins" / "factory-execution-guards" / "handoff.py"
+        spec = importlib.util.spec_from_file_location("factory_handoff_seal", path)
+        if spec is None or spec.loader is None:
+            raise RuntimeError("factory handoff seal module unavailable")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+
+_HANDOFF = _load_handoff_module()
 
 _WORKSPACE_RE = re.compile(r"^WORKSPACE:\s*(.*?)\s*$")
 
@@ -67,6 +85,13 @@ def _latest_review_requested_event(payload: Mapping[str, Any]) -> Mapping[str, A
 def _latest_run(payload: Mapping[str, Any]) -> Mapping[str, Any] | None:
     runs = _records(payload, "runs")
     return runs[-1] if runs else None
+
+
+def _metadata_workspace(metadata: Mapping[str, Any]) -> str | None:
+    values = [metadata[key] for key in ("workspace_path", "workspace") if key in metadata]
+    if not values or not all(isinstance(value, str) and value == values[0] for value in values):
+        return None
+    return values[0]
 
 
 def validate_runtime(payload: Mapping[str, Any], expectation: RuntimeExpectation) -> list[str]:
@@ -182,6 +207,7 @@ def validate_review_handoff(payload: Mapping[str, Any], *, implementer_profile: 
             event_run_id = raw_event_run_id
 
     latest_run = _latest_run(payload)
+    implementer_run_id: int | None = None
     if latest_run is None or latest_run.get("profile") != implementer_profile or latest_run.get("outcome") != "review_requested":
         errors.append("current_implementer_review_run_missing_or_mismatched")
     else:
@@ -190,15 +216,28 @@ def validate_review_handoff(payload: Mapping[str, Any], *, implementer_profile: 
             errors.append("current_implementer_run_id_required")
         elif event_run_id is None or run_id != event_run_id:
             errors.append("review_requested_event_run_mismatch")
+        else:
+            implementer_run_id = run_id
         metadata = latest_run.get("metadata")
         if not isinstance(metadata, Mapping):
             errors.append("implementer_review_run_metadata_required")
         else:
-            metadata_path = metadata.get("workspace_path") or metadata.get("workspace")
+            metadata_path = _metadata_workspace(metadata)
             if metadata_path != resolved_path:
                 errors.append("implementer_review_run_workspace_mismatched")
             if metadata.get("task_id") != task_id:
                 errors.append("implementer_review_run_task_mismatched")
+    if implementer_profile == "coder-claude" and implementer_run_id is not None:
+        _, seal_errors = _HANDOFF.validate_handoff_seal(
+            task_id=task_id,
+            run_id=implementer_run_id,
+            implementer=implementer_profile,
+            reviewer=reviewer_profile,
+            workspace=resolved_path,
+            content_state=_HANDOFF.workspace_content_state,
+            require_process_exit=True,
+        )
+        errors.extend(seal_errors)
     return errors
 
 

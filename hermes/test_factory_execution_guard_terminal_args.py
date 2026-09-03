@@ -31,6 +31,7 @@ class TerminalArgsExecutionGuardTests(unittest.TestCase):
     def setUp(self) -> None:
         GUARD._PENDING_ATTESTATIONS.clear()
         GUARD._COMPLETED_ATTESTATIONS.clear()
+        GUARD._SEALED_CODER_RUNS.clear()
         self.tempdir = tempfile.TemporaryDirectory()
         self.root = Path(self.tempdir.name)
         self.workspace = (self.root / "workspace").resolve()
@@ -77,18 +78,19 @@ class TerminalArgsExecutionGuardTests(unittest.TestCase):
             patch.object(GUARD, "_workspace_content_state", return_value=CONTENT_STATE),
             patch.object(PLUGIN.Path, "cwd", return_value=self.workspace),
             patch.object(GUARD, "EVIDENCE_ROOT", self.evidence),
+            patch.object(GUARD, "_active_coder_run_matches", return_value=True),
         )
 
     def _pre(self, profile: str, args: object):
         patches = self._patches()
-        with patch.dict(os.environ, self._env(profile), clear=False), patches[0], patches[1], patches[2], patches[3]:
+        with patch.dict(os.environ, self._env(profile), clear=False), patches[0], patches[1], patches[2], patches[3], patches[4]:
             return PLUGIN.on_pre_tool_call(
                 tool_name="terminal", args=args, task_id="t_guard"
             )
 
     def _post(self, profile: str, args: object, result_payload: dict[str, object]) -> None:
         patches = self._patches()
-        with patch.dict(os.environ, self._env(profile), clear=False), patches[0], patches[1], patches[2], patches[3]:
+        with patch.dict(os.environ, self._env(profile), clear=False), patches[0], patches[1], patches[2], patches[3], patches[4]:
             PLUGIN.on_post_tool_call(
                 tool_name="terminal",
                 args=args,
@@ -118,7 +120,7 @@ class TerminalArgsExecutionGuardTests(unittest.TestCase):
     def _lifecycle(self, profile: str):
         tool = "kanban_request_review" if profile == "coder-claude" else "kanban_complete"
         patches = self._patches()
-        with patch.dict(os.environ, self._env(profile), clear=False), patches[0], patches[1], patches[2], patches[3]:
+        with patch.dict(os.environ, self._env(profile), clear=False), patches[0], patches[1], patches[2], patches[3], patches[4]:
             return PLUGIN.on_pre_tool_call(tool_name=tool, args={"summary": "done"}, task_id="t_guard")
 
     def test_all_claude_profiles_accept_exact_explicit_workdir(self):

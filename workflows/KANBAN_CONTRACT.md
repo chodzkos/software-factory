@@ -112,7 +112,7 @@ Summary ani profile names przekazane osobno nie są security inputem. Przy `CHAN
 
 ## 7. Claude Code execution boundary
 
-`coder-claude`, `reviewer-claude`, `architect-claude-opus` mają profile-scoped `factory-execution-guards` v0.9.0. Wersja 0.9.0 zachowuje reviewed v0.8.0 atomic claim oraz starsze kontrole, dodając zamknięty pełny obiekt terminal args, exact explicit workdir i weryfikację efektywnego cwd po wykonaniu.
+Software Factory używa profile-scoped `factory-execution-guards` v0.10.0. Wersja 0.10.0 zachowuje reviewed v0.9.0, execution evidence schema v6 i starsze kontrole, dodając aktywną bramkę coder runu, osobną handoff schema v1, process-exit proof oraz reviewer approval binding.
 
 Outer GPT nie może używać terminala do `find`, Git, Python, grep ani innych helperów. Terminal przyjmuje wyłącznie literalne argv0 `claude`; `./claude`, `/tmp/claude` i alternatywne ścieżki są blokowane.
 
@@ -161,6 +161,16 @@ Tracked paths są enumerowane z Git index niezależnie od status hints, więc `a
 Sam durable JSON nie odblokowuje lifecycle. `kanban_request_review` albo Claude-backed completion wymaga jednocześnie matching schema-6 file oraz matching completed attestation nadal obecnego w pamięci tego samego worker process, w tym exact `execution_cwd` i `terminal_args_sha256`.
 
 Przed transition guard ponownie sprawdza current Claude binary identity, resolved workspace, Git HEAD i content-state digest. Każda późniejsza zmiana zawartości workspace albo dowolna kolejna próba Claude terminal call — także malformed/rejected — unieważnia poprzedni attestation.
+
+### 7.2 Aktywny run i handoff schema v1
+
+Przed każdą mutation-capable operacją `coder-claude`, a dla terminala przed attestation i startem procesu, guard wymaga z bazy wybranej przez `HERMES_KANBAN_BOARD` dokładnego task/run/workspace: task `running`, assignee `coder-claude`, true-integer `current_run_id`, aktywny coder run bez `ended_at`/`outcome` oraz zgodną metadata. Brak, malformed state, import/DB/schema drift lub utrata ownership blokuje bez tworzenia nowej attestation i bez nadpisania evidence.
+
+Po successful native request-review guard strict-decodes dokładny wynik i ponownie potwierdza trwały task `review`, assignee `reviewer-gpt`, `current_run_id=None`, exact implementer run z `outcome=review_requested`, latest native event i unchanged schema-6 content/evidence. Dopiero wtedy atomowo publikuje no-follow handoff schema v1 z zamkniętym polem zestawem: task/run/profile/reviewer/workspace, HEAD/content digest, execution-evidence path/hash oraz attestation/command/terminal identities, native event provenance, creation time i PID z Linux `/proc` start tokenem. Duplicate keys, unknown fields, nieprawidłowe typy/schema, symlink, partial/tampered record albo inna druga pieczęć fail closed.
+
+Udany handoff zapisuje również in-process capability seal, usuwa completed attestation i ustawia dokładne `HERMES_KANBAN_STOP_NUDGE=0`. Nudge opt-out jest tylko defense in depth: późniejsza mutacja lub drugi request-review jest blokowany przez seal/utratę aktywnego runu nawet przy kolejnym turnie modelu. Read-only status inspection może pozostać dostępne do zakończenia procesu.
+
+Routed validator i targeted dispatcher wymagają niezmienionego schema-v1 seal, HEAD/content/evidence binding i potwierdzonego wyjścia exact PID/start-token implementera. Dispatcher powtarza kontrole przed writer lockiem, pod lockiem przed i po native savepoint claim oraz bezpośrednio przed spawnem. Reviewer run metadata wiąże schema, seal ID, content digest i implementer run. Drift przed commit wycofuje claim; drift po commit nie uruchamia reviewera i zapisuje fail-closed spawn failure. `reviewer-gpt` completion/approval ponownie sprawdza exact run metadata i bieżące sealed bytes. `kanban_request_changes` pozostaje dostępne przy drift, ale nie oznacza approval.
 
 ## 8. Plugin supply chain
 

@@ -17,8 +17,9 @@ import kanban_review_dispatch as dispatch
 
 
 class FakeCursor:
-    def __init__(self, row=None):
+    def __init__(self, row=None, *, rowcount=-1):
         self.row = row
+        self.rowcount = rowcount
 
     def fetchone(self):
         return self.row
@@ -49,6 +50,7 @@ class FakeKanbanDB:
         self.branch_updates: list[tuple[str, str]] = []
         self.write_txn_calls = 0
         self.in_write_txn = False
+        self.reviewer_metadata: dict = {}
 
     def review_dispatch_enabled(self):
         return self.auto_review
@@ -73,6 +75,11 @@ class FakeKanbanDB:
             self.in_write_txn = False
 
     def execute(self, sql, parameters=()):
+        if sql.startswith("SELECT metadata FROM task_runs"):
+            return FakeCursor({"metadata": json.dumps(self.reviewer_metadata)})
+        if sql.startswith("UPDATE task_runs SET metadata"):
+            self.reviewer_metadata = json.loads(parameters[0])
+            return FakeCursor(rowcount=1)
         if "FROM task_events" in sql:
             event = self.snapshot["events"][-1]
             return FakeCursor({
@@ -190,6 +197,18 @@ ACCEPTANCE_CRITERIA:
 
 
 class TargetedReviewDispatchTests(unittest.TestCase):
+    def _dispatch(self, task_id: str, *, snapshot: dict, kb: FakeKanbanDB) -> int:
+        seal = {
+            "seal_id": "a" * 64,
+            "content_state_sha256": "b" * 64,
+        }
+        with patch.object(
+            dispatch._HANDOFF,
+            "validate_handoff_seal",
+            return_value=(seal, []),
+        ):
+            return dispatch.dispatch_review(task_id, snapshot=snapshot, kb=kb)
+
     def _fixture(
         self,
         *,
@@ -230,7 +249,7 @@ class TargetedReviewDispatchTests(unittest.TestCase):
         td, snap, kb = self._fixture()
         self.addCleanup(td.cleanup)
         with patch.object(dispatch, "_assert_expected_hermes_version", return_value=None):
-            rc = dispatch.dispatch_review("t_live", snapshot=snap, kb=kb)
+            rc = self._dispatch("t_live", snapshot=snap, kb=kb)
         self.assertEqual(rc, 0)
         self.assertEqual(kb.write_txn_calls, 1)
         self.assertEqual(kb.claimed_ids, ["t_live"])
@@ -250,14 +269,14 @@ class TargetedReviewDispatchTests(unittest.TestCase):
         self.addCleanup(td.cleanup)
         with patch.object(dispatch, "_assert_expected_hermes_version", return_value=None):
             with self.assertRaisesRegex(RuntimeError, "review_dispatch must be false"):
-                dispatch.dispatch_review("t_live", snapshot=snap, kb=kb)
+                self._dispatch("t_live", snapshot=snap, kb=kb)
         self.assertEqual(kb.claimed_ids, [])
 
     def test_refuses_state_drift_before_claim(self):
         td, snap, kb = self._fixture(status="running")
         self.addCleanup(td.cleanup)
         with patch.object(dispatch, "_assert_expected_hermes_version", return_value=None):
-            rc = dispatch.dispatch_review("t_live", snapshot=snap, kb=kb)
+            rc = self._dispatch("t_live", snapshot=snap, kb=kb)
         self.assertEqual(rc, 2)
         self.assertEqual(kb.claimed_ids, [])
         self.assertEqual(kb.spawned, [])
@@ -266,7 +285,7 @@ class TargetedReviewDispatchTests(unittest.TestCase):
         td, snap, kb = self._fixture(current_run_id=99)
         self.addCleanup(td.cleanup)
         with patch.object(dispatch, "_assert_expected_hermes_version", return_value=None):
-            rc = dispatch.dispatch_review("t_live", snapshot=snap, kb=kb)
+            rc = self._dispatch("t_live", snapshot=snap, kb=kb)
         self.assertEqual(rc, 2)
         self.assertEqual(kb.claimed_ids, [])
         self.assertEqual(kb.spawned, [])
@@ -276,7 +295,7 @@ class TargetedReviewDispatchTests(unittest.TestCase):
         self.addCleanup(td.cleanup)
         kb.snapshot["runs"][-1]["profile"] = "coder"
         with patch.object(dispatch, "_assert_expected_hermes_version", return_value=None):
-            rc = dispatch.dispatch_review("t_live", snapshot=snap, kb=kb)
+            rc = self._dispatch("t_live", snapshot=snap, kb=kb)
         self.assertEqual(rc, 2)
         self.assertEqual(kb.claimed_ids, [])
         self.assertEqual(kb.spawned, [])
@@ -285,7 +304,7 @@ class TargetedReviewDispatchTests(unittest.TestCase):
         td, snap, kb = self._fixture(mutate_inside_claim=True)
         self.addCleanup(td.cleanup)
         with patch.object(dispatch, "_assert_expected_hermes_version", return_value=None):
-            rc = dispatch.dispatch_review("t_live", snapshot=snap, kb=kb)
+            rc = self._dispatch("t_live", snapshot=snap, kb=kb)
         self.assertEqual(rc, 2)
         self.assertEqual(kb.claimed_ids, ["t_live"])
         self.assertEqual(kb.spawned, [])
@@ -298,11 +317,58 @@ class TargetedReviewDispatchTests(unittest.TestCase):
         td, snap, kb = self._fixture(fail_spawn=True)
         self.addCleanup(td.cleanup)
         with patch.object(dispatch, "_assert_expected_hermes_version", return_value=None):
-            rc = dispatch.dispatch_review("t_live", snapshot=snap, kb=kb)
+            rc = self._dispatch("t_live", snapshot=snap, kb=kb)
         self.assertEqual(rc, 2)
         self.assertEqual(kb.claimed_ids, ["t_live"])
         self.assertEqual(len(kb.failures), 1)
         self.assertIn("synthetic spawn failure", kb.failures[0][1])
+
+    def test_mutation_before_or_during_claim_rolls_back_without_spawn(self):
+        for target in ("before_locked_validation", "before_claim", "during_claim"):
+            with self.subTest(target=target):
+                td, snap, kb = self._fixture()
+                self.addCleanup(td.cleanup)
+                drifted = False
+
+                def hook(stage):
+                    nonlocal drifted
+                    if stage == target:
+                        drifted = True
+
+                def seal_drift(**_):
+                    return ["handoff_content_state_mismatch"] if drifted else []
+
+                with patch.object(dispatch, "_assert_expected_hermes_version", return_value=None), patch.object(
+                    dispatch, "_TEST_MUTATION_HOOK", hook
+                ), patch.object(dispatch, "_seal_drift", side_effect=seal_drift):
+                    rc = self._dispatch("t_live", snapshot=snap, kb=kb)
+                self.assertEqual(rc, 2)
+                self.assertEqual(kb.spawned, [])
+                self.assertEqual(kb.task.status, "review")
+                self.assertIsNone(kb.task.current_run_id)
+
+    def test_mutation_after_commit_before_spawn_records_fail_closed_state(self):
+        td, snap, kb = self._fixture()
+        self.addCleanup(td.cleanup)
+        drifted = False
+
+        def hook(stage):
+            nonlocal drifted
+            if stage == "before_spawn":
+                drifted = True
+
+        def seal_drift(**_):
+            return ["handoff_content_state_mismatch"] if drifted else []
+
+        with patch.object(dispatch, "_assert_expected_hermes_version", return_value=None), patch.object(
+            dispatch, "_TEST_MUTATION_HOOK", hook
+        ), patch.object(dispatch, "_seal_drift", side_effect=seal_drift):
+            rc = self._dispatch("t_live", snapshot=snap, kb=kb)
+        self.assertEqual(rc, 2)
+        self.assertEqual(kb.spawned, [])
+        self.assertEqual(kb.task.status, "running")
+        self.assertEqual(len(kb.failures), 1)
+        self.assertIn("handoff_content_state_mismatch", kb.failures[0][1])
 
     def test_savepoint_proxy_composes_with_outer_sqlite_transaction(self):
         conn = sqlite3.connect(":memory:", isolation_level=None)

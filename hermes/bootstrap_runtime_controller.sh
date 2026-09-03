@@ -11,12 +11,13 @@ WRAPPER_SRC="${ROOT_DIR}/hermes/kanban_runtime_cli.sh"
 VALIDATOR_SRC="${ROOT_DIR}/hermes/kanban_runtime_contract.py"
 MODEL_ROUTING_SRC="${ROOT_DIR}/hermes/model_routing_policy.py"
 REVIEW_DISPATCH_SRC="${ROOT_DIR}/hermes/kanban_review_dispatch.py"
+HANDOFF_SRC="${ROOT_DIR}/hermes/plugins/factory-execution-guards/handoff.py"
 PLUGIN_INSTALLER="${ROOT_DIR}/hermes/install_factory_plugins.sh"
 CONFIG_KEY_REMOVER="${ROOT_DIR}/hermes/remove_profile_config_keys.py"
 EXECUTION_GUARD="factory-execution-guards"
 
 command -v hermes >/dev/null 2>&1 || { echo "ERROR: hermes not found in PATH" >&2; exit 1; }
-for path in "${SOUL_SRC}" "${WRAPPER_SRC}" "${VALIDATOR_SRC}" "${MODEL_ROUTING_SRC}" "${REVIEW_DISPATCH_SRC}" "${PLUGIN_INSTALLER}" "${CONFIG_KEY_REMOVER}"; do test -f "${path}" || { echo "ERROR: missing ${path}" >&2; exit 1; }; done
+for path in "${SOUL_SRC}" "${WRAPPER_SRC}" "${VALIDATOR_SRC}" "${MODEL_ROUTING_SRC}" "${REVIEW_DISPATCH_SRC}" "${HANDOFF_SRC}" "${PLUGIN_INSTALLER}" "${CONFIG_KEY_REMOVER}"; do test -f "${path}" || { echo "ERROR: missing ${path}" >&2; exit 1; }; done
 
 primary_provider="$(hermes -p "${PRIMARY_PROFILE}" config get model.provider 2>/dev/null | tail -n 1 | tr -d '\r')"
 primary_model="$(hermes -p "${PRIMARY_PROFILE}" config get model.default 2>/dev/null | tail -n 1 | tr -d '\r')"
@@ -30,6 +31,7 @@ install -m 0755 "${WRAPPER_SRC}" "${PROFILE_DIR}/kanban_runtime_cli.sh"
 install -m 0644 "${VALIDATOR_SRC}" "${PROFILE_DIR}/kanban_runtime_contract.py"
 install -m 0644 "${MODEL_ROUTING_SRC}" "${PROFILE_DIR}/model_routing_policy.py"
 install -m 0644 "${REVIEW_DISPATCH_SRC}" "${PROFILE_DIR}/kanban_review_dispatch.py"
+install -m 0644 "${HANDOFF_SRC}" "${PROFILE_DIR}/factory_handoff_seal.py"
 HERMES_PLUGINS_DIR="${PROFILE_DIR}/plugins" PYTHONDONTWRITEBYTECODE=1 bash "${PLUGIN_INSTALLER}" --plugin "${EXECUTION_GUARD}" --replace-reviewed
 hermes -p "${PROFILE}" plugins enable "${EXECUTION_GUARD}" --no-allow-tool-override
 hermes -p "${PROFILE}" plugins doctor "${EXECUTION_GUARD}" >/dev/null
@@ -80,5 +82,6 @@ test -x "${PROFILE_DIR}/kanban_runtime_cli.sh"
 test -f "${PROFILE_DIR}/kanban_runtime_contract.py"
 test -f "${PROFILE_DIR}/model_routing_policy.py"
 test -f "${PROFILE_DIR}/kanban_review_dispatch.py"
+test -f "${PROFILE_DIR}/factory_handoff_seal.py"
 test -f "${PROFILE_DIR}/plugins/${EXECUTION_GUARD}/guard.py"
 echo "OK: ${PROFILE} bootstrapped with mechanically guarded runtime-control policy"

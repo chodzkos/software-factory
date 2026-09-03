@@ -44,7 +44,7 @@ Reviewer set musi być dokładny. Security reviewer jest przypięty do OpenAI, `
 
 Profile Claude nie udają natywnego Anthropica w Hermesie. Outer Hermes koordynuje, ale właściwa praca musi przejść przez `claude-code`.
 
-`factory-execution-guards` v0.9.0 zachowuje v0.8.0 atomic review claim i wcześniejsze Claude confinement/content-attestation, a dodatkowo wiąże pełne argumenty terminala oraz efektywny cwd:
+`factory-execution-guards` v0.10.0 zachowuje v0.9.0 schema-6 terminal/cwd attestation i wcześniejsze kontrole, a dodatkowo wprowadza aktywną bramkę implementer runu oraz handoff schema v1:
 
 - blokuje direct outer-GPT write/patch/code execution,
 - terminal outer GPT pozwala wyłącznie na literalne `claude`; żaden `find`, Git, Python, grep ani inny helper binary nie jest dopuszczony,
@@ -65,7 +65,12 @@ Profile Claude nie udają natywnego Anthropica w Hermesie. Outer Hermes koordynu
 - evidence schema v6 wiąże task/run/profile, resolved workspace, `execution_cwd`, `terminal_args_sha256`, Claude session, command hash, Claude binary path+SHA-256, Git HEAD/content-state before/after oraz attestation ID,
 - `post_tool_call` wymaga udanego `exit_code=0`; w Hermes 0.20.4 brak pola wyniku `cwd` oznacza brak zmiany względem zwalidowanego `command_cwd`, więc efektywnym cwd pozostaje jawny canonical workdir, a obecne pole `cwd` musi być stringiem identycznym z kanonicznym workspace; malformed, alias albo inny cwd nie może utworzyć evidence,
 - sam plik evidence nie odblokowuje lifecycle: wymagany jest też completed attestation nadal obecny w pamięci tego samego worker process,
-- zmiana zawartości workspace, HEAD, resolved workspace albo Claude binary po evidence unieważnia handoff/completion; rozpoczęcie kolejnego Claude command również unieważnia poprzedni attestation.
+- przed każdą mutation-capable operacją `coder-claude` guard czyta aktywną bazę i wymaga dokładnego task/run/board/workspace, stanu `running`, assignee/current-run oraz aktywnego runu bez outcome/end; niepewność blokuje przed attestation i procesem,
+- po ścisłym sukcesie native `review_requested` oraz trwałym potwierdzeniu task/run/event powstaje dokładnie jedna atomowa, no-follow pieczęć handoff schema v1 wiążąca HEAD/content, schema-6 evidence, attestation/command/terminal args, event i PID z Linux process-start tokenem,
+- skuteczny handoff zapisuje in-process seal, usuwa wcześniejszą autoryzację i ustawia `HERMES_KANBAN_STOP_NUDGE=0` wyłącznie jako defense in depth; aktywna bramka nadal mechanicznie blokuje drugi Claude call i inne mutacje,
+- routed validation oraz targeted dispatch wymagają niezmienionych sealed bytes i potwierdzonego wyjścia dokładnego implementer process; dispatch powtarza pomiar pod writer lockiem, po claimie i przed spawnem oraz wiąże reviewer run metadata z pieczęcią,
+- `reviewer-gpt` może zatwierdzić przez completion tylko wtedy, gdy exact reviewer run metadata i bieżące workspace bytes nadal odpowiadają handoff schema v1; drift blokuje approval, lecz `kanban_request_changes` pozostaje dostępne,
+- zmiana zawartości workspace, HEAD, resolved workspace, process identity, evidence albo Claude binary po evidence unieważnia handoff/completion; rozpoczęcie kolejnego Claude command również unieważnia poprzedni attestation.
 
 Brak Claude CLI/OAuth/evidence oznacza blocked; nie ma hidden fallbacku.
 
@@ -94,13 +99,13 @@ Validator sam wykonuje `hermes kanban show <task-id> --json` i strict-decodes wy
 
 Software Factory wymusza `kanban.review_dispatch=false`. Po native `review_requested` karta pozostaje w `review`, dopóki runtime-controller nie uzyska `MODEL_ROUTING_OK` i `RUNTIME_CONTRACT_OK`. Dopiero wtedy `dispatch-review --task-id <id>` ponownie weryfikuje live handoff i wymaga wyłączonego globalnego review auto-dispatchu.
 
-W v0.8.0 finalny odczyt task/event/run oraz natywny `claim_review_task` wykonują się pod jednym `BEGIN IMMEDIATE`. Wewnętrzna transakcja Hermesa jest bezpiecznie mapowana na savepoint, a wynik claimu jest ponownie sprawdzany przed commit. Assignee, body, branch, skills, worktree i provenance nie mogą zmienić się między walidacją i utworzeniem reviewer runu; spawn używa wyłącznie obiektu zwróconego przez atomowo zatwierdzony claim.
+W v0.10.0 finalny odczyt task/event/run oraz natywny `claim_review_task` wykonują się pod jednym `BEGIN IMMEDIATE`, z ponowną walidacją handoff schema v1, content-state i implementer-process exit przed i po claimie. Wewnętrzna transakcja Hermesa jest bezpiecznie mapowana na savepoint, wynik claimu jest ponownie sprawdzany, a reviewer run metadata dostaje exact seal/content/implementer-run binding przed commit. Drift po commit, ale przed spawnem, zapisuje fail-closed spawn failure i nie uruchamia reviewera.
 
 Wrapper wyprowadza dokładny Hermes-managed Python ze zweryfikowanego launchera, a przed uruchomieniem helpera czyści `PYTHONPATH`, `PYTHONHOME`, `PYTHONSTARTUP` i `PYTHONINSPECT` oraz używa `-E -s`. Nie istnieje chroniona operacja board-globalnego review dispatchu.
 
 Targeted helper jest jawnie przypięty do Hermesa 0.20.4; brak oczekiwanych private primitives albo inna wersja kończy się fail-closed. Review worker zachowuje dokładnie ten sam worktree i otrzymuje `sdlc-review` tak jak natywny review lane Hermesa.
 
-Routed handoff wiąże live body z assignee/event/run/worktree. `WORKSPACE: worktree:<base-repo>` z body musi odpowiadać istniejącemu, kanonicznemu i niesymlinkowanemu live `<base-repo>/.worktrees/<task-id>`, run IDs muszą być prawdziwymi integerami (nie JSON bool), a implementer-run metadata musi zawierać exact `task_id` i exact resolved workspace.
+Routed handoff wiąże live body z assignee/event/run/worktree oraz handoff schema v1. `WORKSPACE: worktree:<base-repo>` z body musi odpowiadać istniejącemu, kanonicznemu i niesymlinkowanemu live `<base-repo>/.worktrees/<task-id>`, run IDs muszą być prawdziwymi integerami (nie JSON bool), implementer-run metadata musi zawierać exact `task_id` i exact resolved workspace, sealed content/evidence musi nadal pasować, a exact PID/process-start implementera musi już nie być aktywny.
 
 ## Repository analyst
 

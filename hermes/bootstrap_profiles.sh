@@ -114,6 +114,7 @@ for profile in orchestrator architect repository-analyst coder auditor-gpt relea
 done
 hermes -p reviewer-gpt config set model.provider "${SECURITY_REVIEW_PROVIDER}"
 hermes -p reviewer-gpt config set model.default "${SECURITY_REVIEW_MODEL}"
+install_execution_guard reviewer-gpt
 
 for profile in coder-claude reviewer-claude architect-claude-opus; do
   hermes -p "${profile}" config set model.provider "${primary_provider}"

@@ -10,12 +10,14 @@ import subprocess
 from pathlib import Path
 
 from . import guard as _guard
+from . import handoff as _handoff
 
 _PROTECTED_PROFILES = frozenset({
     "runtime-controller",
     "coder-claude",
     "reviewer-claude",
     "architect-claude-opus",
+    "reviewer-gpt",
 })
 _CLAUDE_PROFILES = frozenset({"coder-claude", "reviewer-claude", "architect-claude-opus"})
 _CODER_READ_TOOLS = "Read,Glob,Grep"
@@ -396,7 +398,9 @@ def _hardened_parse_claude_argv(profile: str, command: str) -> dict[str, str] | 
     return values
 
 
-_guard._workspace_content_state = _hardened_workspace_content_state
+# Jeden serializer jest współdzielony przez wykonanie, handoff, dispatch i approval.
+_hardened_workspace_content_state = _handoff.workspace_content_state
+_guard._workspace_content_state = _handoff.workspace_content_state
 _guard._parse_claude_argv = _hardened_parse_claude_argv
 _guard._runtime_terminal_allowed = _runtime_terminal_allowed
 
@@ -408,6 +412,15 @@ def on_pre_tool_call(*args, **kwargs):
     blocked = _reject_unquoted_linebreak(tool_name, tool_args)
     if blocked is not None and os.environ.get("HERMES_PROFILE", "").strip() in _PROTECTED_PROFILES:
         return blocked
+    profile = os.environ.get("HERMES_PROFILE", "").strip()
+    if profile == "reviewer-gpt" and tool_name == "kanban_complete":
+        if not _handoff.reviewer_completion_authorized(
+            content_state=_handoff.workspace_content_state,
+        ):
+            return {
+                "action": "block",
+                "message": "reviewer-gpt approval refused: sealed implementation bytes or reviewer run do not match",
+            }
     return _guard.on_pre_tool_call(*args, **kwargs)
 
 

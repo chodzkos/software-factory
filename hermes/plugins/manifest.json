@@ -18,11 +18,17 @@
       "installable": true,
       "activation_status": "reviewed-ready",
       "files": {
-        "plugin.yaml": "f5136a9df630891a4c2a3504142b4cf623622733",
-        "__init__.py": "8de9ffacc7a7ae6c61a3bc7922313a56d22d64f6",
-        "guard.py": "3c8bad02c637fb78bf7bcd18a440a966ac4179dd"
+        "plugin.yaml": "eb3557b5aee77be6da2aaeae837a32dfe85bcac5",
+        "__init__.py": "837945feb0cbe9edc61eed5cfde303210a31859f",
+        "guard.py": "157ddbdd684caa85f83963b38d89058873973db3",
+        "handoff.py": "87b3e626c55b0be748a9d848d8e3441a57209a26"
       },
       "replace_from": [
+        {
+          "plugin.yaml": "f5136a9df630891a4c2a3504142b4cf623622733",
+          "__init__.py": "8de9ffacc7a7ae6c61a3bc7922313a56d22d64f6",
+          "guard.py": "3c8bad02c637fb78bf7bcd18a440a966ac4179dd"
+        },
         {
           "plugin.yaml": "5da8fdd7fb27017599c830c816945a89f5de5928",
           "__init__.py": "33aa6723ede689fbd25ed54e22ce9c52341da2cb",
