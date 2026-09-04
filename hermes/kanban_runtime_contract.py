@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import os
 import re
 import subprocess
 from dataclasses import dataclass
@@ -168,7 +169,7 @@ def resolved_implementation_worktree(payload: Mapping[str, Any]) -> str | None:
     return canonical_path if canonical_path == expected else None
 
 
-def validate_review_handoff(payload: Mapping[str, Any], *, implementer_profile: str, reviewer_profile: str) -> list[str]:
+def validate_review_handoff(payload: Mapping[str, Any], *, board: str, implementer_profile: str, reviewer_profile: str) -> list[str]:
     task = normalize_snapshot(payload)
     if not task:
         return ["implementation_task_missing_or_invalid"]
@@ -229,6 +230,7 @@ def validate_review_handoff(payload: Mapping[str, Any], *, implementer_profile: 
                 errors.append("implementer_review_run_task_mismatched")
     if implementer_profile == "coder-claude" and implementer_run_id is not None:
         _, seal_errors = _HANDOFF.validate_handoff_seal(
+            board=board,
             task_id=task_id,
             run_id=implementer_run_id,
             implementer=implementer_profile,
@@ -241,7 +243,7 @@ def validate_review_handoff(payload: Mapping[str, Any], *, implementer_profile: 
     return errors
 
 
-def validate_routed_review_handoff(payload: Mapping[str, Any]) -> list[str]:
+def validate_routed_review_handoff(payload: Mapping[str, Any], *, board: str) -> list[str]:
     route, route_errors = route_from_payload(payload)
     if route_errors or route is None:
         return [f"model_routing:{error}" for error in (route_errors or ["unparseable"])]
@@ -249,6 +251,7 @@ def validate_routed_review_handoff(payload: Mapping[str, Any]) -> list[str]:
         return ["same_card_review_requires_exactly_one_reviewer"]
     return validate_review_handoff(
         payload,
+        board=board,
         implementer_profile=route.implementer,
         reviewer_profile=route.required_reviewers[0],
     )
@@ -274,11 +277,14 @@ def _json_object(value: str, label: str) -> Mapping[str, Any]:
     return parsed
 
 
-def _live_snapshot(task_id: str) -> Mapping[str, Any]:
+def _live_snapshot(board: str, task_id: str) -> Mapping[str, Any]:
     """Fetch authoritative live Kanban JSON directly; callers cannot supply snapshot bytes."""
     if not isinstance(task_id, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", task_id):
         raise SystemExit("task-id: invalid")
     try:
+        board = _HANDOFF.canonical_board(board)
+        env = dict(os.environ)
+        env["HERMES_KANBAN_BOARD"] = board
         result = subprocess.run(
             ["hermes", "kanban", "show", task_id, "--json"],
             check=True,
@@ -286,6 +292,7 @@ def _live_snapshot(task_id: str) -> Mapping[str, Any]:
             stderr=subprocess.PIPE,
             text=True,
             timeout=20,
+            env=env,
         )
     except (OSError, subprocess.SubprocessError) as exc:
         raise SystemExit(f"live-task: unable to fetch {task_id}") from exc
@@ -293,7 +300,7 @@ def _live_snapshot(task_id: str) -> Mapping[str, Any]:
 
 
 def _runtime_command(args: argparse.Namespace) -> int:
-    actual = _live_snapshot(args.task_id)
+    actual = _live_snapshot(args.board, args.task_id)
     expectation = RuntimeExpectation(
         args.assignee,
         args.workspace_kind,
@@ -308,14 +315,14 @@ def _runtime_command(args: argparse.Namespace) -> int:
 
 
 def _routed_handoff_command(args: argparse.Namespace) -> int:
-    actual = _live_snapshot(args.task_id)
-    errors = validate_routed_review_handoff(actual)
+    actual = _live_snapshot(args.board, args.task_id)
+    errors = validate_routed_review_handoff(actual, board=args.board)
     print(format_drift(errors))
     return 0 if not errors else 2
 
 
 def _routing_live_command(args: argparse.Namespace) -> int:
-    actual = _live_snapshot(args.task_id)
+    actual = _live_snapshot(args.board, args.task_id)
     route, errors = route_from_payload(actual)
     if route is None and not errors:
         errors = ["unparseable"]
@@ -323,11 +330,22 @@ def _routing_live_command(args: argparse.Namespace) -> int:
     return 0 if not errors else 2
 
 
+def _approval_command(args: argparse.Namespace) -> int:
+    try:
+        result = _HANDOFF.verify_downstream_approval(args.board, args.task_id)
+    except Exception as exc:
+        print(f"APPROVAL_DRIFT: {exc}")
+        return 2
+    print("APPROVAL_OK " + json.dumps(result, sort_keys=True, separators=(",", ":")))
+    return 0
+
+
 def build_cli_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Software Factory Kanban runtime contract validator")
     sub = parser.add_subparsers(dest="command", required=True)
 
     runtime = sub.add_parser("runtime")
+    runtime.add_argument("--board", required=True)
     runtime.add_argument("--task-id", required=True)
     runtime.add_argument("--assignee", required=True)
     runtime.add_argument("--workspace-kind", required=True)
@@ -338,12 +356,19 @@ def build_cli_parser() -> argparse.ArgumentParser:
     runtime.set_defaults(func=_runtime_command)
 
     routed = sub.add_parser("routed-handoff")
+    routed.add_argument("--board", required=True)
     routed.add_argument("--task-id", required=True)
     routed.set_defaults(func=_routed_handoff_command)
 
     routing_live = sub.add_parser("routing-live")
+    routing_live.add_argument("--board", required=True)
     routing_live.add_argument("--task-id", required=True)
     routing_live.set_defaults(func=_routing_live_command)
+
+    approval = sub.add_parser("approval")
+    approval.add_argument("--board", required=True)
+    approval.add_argument("--task-id", required=True)
+    approval.set_defaults(func=_approval_command)
     return parser
 
 

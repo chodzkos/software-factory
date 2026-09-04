@@ -9,6 +9,7 @@ ANALYST_BOOTSTRAP="${ROOT_DIR}/hermes/bootstrap_repository_analyst_isolation.sh"
 ANALYST_VERIFY="${ROOT_DIR}/hermes/verify_repository_analyst_isolation.sh"
 CONFIG_KEY_REMOVER="${ROOT_DIR}/hermes/remove_profile_config_keys.py"
 EXECUTION_GUARD="factory-execution-guards"
+REPOSITORY_READONLY="factory-repository-readonly"
 PRIMARY_PROFILE="${PRIMARY_PROFILE:-default}"
 DISPATCHER_PROFILE="${DISPATCHER_PROFILE:-default}"
 SECURITY_REVIEW_PROVIDER="openai-codex"
@@ -85,6 +86,13 @@ install_execution_guard() {
   hermes -p "${profile}" plugins doctor "${EXECUTION_GUARD}" >/dev/null
   hermes -p "${profile}" config set tools.tool_search.enabled off
 }
+install_reviewer_readonly() {
+  local profile="$1"
+  local dest="${PROFILE_ROOT}/${profile}/plugins"
+  HERMES_PLUGINS_DIR="${dest}" PYTHONDONTWRITEBYTECODE=1 bash "${PLUGIN_INSTALLER}" --plugin "${REPOSITORY_READONLY}" --replace-reviewed
+  hermes -p "${profile}" plugins enable "${REPOSITORY_READONLY}" --no-allow-tool-override
+  hermes -p "${profile}" plugins doctor "${REPOSITORY_READONLY}" >/dev/null
+}
 
 mkdir -p "${PROFILE_ROOT}"
 primary_provider="$(get_config "${PRIMARY_PROFILE}" model.provider)"; primary_model="$(get_config "${PRIMARY_PROFILE}" model.default)"
@@ -115,6 +123,11 @@ done
 hermes -p reviewer-gpt config set model.provider "${SECURITY_REVIEW_PROVIDER}"
 hermes -p reviewer-gpt config set model.default "${SECURITY_REVIEW_MODEL}"
 install_execution_guard reviewer-gpt
+install_reviewer_readonly reviewer-gpt
+hermes -p reviewer-gpt config set toolsets '["factory-repository-readonly","factory-execution-guards"]'
+hermes -p reviewer-gpt config set platform_toolsets.cli '["factory-repository-readonly","factory-execution-guards","kanban","no_mcp"]'
+hermes -p reviewer-gpt config set mcp_servers '{}'
+hermes -p reviewer-gpt config set agent.disabled_toolsets '["terminal","file","code_execution","web","browser","image_gen","delegation","computer_use","cronjob","skills","vision","todo","memory","session_search","clarify","messaging","tts","moa","bfl","x_search"]'
 
 for profile in coder-claude reviewer-claude architect-claude-opus; do
   hermes -p "${profile}" config set model.provider "${primary_provider}"

@@ -49,6 +49,7 @@ class TerminalArgsExecutionGuardTests(unittest.TestCase):
             "HERMES_KANBAN_TASK": "t_guard",
             "HERMES_KANBAN_RUN_ID": "77",
             "HERMES_KANBAN_WORKSPACE": str(self.workspace),
+            "HERMES_KANBAN_BOARD": "isolated",
         }
 
     def _command(self, profile: str) -> str:
@@ -59,9 +60,16 @@ class TerminalArgsExecutionGuardTests(unittest.TestCase):
             f"TASK_ID: t_guard\nRUN_ID: 77\nWORKSPACE: {self.workspace}\n"
             "Perform the assigned task."
         )
-        return (
+        inner = (
             f"claude -p '{prompt}' --model {model} --output-format json --safe-mode "
             f"--permission-mode {mode} --allowedTools '{tools}' --max-turns 2"
+        )
+        if profile != "coder-claude":
+            return inner
+        supervisor = str((PACKAGE_DIR / "supervisor.py").resolve())
+        return (
+            f"{supervisor} --board isolated --task-id t_guard --run-id 77 "
+            f"--workspace {self.workspace} -- {inner}"
         )
 
     def _args(self, profile: str, **overrides: object) -> dict[str, object]:
@@ -71,6 +79,11 @@ class TerminalArgsExecutionGuardTests(unittest.TestCase):
         }
         args.update(overrides)
         return args
+
+    def _evidence_path(self, profile: str) -> Path:
+        if profile == "coder-claude":
+            return self.evidence / PLUGIN._handoff._board_scope("isolated") / f"t_guard__77__{profile}.json"
+        return self.evidence / f"t_guard__77__{profile}.json"
 
     def _patches(self):
         return (
@@ -192,7 +205,7 @@ class TerminalArgsExecutionGuardTests(unittest.TestCase):
         after = self._args(profile, timeout=61)
         self.assertIsNone(self._pre(profile, before))
         self._post(profile, after, self._successful_result())
-        self.assertEqual(list(self.evidence.glob("*.json")), [])
+        self.assertEqual(list(self.evidence.rglob("*.json")), [])
         self.assertEqual(GUARD._COMPLETED_ATTESTATIONS, {})
 
     def test_omitted_result_cwd_uses_validated_explicit_workdir(self):
@@ -205,7 +218,7 @@ class TerminalArgsExecutionGuardTests(unittest.TestCase):
                     self._args(profile),
                     self._successful_result(include_cwd=False),
                 )
-                path = self.evidence / f"t_guard__77__{profile}.json"
+                path = self._evidence_path(profile)
                 self.assertTrue(path.is_file(), "omitted result cwd should still create evidence")
                 payload = json.loads(path.read_text(encoding="utf-8"))
                 self.assertEqual(payload["execution_cwd"], str(self.workspace))
@@ -226,7 +239,7 @@ class TerminalArgsExecutionGuardTests(unittest.TestCase):
                 GUARD._PENDING_ATTESTATIONS.clear()
                 GUARD._COMPLETED_ATTESTATIONS.clear()
                 self._complete(profile, self._args(profile), result)
-                self.assertEqual(list(self.evidence.glob("*.json")), [])
+                self.assertEqual(list(self.evidence.rglob("*.json")), [])
                 self.assertEqual(GUARD._COMPLETED_ATTESTATIONS, {})
 
     def test_correct_result_cwd_creates_schema_6_evidence(self):
@@ -235,7 +248,7 @@ class TerminalArgsExecutionGuardTests(unittest.TestCase):
                 GUARD._PENDING_ATTESTATIONS.clear()
                 GUARD._COMPLETED_ATTESTATIONS.clear()
                 self._complete(profile, self._args(profile, timeout=60))
-                path = self.evidence / f"t_guard__77__{profile}.json"
+                path = self._evidence_path(profile)
                 payload = json.loads(path.read_text(encoding="utf-8"))
                 self.assertEqual(payload["schema"], 6)
                 self.assertEqual(payload["execution_cwd"], str(self.workspace))
@@ -249,7 +262,7 @@ class TerminalArgsExecutionGuardTests(unittest.TestCase):
                 GUARD._PENDING_ATTESTATIONS.clear()
                 GUARD._COMPLETED_ATTESTATIONS.clear()
                 self._complete(profile, self._args(profile))
-                path = self.evidence / "t_guard__77__coder-claude.json"
+                path = self._evidence_path(profile)
                 payload = json.loads(path.read_text(encoding="utf-8"))
                 if mutation == "missing_cwd":
                     payload.pop("execution_cwd")

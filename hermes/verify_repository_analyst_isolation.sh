@@ -192,6 +192,8 @@ if missing: raise SystemExit(f"ERROR: resolved worker toolsets missing required:
 if extra: raise SystemExit(f"ERROR: resolved worker toolsets contain unexpected capability: {sorted(extra)}; got {resolved}")
 print("OK: resolved worker CLI toolsets =", ",".join(resolved))
 PY
+  echo '[check] resolved reviewer-gpt effective capability surface'
+  PYTHONDONTWRITEBYTECODE=1 "${HERMES_PYTHON}" "${ROOT_DIR}/hermes/verify_reviewer_capabilities.py" "${HOME}/.hermes/profiles/reviewer-gpt"
   echo 'REPOSITORY_ANALYST_ISOLATION_LIVE_OK'
 fi
 

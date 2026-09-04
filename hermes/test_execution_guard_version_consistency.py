@@ -17,7 +17,7 @@ class ExecutionGuardVersionConsistencyTests(unittest.TestCase):
     def test_former_stale_v070_active_policy_fails_semantic_verifier(self):
         policy = ROOT / "workflows" / "MODEL_ROUTING_POLICY.md"
         stale = policy.read_text(encoding="utf-8").replace(
-            "`factory-execution-guards` v0.10.0",
+            "`factory-execution-guards` v0.11.0",
             "`factory-execution-guards` v0.7.0",
             1,
         )
@@ -34,8 +34,8 @@ class ExecutionGuardVersionConsistencyTests(unittest.TestCase):
     def test_stale_handoff_schema_fails_semantic_verifier(self):
         policy = ROOT / "workflows" / "MODEL_ROUTING_POLICY.md"
         stale = policy.read_text(encoding="utf-8").replace(
-            "adding exact active-run authorization, handoff schema v1,",
-            "adding exact active-run authorization, handoff schema v2,",
+            "downstream revalidation, and handoff schema v2,",
+            "downstream revalidation, and handoff schema v1,",
             1,
         )
         with tempfile.TemporaryDirectory() as td:

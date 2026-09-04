@@ -76,10 +76,14 @@ class ProfileResolutionTests(unittest.TestCase):
         tools=PLUGIN._coder_tools(workspace) if profile == "coder-claude" else PLUGIN._READONLY_TOOLS
         mode="dontAsk" if profile == "coder-claude" else "plan"
         prompt=f"TASK_ID: t_guard\nRUN_ID: 77\nWORKSPACE: {workspace}\nPerform the assigned task."
-        return (
+        inner = (
             f"claude -p '{prompt}' --model {model} --output-format json --safe-mode "
             f"--permission-mode {mode} --allowedTools '{tools}' --max-turns 2"
         )
+        if profile != "coder-claude":
+            return inner
+        supervisor = str((PACKAGE_DIR / "supervisor.py").resolve())
+        return f"{supervisor} --board isolated --task-id t_guard --run-id 77 --workspace {workspace} -- {inner}"
 
     def test_hardened_claude_schema_requires_scoped_edit_safe_mode_exact_markers(self):
         with tempfile.TemporaryDirectory() as td:
@@ -87,7 +91,7 @@ class ProfileResolutionTests(unittest.TestCase):
             command=self._canonical_command("coder-claude", str(workspace))
             exact_tools=PLUGIN._coder_tools(str(workspace))
             self.assertIn(f"Edit(/{workspace}/**)", exact_tools)
-            with patch.dict(os.environ, {"HERMES_KANBAN_TASK":"t_guard","HERMES_KANBAN_RUN_ID":"77","HERMES_KANBAN_WORKSPACE":str(workspace)}, clear=False), \
+            with patch.dict(os.environ, {"HERMES_KANBAN_TASK":"t_guard","HERMES_KANBAN_RUN_ID":"77","HERMES_KANBAN_WORKSPACE":str(workspace),"HERMES_KANBAN_BOARD":"isolated"}, clear=False), \
                  patch.object(PLUGIN._guard, "_canonical_claude_identity", return_value=("/opt/claude","a"*64)), \
                  patch.object(PLUGIN.Path, "cwd", return_value=workspace):
                 self.assertIsNotNone(PLUGIN._hardened_parse_claude_argv("coder-claude", command))
@@ -110,7 +114,7 @@ class ProfileResolutionTests(unittest.TestCase):
                 f"claude -p '{prompt}' --model sonnet --output-format json --safe-mode "
                 f"--permission-mode dontAsk --allowedTools '{injected_tools}' --max-turns 2"
             )
-            with patch.dict(os.environ, {"HERMES_KANBAN_TASK":"t_guard","HERMES_KANBAN_RUN_ID":"77","HERMES_KANBAN_WORKSPACE":str(workspace)}, clear=False), \
+            with patch.dict(os.environ, {"HERMES_KANBAN_TASK":"t_guard","HERMES_KANBAN_RUN_ID":"77","HERMES_KANBAN_WORKSPACE":str(workspace),"HERMES_KANBAN_BOARD":"isolated"}, clear=False), \
                  patch.object(PLUGIN._guard, "_canonical_claude_identity", return_value=("/opt/claude","a"*64)), \
                  patch.object(PLUGIN.Path, "cwd", return_value=workspace):
                 self.assertIsNone(PLUGIN._hardened_parse_claude_argv("coder-claude", command))
@@ -119,7 +123,7 @@ class ProfileResolutionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             workspace=Path(td).resolve()
             command=self._canonical_command("reviewer-claude", str(workspace))
-            with patch.dict(os.environ, {"HERMES_KANBAN_TASK":"t_guard","HERMES_KANBAN_RUN_ID":"77","HERMES_KANBAN_WORKSPACE":str(workspace)}, clear=False), \
+            with patch.dict(os.environ, {"HERMES_KANBAN_TASK":"t_guard","HERMES_KANBAN_RUN_ID":"77","HERMES_KANBAN_WORKSPACE":str(workspace),"HERMES_KANBAN_BOARD":"isolated"}, clear=False), \
                  patch.object(PLUGIN._guard, "_canonical_claude_identity", return_value=("/opt/claude","a"*64)), \
                  patch.object(PLUGIN.Path, "cwd", return_value=workspace):
                 self.assertIsNotNone(PLUGIN._hardened_parse_claude_argv("reviewer-claude", command))

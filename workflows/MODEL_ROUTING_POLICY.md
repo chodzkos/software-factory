@@ -93,17 +93,17 @@ Routed handoff requires:
 - latest `review_requested` with matching profiles and mandatory true integer `run_id` (JSON booleans rejected),
 - latest implementer run with `outcome=review_requested` and identical true integer run ID,
 - mandatory run metadata containing exact `task_id` and exact resolved workspace.
-- for `coder-claude`, one strict handoff schema v1 record binding the exact HEAD/content, execution evidence schema v6, native event, and PID/start identity, with the implementer process proven exited.
+- for `coder-claude`, one strict board-bound handoff schema v2 record binding the exact HEAD/content, execution evidence schema v6, native event, and PID/start identity, with the supervised implementer process tree proven exited.
 
 The targeted dispatcher does not trust a previous text result. It re-fetches live state, re-runs routed-handoff validation, requires `review_dispatch=false`, and rechecks task/provenance plus sealed content/process identity under the final writer lock, after the native savepoint claim, and immediately before spawn. The reviewer run metadata binds the handoff schema, seal ID, content digest, and implementer run. Pre-commit drift rolls back; post-commit drift records a spawn failure and launches no reviewer. The helper is pinned to Hermes 0.20.4 and fails closed if primitives drift or disappear. Board-global review dispatch is not exposed.
 
 ## 7. Claude Code mechanical execution boundary
 
-Software Factory profiles use profile-scoped `factory-execution-guards` v0.10.0. Version 0.10.0 preserves the reviewed v0.9.0 execution evidence schema v6 and all older predecessor controls while adding exact active-run authorization, handoff schema v1, implementer process-exit proof, and reviewer approval byte binding.
+Software Factory profiles use profile-scoped `factory-execution-guards` v0.11.0. Version 0.11.0 preserves the reviewed v0.10.0 execution evidence schema v6 and all older predecessor controls while adding supervised mutation leases, board binding, atomic approval, downstream revalidation, and handoff schema v2,
 
 Outer GPT terminal access is **Claude-only**: no `find`, Git, Python, grep or other helper executable is permitted. Direct file/code mutation tools are blocked.
 
-Only literal argv0 `claude` is accepted. `./claude`, `/tmp/claude` and alternate paths are refused. Guard resolves the PATH-selected Claude binary itself and binds its resolved path + SHA-256 to the attestation.
+For `coder-claude`, only the installed supervisor with exact board/task/run/workspace followed by literal argv0 `claude` is accepted. The supervisor owns a new process session/group and an exclusive mutation lease, continuously revalidates authorization, and terminates/reaps the identity-bound tree on reclaim, timeout, board switch, ownership loss, or worker death. `./claude`, `/tmp/claude` and alternate paths are refused. Guard resolves the PATH-selected Claude binary itself and binds its resolved path + SHA-256 to the attestation.
 
 Every invocation requires `--safe-mode`, disabling project/user `CLAUDE.md`, hooks, plugins, skills and MCP. Coder uses `--permission-mode dontAsk`; reviewer/architect use `--permission-mode plan`.
 
@@ -158,15 +158,15 @@ A durable JSON file alone cannot unlock lifecycle. `kanban_request_review` / Cla
 
 Before every mutation-capable `coder-claude` tool call, the guard independently reads the board selected by the worker environment and requires the exact task/run/workspace to remain active (`running`, assignee/current run exact, no end/outcome, matching metadata). A second terminal call after review handoff is therefore blocked before process launch, new attestation, or evidence replacement.
 
-Only a strict successful native request-review result plus matching durable task/run/event and unchanged schema-6 evidence creates the separate handoff schema v1 record. It is published atomically without following symlinks and binds task/run/profiles/workspace, HEAD/content, evidence file hash, attestation/command/terminal identities, native event, PID, and Linux process-start token. The in-process seal clears prior authorization; `HERMES_KANBAN_STOP_NUDGE=0` suppresses generic Hermes 0.20.4 nudges only as defense in depth.
+Only a strict successful native request-review result plus matching durable board/task/run/event and unchanged board-scoped schema-6 evidence creates the separate handoff schema v2 record. It is published atomically without following symlinks and binds task/run/profiles/workspace, HEAD/content, evidence file hash, attestation/command/terminal identities, native event, PID, and Linux process-start token. The in-process seal clears prior authorization; `HERMES_KANBAN_STOP_NUDGE=0` suppresses generic Hermes 0.20.4 nudges only as defense in depth.
 
-Routed validation and dispatch require that exact implementer process to have exited and all sealed bytes to remain unchanged. Final `reviewer-gpt` approval/completion is refused unless its exact reviewer run metadata and current workspace still match the same seal. Requesting changes remains available without falsely approving drifted bytes.
+Routed validation and dispatch require the explicit canonical board, that exact implementer process tree to have exited, no live mutation lease, and all sealed bytes to remain unchanged. `reviewer-gpt` has only bounded repository-read tools, `kanban_show`, `kanban_request_changes`, and `factory_review_approve`; terminal, generic file mutation, execute_code, MCP, and direct CLI/SQLite paths are absent. Approval revalidates and completes under one lease plus DB writer transaction, then rehashes before commit. Downstream `verify-approval --board <slug> --task-id <id>` must pass before ready/release/merge.
 
 ## 8. Runtime-controller mechanical boundary
 
-`runtime-controller` has profile-scoped execution guards, only the terminal toolset, and can execute only installed `kanban_runtime_cli.sh` operations: `create`, `show`, `block`, `complete`, `validate-runtime`, `validate-routed-handoff`, `validate-routing-body`, `validate-routing-live`, `dispatch-review`.
+`runtime-controller` has profile-scoped execution guards, only the terminal toolset, and can execute only installed `kanban_runtime_cli.sh` operations: `create`, `show`, `block`, `complete`, `validate-runtime`, `validate-routed-handoff`, `validate-routing-body`, `validate-routing-live`, `dispatch-review`, `verify-approval`.
 
-`dispatch-review` accepts exactly `--task-id <task-id>` and launches only the already-routed card after revalidation. It is not a general shell/Python escape and does not expose board-global `hermes kanban dispatch`.
+Every live operation requires explicit `--board <canonical-slug>` and never selects through ambient `kanban/current`. `dispatch-review` accepts exactly `--board <slug> --task-id <task-id>` and launches only the already-routed card after revalidation. It is not a general shell/Python escape and does not expose board-global `hermes kanban dispatch`.
 
 Unquoted literal newline/CR, direct `hermes`, Git, Python, curl, file tools, shell operators and command substitution are blocked. Quoted multiline values remain single argv items and are still validated by the per-operation schema. Live validators/dispatcher accept task IDs, not caller-supplied snapshot bytes.
 

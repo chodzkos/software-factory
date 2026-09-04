@@ -38,12 +38,12 @@ expect_helper_exec() {
   PYTHONHOME="${TMP_DIR}/attacker-home" \
   PYTHONSTARTUP="${TMP_DIR}/attacker-startup" \
   PYTHONINSPECT=1 \
-    bash "${WRAPPER}" dispatch-review --task-id t_probe >/dev/null 2>&1
+    bash "${WRAPPER}" dispatch-review --board isolated --task-id t_probe >/dev/null 2>&1
   rc=$?
   set -e
   [[ ${rc} -eq 37 ]] || { echo "ERROR: ${label}: expected fake Hermes Python rc=37, got ${rc}" >&2; exit 1; }
   mapfile -t argv <"${HERMES_TEST_PY_LOG}"
-  local expected=("-E" "-s" "${ROOT_DIR}/hermes/kanban_review_dispatch.py" "--task-id" "t_probe")
+  local expected=("-E" "-s" "${ROOT_DIR}/hermes/kanban_review_dispatch.py" "--board" "isolated" "--task-id" "t_probe")
   [[ ${#argv[@]} -eq ${#expected[@]} ]] || { echo "ERROR: ${label}: helper argv length mismatch" >&2; exit 1; }
   local i
   for i in "${!expected[@]}"; do
@@ -62,7 +62,7 @@ expect_fail_closed() {
   local rc
   rm -f "${HERMES_TEST_PY_LOG}" "${HERMES_TEST_ENV_LOG}"
   set +e
-  bash "${WRAPPER}" dispatch-review --task-id t_probe >/dev/null 2>&1
+  bash "${WRAPPER}" dispatch-review --board isolated --task-id t_probe >/dev/null 2>&1
   rc=$?
   set -e
   [[ ${rc} -eq 2 ]] || { echo "ERROR: ${label}: expected rc=2, got ${rc}" >&2; exit 1; }

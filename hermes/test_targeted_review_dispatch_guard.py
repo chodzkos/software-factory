@@ -25,7 +25,7 @@ class TargetedReviewGuardTests(unittest.TestCase):
         with patch.object(PLUGIN._guard, "_runtime_wrapper_paths", return_value={wrapper}):
             self.assertTrue(
                 PLUGIN._runtime_terminal_allowed(
-                    f"{wrapper} dispatch-review --task-id t_review"
+                    f"{wrapper} dispatch-review --board isolated --task-id t_review"
                 )
             )
             for command in (

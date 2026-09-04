@@ -35,7 +35,7 @@ grep -Fq 'RUNTIME_CONTRACT_DRIFT' "${CONTRACT}"
 grep -Fq 'MODEL_ROUTING_DRIFT' "${CONTRACT}"
 grep -Fq 'validate-routed-handoff' "${CONTRACT}"
 grep -Fq 'validate-routing-live' "${CONTRACT}"
-grep -Fq 'dispatch-review --task-id <task-id>' "${CONTRACT}"
+grep -Fq 'dispatch-review --board <slug> --task-id <task-id>' "${CONTRACT}"
 grep -Fq 'kanban.review_dispatch=false' "${CONTRACT}"
 test -f "${MODEL_POLICY_DOC}"
 
@@ -51,21 +51,21 @@ grep -Fq '`coder-claude` | `yes` | `reviewer-gpt`' "${MODEL_POLICY_DOC}"
 PYTHONDONTWRITEBYTECODE=1 python3 "${GUARD_VERSION_VERIFY}" --root "${ROOT_DIR}"
 
 printf '[check] provenance-bound live handoff\n'
-grep -Fq 'def _live_snapshot(task_id: str)' "${RUNTIME_VALIDATOR}"
+grep -Fq 'def _live_snapshot(board: str, task_id: str)' "${RUNTIME_VALIDATOR}"
 grep -Fq '["hermes", "kanban", "show", task_id, "--json"]' "${RUNTIME_VALIDATOR}"
 grep -Fq 'strict_json_loads(value)' "${RUNTIME_VALIDATOR}"
 grep -Fq 'type(raw_event_run_id) is not int' "${RUNTIME_VALIDATOR}"
 grep -Fq 'type(run_id) is not int' "${RUNTIME_VALIDATOR}"
 grep -Fq 'if not path.exists()' "${RUNTIME_VALIDATOR}"
 grep -Fq 'current.is_symlink()' "${RUNTIME_VALIDATOR}"
-grep -Fq 'validate-routed-handoff --task-id <task-id>' "${RUNTIME_WRAPPER}"
-grep -Fq 'validate-routing-live --task-id <task-id>' "${RUNTIME_WRAPPER}"
+grep -Fq 'validate-routed-handoff --board <slug> --task-id <task-id>' "${RUNTIME_WRAPPER}"
+grep -Fq 'validate-routing-live --board <slug> --task-id <task-id>' "${RUNTIME_WRAPPER}"
 if grep -F -A4 'validate-routed-handoff)' "${RUNTIME_WRAPPER}" | grep -Fq -- '--actual-json'; then echo 'ERROR: routed handoff still accepts caller JSON' >&2; exit 1; fi
 if grep -F -A4 'validate-routing-live)' "${RUNTIME_WRAPPER}" | grep -Fq -- '--actual-json'; then echo 'ERROR: live routing still accepts caller JSON' >&2; exit 1; fi
 if grep -Fq 'sub.add_parser("handoff")' "${RUNTIME_VALIDATOR}"; then echo 'ERROR: legacy handoff CLI remains exposed' >&2; exit 1; fi
 
 printf '[check] atomic gated targeted review dispatch\n'
-grep -Fq 'dispatch-review --task-id <task-id>' "${RUNTIME_WRAPPER}"
+grep -Fq 'dispatch-review --board <slug> --task-id <task-id>' "${RUNTIME_WRAPPER}"
 grep -Fq 'REVIEW_DISPATCHER=' "${RUNTIME_WRAPPER}"
 grep -Fq 'resolve_python_from_bash_launcher' "${RUNTIME_WRAPPER}"
 grep -Fq -- "-I -c 'import hermes_cli'" "${RUNTIME_WRAPPER}"
@@ -74,7 +74,7 @@ grep -Fq 'exec "${hermes_python}" -E -s "${REVIEW_DISPATCHER}" "$@"' "${RUNTIME_
 grep -Fq 'hermes-agent/venv/bin/python' "${RUNTIME_WRAPPER}"
 grep -Fq '_EXPECTED_HERMES_VERSION = "0.20.4"' "${REVIEW_DISPATCHER}"
 grep -Fq 'if kb.review_dispatch_enabled()' "${REVIEW_DISPATCHER}"
-grep -Fq 'validate_routed_review_handoff(live)' "${REVIEW_DISPATCHER}"
+grep -Fq 'validate_routed_review_handoff(live, board=board)' "${REVIEW_DISPATCHER}"
 grep -Fq 'with kb.write_txn(conn)' "${REVIEW_DISPATCHER}"
 grep -Fq 'kb.claim_review_task(_SavepointConnection(conn), task_id)' "${REVIEW_DISPATCHER}"
 grep -Fq 'kb._default_spawn(claimed, resolved_workspace, board=board)' "${REVIEW_DISPATCHER}"

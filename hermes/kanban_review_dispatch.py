@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -135,10 +136,13 @@ def _string_sequence(value: Any) -> tuple[str, ...] | None:
     return tuple(value)
 
 
-def _live_snapshot(task_id: str) -> Mapping[str, Any]:
+def _live_snapshot(board: str, task_id: str) -> Mapping[str, Any]:
     if not isinstance(task_id, str) or not _TASK_ID_RE.fullmatch(task_id):
         raise RuntimeError("task-id: invalid")
     try:
+        board = _HANDOFF.canonical_board(board)
+        env = dict(os.environ)
+        env["HERMES_KANBAN_BOARD"] = board
         result = subprocess.run(
             ["hermes", "kanban", "show", task_id, "--json"],
             check=True,
@@ -146,6 +150,7 @@ def _live_snapshot(task_id: str) -> Mapping[str, Any]:
             stderr=subprocess.PIPE,
             text=True,
             timeout=20,
+            env=env,
         )
     except (OSError, subprocess.SubprocessError) as exc:
         raise RuntimeError(f"live-task: unable to fetch {task_id}") from exc
@@ -343,6 +348,7 @@ def _load_kanban_db():
 
 def _seal_drift(
     *,
+    board: str,
     task_id: str,
     run_id: int,
     implementer: str,
@@ -352,6 +358,7 @@ def _seal_drift(
     content_state_sha256: str,
 ) -> list[str]:
     current_seal, errors = _HANDOFF.validate_handoff_seal(
+        board=board,
         task_id=task_id,
         run_id=run_id,
         implementer=implementer,
@@ -368,7 +375,7 @@ def _seal_drift(
     return errors
 
 
-def dispatch_review(task_id: str, *, snapshot: Mapping[str, Any] | None = None, kb=None) -> int:
+def dispatch_review(task_id: str, *, board: str, snapshot: Mapping[str, Any] | None = None, kb=None) -> int:
     """Atomically validate and spawn exactly one routed same-card reviewer."""
     _assert_expected_hermes_version()
     kb = kb or _load_kanban_db()
@@ -377,8 +384,11 @@ def dispatch_review(task_id: str, *, snapshot: Mapping[str, Any] | None = None, 
             "kanban.review_dispatch must be false before targeted review dispatch"
         )
 
-    live = snapshot if snapshot is not None else _live_snapshot(task_id)
-    errors = validate_routed_review_handoff(live)
+    board = _HANDOFF.canonical_board(board)
+    if not callable(getattr(kb, "board_exists", None)) or not kb.board_exists(board):
+        raise RuntimeError("explicit board does not exist")
+    live = snapshot if snapshot is not None else _live_snapshot(board, task_id)
+    errors = validate_routed_review_handoff(live, board=board)
     if errors:
         print("RUNTIME_CONTRACT_DRIFT: " + "; ".join(errors))
         return 2
@@ -398,6 +408,7 @@ def dispatch_review(task_id: str, *, snapshot: Mapping[str, Any] | None = None, 
         print("RUNTIME_CONTRACT_DRIFT: handoff_provenance_missing")
         return 2
     seal, seal_errors = _HANDOFF.validate_handoff_seal(
+        board=board,
         task_id=task_id,
         run_id=expected_implementer_run,
         implementer=expected_implementer,
@@ -410,7 +421,6 @@ def dispatch_review(task_id: str, *, snapshot: Mapping[str, Any] | None = None, 
         print("RUNTIME_CONTRACT_DRIFT: " + "; ".join(seal_errors or ["handoff_seal_missing"]))
         return 2
 
-    board = kb.get_current_board()
     claimed = None
     reviewer_run_id = None
     with kb.connect_closing(board=board) as conn:
@@ -441,6 +451,7 @@ def dispatch_review(task_id: str, *, snapshot: Mapping[str, Any] | None = None, 
                 if drift:
                     raise _AtomicClaimDrift("; ".join(dict.fromkeys(drift)))
                 locked_seal_errors = _seal_drift(
+                    board=board,
                     task_id=task_id,
                     run_id=expected_implementer_run,
                     implementer=expected_implementer,
@@ -454,6 +465,7 @@ def dispatch_review(task_id: str, *, snapshot: Mapping[str, Any] | None = None, 
                 if callable(_TEST_MUTATION_HOOK):
                     _TEST_MUTATION_HOOK("before_claim")
                 preclaim_seal_errors = _seal_drift(
+                    board=board,
                     task_id=task_id,
                     run_id=expected_implementer_run,
                     implementer=expected_implementer,
@@ -480,6 +492,7 @@ def dispatch_review(task_id: str, *, snapshot: Mapping[str, Any] | None = None, 
                     raise _AtomicClaimDrift("; ".join(post_claim_drift))
                 reviewer_run_id = claimed.current_run_id
                 postclaim_seal_errors = _seal_drift(
+                    board=board,
                     task_id=task_id,
                     run_id=expected_implementer_run,
                     implementer=expected_implementer,
@@ -498,7 +511,9 @@ def dispatch_review(task_id: str, *, snapshot: Mapping[str, Any] | None = None, 
                 reviewer_metadata.update(
                     {
                         "factory_handoff_schema": _HANDOFF.HANDOFF_SCHEMA,
+                        "factory_handoff_board": board,
                         "factory_handoff_seal_id": seal["seal_id"],
+                        "factory_handoff_git_head": seal["git_head"],
                         "factory_handoff_content_state_sha256": seal["content_state_sha256"],
                         "factory_handoff_implementer_run_id": expected_implementer_run,
                     }
@@ -525,6 +540,7 @@ def dispatch_review(task_id: str, *, snapshot: Mapping[str, Any] | None = None, 
             if callable(_TEST_MUTATION_HOOK):
                 _TEST_MUTATION_HOOK("before_spawn")
             spawn_seal_errors = _seal_drift(
+                board=board,
                 task_id=task_id,
                 run_id=expected_implementer_run,
                 implementer=expected_implementer,
@@ -557,6 +573,7 @@ def dispatch_review(task_id: str, *, snapshot: Mapping[str, Any] | None = None, 
                 dict.fromkeys([*(claimed.skills or []), "sdlc-review"])
             )
             final_seal_errors = _seal_drift(
+                board=board,
                 task_id=task_id,
                 run_id=expected_implementer_run,
                 implementer=expected_implementer,
@@ -599,6 +616,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="Fail-closed targeted same-card review dispatcher for Software Factory"
     )
     parser.add_argument("--task-id", required=True)
+    parser.add_argument("--board", required=True)
     return parser
 
 
@@ -608,7 +626,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print("RUNTIME_CONTRACT_DRIFT: invalid_task_id")
         return 2
     try:
-        return dispatch_review(args.task_id)
+        return dispatch_review(args.task_id, board=args.board)
     except RuntimeError as exc:
         print(f"RUNTIME_CONTRACT_DRIFT: {exc}")
         return 2

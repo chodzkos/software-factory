@@ -20,7 +20,7 @@ chmod +x "${TMP_DIR}/hermes"
 export PATH="${TMP_DIR}:${PATH}"
 export HERMES_FAKE_LOG="${TMP_DIR}/argv.log"
 
-bash "${WRAPPER}" block t_gate RUNTIME CONTRACT PENDING
+bash "${WRAPPER}" block --board isolated t_gate RUNTIME CONTRACT PENDING
 mapfile -t argv <"${HERMES_FAKE_LOG}"
 expected=(kanban block --kind needs_input t_gate "RUNTIME CONTRACT PENDING")
 [[ "${#argv[@]}" -eq "${#expected[@]}" ]]
@@ -79,11 +79,12 @@ worktree="${repo}/.worktrees/t_live"
 mkdir -p "${worktree}"
 LIVE_BODY=$'## Task Contract\nTYPE: feature\nRISK: medium\nSECURITY_SENSITIVE: no\nASSIGNEE: coder\nREPOSITORY: owner/repo\nIMPLEMENTER: coder\nREQUIRED_REVIEWERS: reviewer-claude\nOPTIONAL_REVIEWERS: none\nREQUIRED_EVIDENCE: tests\nACCEPTANCE_CRITERIA:\n- works\n'
 LIVE_BODY+="WORKSPACE: worktree:${repo}"$'\n'
-export HERMES_FAKE_SHOW_JSON="$(python3 -c 'import json,sys; repo,worktree,body=sys.argv[1:]; print(json.dumps({"task":{"id":"t_live","body":body,"assignee":"reviewer-claude","status":"review","workspace_kind":"worktree","workspace_path":worktree},"events":[{"kind":"review_requested","payload":{"implementer":"coder","reviewer":"reviewer-claude"},"run_id":17}],"runs":[{"id":17,"profile":"coder","outcome":"review_requested","metadata":{"task_id":"t_live","workspace_path":worktree}}]}))' "${repo}" "${worktree}" "${LIVE_BODY}")"
+HERMES_FAKE_SHOW_JSON="$(python3 -c 'import json,sys; repo,worktree,body=sys.argv[1:]; print(json.dumps({"task":{"id":"t_live","body":body,"assignee":"reviewer-claude","status":"review","workspace_kind":"worktree","workspace_path":worktree},"events":[{"kind":"review_requested","payload":{"implementer":"coder","reviewer":"reviewer-claude"},"run_id":17}],"runs":[{"id":17,"profile":"coder","outcome":"review_requested","metadata":{"task_id":"t_live","workspace_path":worktree}}]}))' "${repo}" "${worktree}" "${LIVE_BODY}")"
+export HERMES_FAKE_SHOW_JSON
 
-routing_live_ok="$(bash "${WRAPPER}" validate-routing-live --task-id t_live)"
+routing_live_ok="$(bash "${WRAPPER}" validate-routing-live --board isolated --task-id t_live)"
 [[ "${routing_live_ok}" == "MODEL_ROUTING_OK" ]] || { echo "ERROR: live routing failed: ${routing_live_ok}" >&2; exit 1; }
-handoff_ok="$(bash "${WRAPPER}" validate-routed-handoff --task-id t_live)"
+handoff_ok="$(bash "${WRAPPER}" validate-routed-handoff --board isolated --task-id t_live)"
 [[ "${handoff_ok}" == "RUNTIME_CONTRACT_OK" ]] || { echo "ERROR: live handoff failed: ${handoff_ok}" >&2; exit 1; }
 
 SECURITY_BAD_BODY=$'## Task Contract\nTYPE: review\nRISK: high\nSECURITY_SENSITIVE: yes\nASSIGNEE: reviewer-claude\nREPOSITORY: owner/repo\nWORKSPACE: worktree:/repo\nIMPLEMENTER: coder-claude\nREQUIRED_REVIEWERS: reviewer-gpt,reviewer-claude\nOPTIONAL_REVIEWERS: none\nREQUIRED_EVIDENCE: security review\nACCEPTANCE_CRITERIA:\n- reviewed\n'

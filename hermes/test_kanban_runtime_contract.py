@@ -90,52 +90,52 @@ class RuntimeContractTests(unittest.TestCase):
     def test_exact_same_card_handoff_fails_when_fixture_workspace_missing(self):
         self.assertIn(
             "implementation_resolved_worktree_missing",
-            validate_review_handoff(same_card_review_snapshot(), implementer_profile="coder", reviewer_profile="reviewer-claude"),
+            validate_review_handoff(same_card_review_snapshot(), board="isolated", implementer_profile="coder", reviewer_profile="reviewer-claude"),
         )
 
     def test_implementer_reviewer_must_differ(self):
-        errors=validate_review_handoff(same_card_review_snapshot(), implementer_profile="reviewer-claude", reviewer_profile="reviewer-claude")
+        errors=validate_review_handoff(same_card_review_snapshot(), board="isolated", implementer_profile="reviewer-claude", reviewer_profile="reviewer-claude")
         self.assertIn("implementer_and_reviewer_must_differ", errors)
 
     def test_task_id_and_worktree_are_required(self):
         payload=same_card_review_snapshot(); del payload["task"]["id"]
-        self.assertIn("implementation_id_missing", validate_review_handoff(payload, implementer_profile="coder", reviewer_profile="reviewer-claude"))
+        self.assertIn("implementation_id_missing", validate_review_handoff(payload, board="isolated", implementer_profile="coder", reviewer_profile="reviewer-claude"))
         payload=same_card_review_snapshot(); payload["task"]["workspace_path"]="/repo"
-        self.assertIn("implementation_resolved_worktree_missing", validate_review_handoff(payload, implementer_profile="coder", reviewer_profile="reviewer-claude"))
+        self.assertIn("implementation_resolved_worktree_missing", validate_review_handoff(payload, board="isolated", implementer_profile="coder", reviewer_profile="reviewer-claude"))
 
     def test_assignee_and_review_status_are_required_after_workspace_gate(self):
         payload=same_card_review_snapshot(); payload["task"]["assignee"]="coder"
-        errors=validate_review_handoff(payload, implementer_profile="coder", reviewer_profile="reviewer-claude")
+        errors=validate_review_handoff(payload, board="isolated", implementer_profile="coder", reviewer_profile="reviewer-claude")
         self.assertIn("implementation_resolved_worktree_missing", errors)
         payload=same_card_review_snapshot(); payload["task"]["status"]="done"
-        errors=validate_review_handoff(payload, implementer_profile="coder", reviewer_profile="reviewer-claude")
+        errors=validate_review_handoff(payload, board="isolated", implementer_profile="coder", reviewer_profile="reviewer-claude")
         self.assertIn("implementation_resolved_worktree_missing", errors)
 
     def test_latest_review_event_profiles_are_required_after_workspace_gate(self):
         payload=same_card_review_snapshot(); payload["events"]=[]
-        self.assertIn("implementation_resolved_worktree_missing", validate_review_handoff(payload, implementer_profile="coder", reviewer_profile="reviewer-claude"))
+        self.assertIn("implementation_resolved_worktree_missing", validate_review_handoff(payload, board="isolated", implementer_profile="coder", reviewer_profile="reviewer-claude"))
 
     def test_event_run_id_boolean_is_not_integer(self):
         payload=same_card_review_snapshot(); payload["events"][0]["run_id"] = True
         # Workspace gate fires first for this non-existent fixture; direct integer semantics are covered in temp-path adversarial tests.
-        self.assertIn("implementation_resolved_worktree_missing", validate_review_handoff(payload, implementer_profile="coder", reviewer_profile="reviewer-claude"))
+        self.assertIn("implementation_resolved_worktree_missing", validate_review_handoff(payload, board="isolated", implementer_profile="coder", reviewer_profile="reviewer-claude"))
 
     def test_latest_implementer_run_is_required_after_workspace_gate(self):
         payload=same_card_review_snapshot(); payload["runs"]=[]
-        self.assertIn("implementation_resolved_worktree_missing", validate_review_handoff(payload, implementer_profile="coder", reviewer_profile="reviewer-claude"))
+        self.assertIn("implementation_resolved_worktree_missing", validate_review_handoff(payload, board="isolated", implementer_profile="coder", reviewer_profile="reviewer-claude"))
 
     def test_run_metadata_workspace_and_task_id_are_mandatory_after_workspace_gate(self):
         payload=same_card_review_snapshot(); payload["runs"][0]["metadata"]=None
-        self.assertIn("implementation_resolved_worktree_missing", validate_review_handoff(payload, implementer_profile="coder", reviewer_profile="reviewer-claude"))
+        self.assertIn("implementation_resolved_worktree_missing", validate_review_handoff(payload, board="isolated", implementer_profile="coder", reviewer_profile="reviewer-claude"))
 
     def test_malformed_history_fails_closed(self):
         payload=same_card_review_snapshot(); payload["events"]="bad"; payload["runs"]=[None]
-        errors=validate_review_handoff(payload, implementer_profile="coder", reviewer_profile="reviewer-claude")
+        errors=validate_review_handoff(payload, board="isolated", implementer_profile="coder", reviewer_profile="reviewer-claude")
         self.assertTrue(errors)
 
     def test_body_summary_spoof_does_not_replace_history(self):
         payload=same_card_review_snapshot(); payload["events"]=[]; payload["runs"]=[]; payload["latest_summary"]="review_requested coder reviewer-claude"
-        errors=validate_review_handoff(payload, implementer_profile="coder", reviewer_profile="reviewer-claude")
+        errors=validate_review_handoff(payload, board="isolated", implementer_profile="coder", reviewer_profile="reviewer-claude")
         self.assertTrue(errors)
 
     def test_task_graph_only_validates_runtime_fields(self):

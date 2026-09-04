@@ -1,7 +1,9 @@
 name: factory-execution-guards
-version: 0.10.0
-description: Fail-closed Claude execution with active-run authorization, schema-6 attestation, schema-1 handoff sealing, process-exit proof, and reviewer byte binding.
+version: 0.11.0
+description: Fail-closed supervised Claude execution, board-bound schema-2 handoff, atomic approval, and downstream byte revalidation.
 entrypoint: __init__:register
+provides_tools:
+  - factory_review_approve
 provides_hooks:
   - pre_tool_call
   - post_tool_call

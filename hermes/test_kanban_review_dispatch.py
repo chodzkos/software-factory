@@ -55,6 +55,9 @@ class FakeKanbanDB:
     def review_dispatch_enabled(self):
         return self.auto_review
 
+    def board_exists(self, board):
+        return board == "isolated"
+
     def get_current_board(self):
         return "default"
 
@@ -199,7 +202,9 @@ ACCEPTANCE_CRITERIA:
 class TargetedReviewDispatchTests(unittest.TestCase):
     def _dispatch(self, task_id: str, *, snapshot: dict, kb: FakeKanbanDB) -> int:
         seal = {
+            "board": "isolated",
             "seal_id": "a" * 64,
+            "git_head": "c" * 40,
             "content_state_sha256": "b" * 64,
         }
         with patch.object(
@@ -207,7 +212,7 @@ class TargetedReviewDispatchTests(unittest.TestCase):
             "validate_handoff_seal",
             return_value=(seal, []),
         ):
-            return dispatch.dispatch_review(task_id, snapshot=snapshot, kb=kb)
+            return dispatch.dispatch_review(task_id, board="isolated", snapshot=snapshot, kb=kb)
 
     def _fixture(
         self,

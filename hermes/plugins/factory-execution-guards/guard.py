@@ -20,7 +20,7 @@ CLAUDE_NORMAL_PROFILES = frozenset({"coder-claude", "reviewer-claude"})
 CLAUDE_DEEP_PROFILES = frozenset({"architect-claude-opus"})
 CLAUDE_PROFILES = CLAUDE_NORMAL_PROFILES | CLAUDE_DEEP_PROFILES
 
-RUNTIME_OPS = frozenset({"create", "show", "block", "complete", "validate-runtime", "validate-routed-handoff", "validate-routing"})
+RUNTIME_OPS = frozenset({"create", "show", "block", "complete", "validate-runtime", "validate-routed-handoff", "validate-routing", "verify-approval"})
 
 CLAUDE_ALLOWED_TOOLS = {
     "coder-claude": frozenset({"terminal", "read_file", "search_files", "skill", "kanban_show", "kanban_comment", "kanban_heartbeat", "kanban_request_review", "kanban_block"}),
@@ -315,6 +315,12 @@ def _claude_terminal_allowed(profile: str, command: str) -> bool:
 
 
 def _evidence_path(task_id: str, run_id: str, profile: str) -> Path:
+    if profile == "coder-claude":
+        parsed = _handoff._true_run_id(run_id)
+        board = os.environ.get("HERMES_KANBAN_BOARD", "").strip()
+        if parsed is None:
+            raise ValueError("execution evidence run id invalid")
+        return EVIDENCE_ROOT / _handoff._board_scope(board) / f"{task_id}__{parsed}__{profile}.json"
     return EVIDENCE_ROOT / f"{task_id}__{run_id}__{profile}.json"
 
 
@@ -486,7 +492,6 @@ def on_post_tool_call(tool_name: str = "", args: Any = None, result: str = "", t
         ):
             return None
         attestation_id = hashlib.sha256(pending["nonce"].encode("ascii")).hexdigest()
-        EVIDENCE_ROOT.mkdir(parents=True, exist_ok=True)
         payload = {
             "schema": EVIDENCE_SCHEMA,
             "profile": profile,
@@ -509,6 +514,7 @@ def on_post_tool_call(tool_name: str = "", args: Any = None, result: str = "", t
             "recorded_at": int(time.time()),
         }
         path = _evidence_path(tid, rid, profile)
+        path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(".tmp")
         tmp.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
         os.replace(tmp, path)

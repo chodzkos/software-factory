@@ -47,6 +47,9 @@ class _Kanban:
     def get_current_board(self):
         return "isolated"
 
+    def board_exists(self, board):
+        return board == "isolated"
+
     def connect_closing(self, *, board=None):
         return contextlib.nullcontext(self.conn)
 
@@ -99,7 +102,8 @@ class HandoffSealTests(unittest.TestCase):
             "workspace_content_state_after_sha256": content,
             "recorded_at": int(time.time()),
         }
-        path = self.evidence_root / f"t_seal__{run_id}__coder-claude.json"
+        path = self.evidence_root / HANDOFF._board_scope("isolated") / f"t_seal__{run_id}__coder-claude.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
         return path
 
@@ -194,11 +198,31 @@ class HandoffSealTests(unittest.TestCase):
 
     def test_successful_transition_creates_one_closed_schema_seal(self):
         seal = self._create_seal()
-        self.assertEqual(seal["schema"], 1)
+        self.assertEqual(seal["schema"], 2)
+        self.assertEqual(seal["board"], "isolated")
         self.assertEqual(seal["implementer_run_id"], 17)
-        self.assertEqual(len(list(self.handoff_root.glob("*.json"))), 1)
-        loaded = json.loads(next(self.handoff_root.glob("*.json")).read_text())
+        self.assertEqual(len(list(self.handoff_root.glob("**/*.json"))), 1)
+        loaded = json.loads(next(self.handoff_root.glob("**/*.json")).read_text())
         self.assertEqual(set(loaded), HANDOFF._HANDOFF_FIELDS)
+
+    def test_two_board_collision_and_current_switch_cannot_replay_seal(self):
+        self._create_seal()
+        roots = self._patch_roots()
+        alpha = self.handoff_root / HANDOFF._board_scope("isolated") / "t_seal__17__coder-claude.json"
+        beta = self.handoff_root / HANDOFF._board_scope("other") / "t_seal__17__coder-claude.json"
+        beta.parent.mkdir(parents=True)
+        beta.write_bytes(alpha.read_bytes())
+        with roots[0], roots[1], patch.dict(os.environ, {"HERMES_KANBAN_BOARD": "other"}, clear=False):
+            with self.assertRaises(HANDOFF.HandoffError):
+                HANDOFF.load_handoff_seal("other", "t_seal", 17)
+            seal, errors = HANDOFF.validate_handoff_seal(
+                board="other", task_id="t_seal", run_id=17,
+                implementer="coder-claude", reviewer="reviewer-gpt",
+                workspace=str(self.workspace), content_state=HANDOFF.workspace_content_state,
+                require_process_exit=False,
+            )
+        self.assertIsNone(seal)
+        self.assertTrue(errors)
 
     def test_malformed_or_wrong_request_review_result_creates_no_seal(self):
         self._evidence()
@@ -222,12 +246,13 @@ class HandoffSealTests(unittest.TestCase):
         roots = self._patch_roots()
         with roots[0], roots[1]:
             _, alive_errors = HANDOFF.validate_handoff_seal(
+                board="isolated",
                 task_id="t_seal", run_id=17, implementer="coder-claude",
                 reviewer="reviewer-gpt", workspace=str(self.workspace),
                 content_state=HANDOFF.workspace_content_state,
             )
             self.assertIn("implementer_process_alive", alive_errors)
-            stored = self.handoff_root / "t_seal__17__coder-claude.json"
+            stored = self.handoff_root / HANDOFF._board_scope("isolated") / "t_seal__17__coder-claude.json"
             payload = json.loads(stored.read_text())
             payload["implementer_proc_start"] = str(int(seal["implementer_proc_start"]) + 1)
             core = {key: payload[key] for key in payload if key != "seal_id"}
@@ -236,6 +261,7 @@ class HandoffSealTests(unittest.TestCase):
             ).hexdigest()
             stored.write_text(json.dumps(payload, sort_keys=True) + "\n")
             _, reused_errors = HANDOFF.validate_handoff_seal(
+                board="isolated",
                 task_id="t_seal", run_id=17, implementer="coder-claude",
                 reviewer="reviewer-gpt", workspace=str(self.workspace),
                 content_state=HANDOFF.workspace_content_state,
@@ -249,6 +275,7 @@ class HandoffSealTests(unittest.TestCase):
         with roots[0], roots[1]:
             (self.workspace / "README.md").write_text("drift\n", encoding="utf-8")
             _, errors = HANDOFF.validate_handoff_seal(
+                board="isolated",
                 task_id="t_seal", run_id=17, implementer="coder-claude",
                 reviewer="reviewer-gpt", workspace=str(self.workspace),
                 content_state=HANDOFF.workspace_content_state,
@@ -258,6 +285,7 @@ class HandoffSealTests(unittest.TestCase):
             (self.workspace / "README.md").write_text("sealed\n", encoding="utf-8")
             self._evidence().write_text('{"schema":6,"schema":6}\n')
             _, evidence_errors = HANDOFF.validate_handoff_seal(
+                board="isolated",
                 task_id="t_seal", run_id=17, implementer="coder-claude",
                 reviewer="reviewer-gpt", workspace=str(self.workspace),
                 content_state=HANDOFF.workspace_content_state,
@@ -268,14 +296,14 @@ class HandoffSealTests(unittest.TestCase):
     def test_closed_seal_rejects_unknown_schema_types_partial_and_symlink(self):
         self._create_seal()
         roots = self._patch_roots()
-        stored = self.handoff_root / "t_seal__17__coder-claude.json"
+        stored = self.handoff_root / HANDOFF._board_scope("isolated") / "t_seal__17__coder-claude.json"
         original = stored.read_bytes()
         unknown = json.loads(original)
         unknown["unknown"] = True
         variants = (
-            b'{"schema":1,"schema":1}\n',
-            b'{"schema":1}\n',
-            original.replace(b'"schema":1', b'"schema":true'),
+            b'{"schema":2,"schema":2}\n',
+            b'{"schema":2}\n',
+            original.replace(b'"schema":2', b'"schema":true'),
             json.dumps(unknown, sort_keys=True).encode("utf-8") + b"\n",
             original[:-8],
         )
@@ -284,18 +312,18 @@ class HandoffSealTests(unittest.TestCase):
                 with self.subTest(raw=raw[:40]):
                     stored.write_bytes(raw)
                     with self.assertRaises(HANDOFF.HandoffError):
-                        HANDOFF.load_handoff_seal("t_seal", 17)
+                        HANDOFF.load_handoff_seal("isolated", "t_seal", 17)
             stored.unlink()
             victim = self.root / "victim.json"
             victim.write_bytes(original)
             stored.symlink_to(victim)
             with self.assertRaises(HANDOFF.HandoffError):
-                HANDOFF.load_handoff_seal("t_seal", 17)
+                HANDOFF.load_handoff_seal("isolated", "t_seal", 17)
 
     def test_reviewer_completion_binds_exact_run_metadata_and_current_bytes(self):
         seal = self._create_seal()
         roots = self._patch_roots()
-        stored = self.handoff_root / "t_seal__17__coder-claude.json"
+        stored = self.handoff_root / HANDOFF._board_scope("isolated") / "t_seal__17__coder-claude.json"
         payload = json.loads(stored.read_text())
         payload["implementer_proc_start"] = str(int(seal["implementer_proc_start"]) + 1)
         core = {key: payload[key] for key in payload if key != "seal_id"}
@@ -304,8 +332,10 @@ class HandoffSealTests(unittest.TestCase):
         ).hexdigest()
         stored.write_text(json.dumps(payload, sort_keys=True) + "\n")
         metadata = {
-            "factory_handoff_schema": 1,
+            "factory_handoff_schema": 2,
+            "factory_handoff_board": "isolated",
             "factory_handoff_seal_id": payload["seal_id"],
+            "factory_handoff_git_head": payload["git_head"],
             "factory_handoff_content_state_sha256": payload["content_state_sha256"],
             "factory_handoff_implementer_run_id": 17,
         }

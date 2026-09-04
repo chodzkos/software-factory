@@ -20,6 +20,10 @@ _PROTECTED_PROFILES = frozenset({
     "reviewer-gpt",
 })
 _CLAUDE_PROFILES = frozenset({"coder-claude", "reviewer-claude", "architect-claude-opus"})
+_REVIEWER_GPT_TOOLS = frozenset({
+    "factory_repo_map", "factory_repo_read", "factory_repo_search",
+    "kanban_show", "kanban_request_changes", "factory_review_approve",
+})
 _CODER_READ_TOOLS = "Read,Glob,Grep"
 _READONLY_TOOLS = "Read,Glob,Grep"
 _REQUIRED_BOOL_FLAGS = frozenset({"--safe-mode"})
@@ -36,6 +40,7 @@ _RUNTIME_OPS = frozenset({
     "validate-routing-body",
     "validate-routing-live",
     "dispatch-review",
+    "verify-approval",
 })
 
 # Claude's permission language is comma/parenthesis/glob structured.  A
@@ -115,14 +120,21 @@ def _runtime_terminal_allowed(command: str) -> bool:
     args = tokens[2:]
     if "--actual-json" in args:
         return False
-    if op in {"validate-routing-live", "validate-routed-handoff", "dispatch-review"}:
-        return len(args) == 2 and args[0] == "--task-id" and bool(args[1]) and not args[1].startswith("-")
+    if op != "validate-routing-body":
+        if len(args) < 2 or args[0] != "--board":
+            return False
+        try:
+            _handoff.canonical_board(args[1])
+        except Exception:
+            return False
+    if op in {"validate-routing-live", "validate-routed-handoff", "dispatch-review", "verify-approval"}:
+        return len(args) == 4 and args[2] == "--task-id" and bool(args[3]) and not args[3].startswith("-")
     if op == "validate-routing-body":
         return len(args) == 2 and args[0] == "--task-body" and bool(args[1])
     if op == "validate-runtime":
-        return len(args) >= 4 and args[0] == "--task-id" and bool(args[1]) and "--workspace-kind" in args
+        return len(args) >= 6 and args[2] == "--task-id" and bool(args[3]) and "--workspace-kind" in args
     if op == "show":
-        return len(args) in {1, 2} and bool(args[0]) and not args[0].startswith("-") and (len(args) == 1 or args[1] == "--json")
+        return len(args) in {3, 4} and bool(args[2]) and not args[2].startswith("-") and (len(args) == 3 or args[3] == "--json")
     return bool(args)
 
 
@@ -331,7 +343,23 @@ def _hardened_parse_claude_argv(profile: str, command: str) -> dict[str, str] | 
         tokens = _guard._shell_tokens(command)
     except ValueError:
         return None
-    if not tokens or tokens[0] != "claude" or _guard._canonical_claude_identity() is None:
+    if not tokens or _guard._canonical_claude_identity() is None:
+        return None
+
+    if profile == "coder-claude":
+        supervisor = str((Path(__file__).resolve().parent / "supervisor.py").resolve(strict=True))
+        expected_prefix = [
+            supervisor,
+            "--board", os.environ.get("HERMES_KANBAN_BOARD", "").strip(),
+            "--task-id", _guard._task_id(),
+            "--run-id", _guard._run_id(),
+            "--workspace", _guard._workspace(),
+            "--",
+        ]
+        if tokens[:len(expected_prefix)] != expected_prefix:
+            return None
+        tokens = tokens[len(expected_prefix):]
+    if not tokens or tokens[0] != "claude":
         return None
 
     values: dict[str, str] = {}
@@ -413,14 +441,11 @@ def on_pre_tool_call(*args, **kwargs):
     if blocked is not None and os.environ.get("HERMES_PROFILE", "").strip() in _PROTECTED_PROFILES:
         return blocked
     profile = os.environ.get("HERMES_PROFILE", "").strip()
-    if profile == "reviewer-gpt" and tool_name == "kanban_complete":
-        if not _handoff.reviewer_completion_authorized(
-            content_state=_handoff.workspace_content_state,
-        ):
-            return {
-                "action": "block",
-                "message": "reviewer-gpt approval refused: sealed implementation bytes or reviewer run do not match",
-            }
+    if profile == "reviewer-gpt" and tool_name not in _REVIEWER_GPT_TOOLS:
+        return {
+            "action": "block",
+            "message": "reviewer-gpt tool refused: read-only review capability boundary",
+        }
     return _guard.on_pre_tool_call(*args, **kwargs)
 
 
@@ -429,7 +454,44 @@ def on_post_tool_call(*args, **kwargs):
     return _guard.on_post_tool_call(*args, **kwargs)
 
 
+_APPROVE_SCHEMA = {
+    "name": "factory_review_approve",
+    "description": "Atomically approve the exact sealed implementation bytes for the current reviewer run.",
+    "parameters": {
+        "type": "object",
+        "properties": {"summary": {"type": "string", "minLength": 1, "maxLength": 4000}},
+        "required": ["summary"],
+        "additionalProperties": False,
+    },
+}
+
+
+def _approve_available() -> bool:
+    return os.environ.get("HERMES_PROFILE", "").strip() == "reviewer-gpt" and bool(
+        os.environ.get("HERMES_KANBAN_TASK", "").strip()
+    )
+
+
+def _handle_review_approve(args: dict, **_kwargs) -> str:
+    from tools.registry import tool_error, tool_result
+    try:
+        return tool_result(_handoff.guarded_reviewer_complete(args))
+    except Exception as exc:
+        return tool_error(f"factory_review_approve: {exc}")
+
+
 def register(ctx) -> None:
+    register_tool = getattr(ctx, "register_tool", None)
+    if not callable(register_tool):
+        raise RuntimeError("Hermes plugin tool registration unavailable")
+    register_tool(
+        name="factory_review_approve",
+        toolset="factory-execution-guards",
+        schema=_APPROVE_SCHEMA,
+        handler=_handle_review_approve,
+        check_fn=_approve_available,
+        emoji="🔒",
+    )
     register_hook = getattr(ctx, "register_hook", None)
     if not callable(register_hook):
         raise RuntimeError("Hermes plugin hook registration unavailable")

@@ -9,7 +9,7 @@
         "plugin.yaml": "e26285a24ab1048c1c61e4dd7bfecd22e7178554",
         "__init__.py": "d1607626706e425b0057f10154a1b923da8f55e7",
         "repo_map.py": "ce7718e0879600631e84a4e44f9c7f97842af9cc",
-        "repository_tools.py": "93193e0db3453ef9b5d8f175c5fe4334ff5bf58a",
+        "repository_tools.py": "cc028cb35f54e21660356662c727cabe7f789eca",
         "kanban_guard.py": "881dacf7715f8fd0c088df54c9e8d273b15a21da"
       }
     },
@@ -18,12 +18,19 @@
       "installable": true,
       "activation_status": "reviewed-ready",
       "files": {
-        "plugin.yaml": "eb3557b5aee77be6da2aaeae837a32dfe85bcac5",
-        "__init__.py": "837945feb0cbe9edc61eed5cfde303210a31859f",
-        "guard.py": "157ddbdd684caa85f83963b38d89058873973db3",
-        "handoff.py": "87b3e626c55b0be748a9d848d8e3441a57209a26"
+        "plugin.yaml": "74bb36d6bb9b63a6453d2c42544586b84a8e165d",
+        "__init__.py": "afdeed78fdb539c0a11498a4a3f8844d55d2a980",
+        "guard.py": "46c5c0082a41ac11c9648efc8a6a12c3de8157a2",
+        "handoff.py": "be5a17896c5c08f0a6f7b890cd11f69a15276272",
+        "supervisor.py": "b0da39ae49d9aca0ed9a816a2a7d15ca9ad8c934"
       },
       "replace_from": [
+        {
+          "plugin.yaml": "eb3557b5aee77be6da2aaeae837a32dfe85bcac5",
+          "__init__.py": "837945feb0cbe9edc61eed5cfde303210a31859f",
+          "guard.py": "157ddbdd684caa85f83963b38d89058873973db3",
+          "handoff.py": "87b3e626c55b0be748a9d848d8e3441a57209a26"
+        },
         {
           "plugin.yaml": "f5136a9df630891a4c2a3504142b4cf623622733",
           "__init__.py": "8de9ffacc7a7ae6c61a3bc7922313a56d22d64f6",

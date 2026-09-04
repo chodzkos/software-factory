@@ -9,15 +9,16 @@ REVIEW_DISPATCHER="${SCRIPT_DIR}/kanban_review_dispatch.py"
 usage() {
   cat >&2 <<'EOF'
 Usage:
-  kanban_runtime_cli.sh create <hermes-kanban-create-args...>
-  kanban_runtime_cli.sh show <task-id> [--json]
-  kanban_runtime_cli.sh block <task-id> <reason...>
-  kanban_runtime_cli.sh complete <task-id> <summary...>
-  kanban_runtime_cli.sh validate-runtime --task-id <task-id> <validator-runtime-expectations...>
-  kanban_runtime_cli.sh validate-routed-handoff --task-id <task-id>
+  kanban_runtime_cli.sh create --board <slug> <hermes-kanban-create-args...>
+  kanban_runtime_cli.sh show --board <slug> <task-id> [--json]
+  kanban_runtime_cli.sh block --board <slug> <task-id> <reason...>
+  kanban_runtime_cli.sh complete --board <slug> <task-id> <summary...>
+  kanban_runtime_cli.sh validate-runtime --board <slug> --task-id <task-id> <validator-runtime-expectations...>
+  kanban_runtime_cli.sh validate-routed-handoff --board <slug> --task-id <task-id>
   kanban_runtime_cli.sh validate-routing-body --task-body <task-body>
-  kanban_runtime_cli.sh validate-routing-live --task-id <task-id>
-  kanban_runtime_cli.sh dispatch-review --task-id <task-id>
+  kanban_runtime_cli.sh validate-routing-live --board <slug> --task-id <task-id>
+  kanban_runtime_cli.sh dispatch-review --board <slug> --task-id <task-id>
+  kanban_runtime_cli.sh verify-approval --board <slug> --task-id <task-id>
 
 Live validators fetch authoritative Kanban JSON themselves. The caller never
 supplies live snapshot bytes. Review dispatch is deliberately task-id-targeted
@@ -156,11 +157,13 @@ shift
 
 case "${op}" in
   create)
-    [[ $# -ge 1 ]] || usage
+    [[ $# -ge 3 && "$1" == "--board" && "$2" =~ ^[a-z0-9][a-z0-9_-]{0,63}$ ]] || usage
+    export HERMES_KANBAN_BOARD="$2"; shift 2
     exec hermes kanban create "$@"
     ;;
   show)
-    [[ $# -ge 1 ]] || usage
+    [[ $# -ge 3 && "$1" == "--board" && "$2" =~ ^[a-z0-9][a-z0-9_-]{0,63}$ ]] || usage
+    export HERMES_KANBAN_BOARD="$2"; shift 2
     task_id="$1"
     shift
     if [[ $# -eq 0 ]]; then
@@ -172,7 +175,8 @@ case "${op}" in
     usage
     ;;
   block)
-    [[ $# -ge 2 ]] || usage
+    [[ $# -ge 4 && "$1" == "--board" && "$2" =~ ^[a-z0-9][a-z0-9_-]{0,63}$ ]] || usage
+    export HERMES_KANBAN_BOARD="$2"; shift 2
     task_id="$1"
     shift
     for reason_part in "$@"; do
@@ -182,7 +186,8 @@ case "${op}" in
     exec hermes kanban block --kind needs_input "${task_id}" "${reason}"
     ;;
   complete)
-    [[ $# -ge 2 ]] || usage
+    [[ $# -ge 4 && "$1" == "--board" && "$2" =~ ^[a-z0-9][a-z0-9_-]{0,63}$ ]] || usage
+    export HERMES_KANBAN_BOARD="$2"; shift 2
     task_id="$1"
     shift
     summary="$*"
@@ -190,11 +195,12 @@ case "${op}" in
     ;;
   validate-runtime)
     [[ -f "${VALIDATOR}" ]] || { echo "ERROR: missing ${VALIDATOR}" >&2; exit 2; }
+    [[ $# -ge 6 && "$1" == "--board" && "$2" =~ ^[a-z0-9][a-z0-9_-]{0,63}$ && "$3" == "--task-id" ]] || usage
     exec python3 "${VALIDATOR}" runtime "$@"
     ;;
   validate-routed-handoff)
     [[ -f "${VALIDATOR}" ]] || { echo "ERROR: missing ${VALIDATOR}" >&2; exit 2; }
-    [[ $# -eq 2 && "$1" == "--task-id" && -n "$2" && "$2" != -* ]] || usage
+    [[ $# -eq 4 && "$1" == "--board" && "$2" =~ ^[a-z0-9][a-z0-9_-]{0,63}$ && "$3" == "--task-id" && -n "$4" && "$4" != -* ]] || usage
     exec python3 "${VALIDATOR}" routed-handoff "$@"
     ;;
   validate-routing-body)
@@ -204,12 +210,17 @@ case "${op}" in
     ;;
   validate-routing-live)
     [[ -f "${VALIDATOR}" ]] || { echo "ERROR: missing ${VALIDATOR}" >&2; exit 2; }
-    [[ $# -eq 2 && "$1" == "--task-id" && -n "$2" && "$2" != -* ]] || usage
+    [[ $# -eq 4 && "$1" == "--board" && "$2" =~ ^[a-z0-9][a-z0-9_-]{0,63}$ && "$3" == "--task-id" && -n "$4" && "$4" != -* ]] || usage
     exec python3 "${VALIDATOR}" routing-live "$@"
     ;;
   dispatch-review)
-    [[ $# -eq 2 && "$1" == "--task-id" && -n "$2" && "$2" != -* ]] || usage
+    [[ $# -eq 4 && "$1" == "--board" && "$2" =~ ^[a-z0-9][a-z0-9_-]{0,63}$ && "$3" == "--task-id" && -n "$4" && "$4" != -* ]] || usage
     run_review_dispatcher "$@"
+    ;;
+  verify-approval)
+    [[ -f "${VALIDATOR}" ]] || { echo "ERROR: missing ${VALIDATOR}" >&2; exit 2; }
+    [[ $# -eq 4 && "$1" == "--board" && "$2" =~ ^[a-z0-9][a-z0-9_-]{0,63}$ && "$3" == "--task-id" && -n "$4" && "$4" != -* ]] || usage
+    exec python3 "${VALIDATOR}" approval "$@"
     ;;
   *)
     usage

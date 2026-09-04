@@ -31,10 +31,11 @@ make_fixture() {
 make_known_execution_guard_predecessor() {
   local target="$1"
   mkdir -p "$target"
-  # Immediate predecessor v0.9.0 had exactly these three files; handoff.py is new in v0.10.0.
-  git -C "$ROOT_DIR" cat-file blob f5136a9df630891a4c2a3504142b4cf623622733 >"$target/plugin.yaml"
-  git -C "$ROOT_DIR" cat-file blob 8de9ffacc7a7ae6c61a3bc7922313a56d22d64f6 >"$target/__init__.py"
-  git -C "$ROOT_DIR" cat-file blob 3c8bad02c637fb78bf7bcd18a440a966ac4179dd >"$target/guard.py"
+  # Immediate predecessor v0.10.0 is the exact four-file starting-HEAD tuple.
+  git -C "$ROOT_DIR" cat-file blob eb3557b5aee77be6da2aaeae837a32dfe85bcac5 >"$target/plugin.yaml"
+  git -C "$ROOT_DIR" cat-file blob 837945feb0cbe9edc61eed5cfde303210a31859f >"$target/__init__.py"
+  git -C "$ROOT_DIR" cat-file blob 157ddbdd684caa85f83963b38d89058873973db3 >"$target/guard.py"
+  git -C "$ROOT_DIR" cat-file blob 87b3e626c55b0be748a9d848d8e3441a57209a26 >"$target/handoff.py"
 }
 
 printf '[plugin-installer] production candidate reviewed-ready dry-run no write\n'

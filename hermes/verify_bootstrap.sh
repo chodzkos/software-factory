@@ -11,6 +11,8 @@ CONFIG_KEY_REMOVER="${ROOT_DIR}/hermes/remove_profile_config_keys.py"
 RUNTIME_WRAPPER="${ROOT_DIR}/hermes/kanban_runtime_cli.sh"
 REVIEW_DISPATCHER="${ROOT_DIR}/hermes/kanban_review_dispatch.py"
 HANDOFF="${ROOT_DIR}/hermes/plugins/factory-execution-guards/handoff.py"
+SUPERVISOR="${ROOT_DIR}/hermes/plugins/factory-execution-guards/supervisor.py"
+REVIEWER_CAPABILITY_VERIFY="${ROOT_DIR}/hermes/verify_reviewer_capabilities.py"
 STANDARD="${ROOT_DIR}/standards/SOFTWARE_DEVELOPMENT_STANDARD.md"
 MODEL_POLICY="${ROOT_DIR}/workflows/MODEL_ROUTING_POLICY.md"
 MODEL_ROUTING="${ROOT_DIR}/hermes/model_routing_policy.py"
@@ -34,14 +36,14 @@ REVIEWER_GPT_SOUL="${ROOT_DIR}/hermes/profiles/reviewer-gpt/SOUL.md"
 
 printf '[check] syntax and required sources\n'
 bash -n "${BOOTSTRAP}" "${RUNTIME_BOOTSTRAP}" "${PLUGIN_INSTALLER}" "${ANALYST_BOOTSTRAP}" "${ANALYST_VERIFY}" "${RUNTIME_WRAPPER}"
-PYTHONDONTWRITEBYTECODE=1 python3 - "${CONFIG_KEY_REMOVER}" "${REVIEW_DISPATCHER}" "${HANDOFF}" "${REVIEW_DISPATCH_TEST}" "${TARGETED_GUARD_TEST}" "${GUARD_TERMINAL_ARGS_TESTS}" "${GUARD_VERSION_VERIFY}" "${GUARD_VERSION_TESTS}" <<'PY'
+PYTHONDONTWRITEBYTECODE=1 python3 - "${CONFIG_KEY_REMOVER}" "${REVIEW_DISPATCHER}" "${HANDOFF}" "${SUPERVISOR}" "${REVIEWER_CAPABILITY_VERIFY}" "${REVIEW_DISPATCH_TEST}" "${TARGETED_GUARD_TEST}" "${GUARD_TERMINAL_ARGS_TESTS}" "${GUARD_VERSION_VERIFY}" "${GUARD_VERSION_TESTS}" <<'PY'
 from pathlib import Path
 import sys
 for raw in sys.argv[1:]:
     path = Path(raw)
     compile(path.read_text(encoding='utf-8'), str(path), 'exec')
 PY
-for path in "${STANDARD}" "${MODEL_POLICY}" "${MODEL_ROUTING}" "${GUARD}" "${GUARD_ENTRY}" "${HANDOFF}" "${GUARD_MANIFEST}" "${PLUGIN_MANIFEST}" "${GUARD_TESTS}" "${GUARD_PROFILE_TESTS}" "${GUARD_TERMINAL_ARGS_TESTS}" "${GUARD_VERSION_VERIFY}" "${GUARD_VERSION_TESTS}" "${TARGETED_GUARD_TEST}" "${REVIEW_DISPATCH_TEST}" "${PLUGIN_INSTALLER}" "${RUNTIME_WRAPPER}" "${REVIEW_DISPATCHER}" "${REVIEWER_GPT_SOUL}"; do test -f "${path}"; done
+for path in "${STANDARD}" "${MODEL_POLICY}" "${MODEL_ROUTING}" "${GUARD}" "${GUARD_ENTRY}" "${HANDOFF}" "${SUPERVISOR}" "${REVIEWER_CAPABILITY_VERIFY}" "${GUARD_MANIFEST}" "${PLUGIN_MANIFEST}" "${GUARD_TESTS}" "${GUARD_PROFILE_TESTS}" "${GUARD_TERMINAL_ARGS_TESTS}" "${GUARD_VERSION_VERIFY}" "${GUARD_VERSION_TESTS}" "${TARGETED_GUARD_TEST}" "${REVIEW_DISPATCH_TEST}" "${PLUGIN_INSTALLER}" "${RUNTIME_WRAPPER}" "${REVIEW_DISPATCHER}" "${REVIEWER_GPT_SOUL}"; do test -f "${path}"; done
 
 printf '[check] pinned Claude policy and clean invocation mode\n'
 grep -Fq 'CLAUDE_SKILL="claude-code"' "${BOOTSTRAP}"
@@ -72,9 +74,9 @@ grep -Fq 'REVIEW_DISPATCH_SRC=' "${RUNTIME_BOOTSTRAP}"
 grep -Fq 'kanban_review_dispatch.py' "${RUNTIME_BOOTSTRAP}"
 grep -Fq 'config set kanban.review_dispatch false' "${RUNTIME_BOOTSTRAP}"
 grep -Fq "expect kanban.review_dispatch 'false'" "${RUNTIME_BOOTSTRAP}"
-grep -Fq 'dispatch-review --task-id <task-id>' "${RUNTIME_WRAPPER}"
-grep -Fq 'dispatch-review --task-id <task-id>' "${RUNTIME_CONTROLLER_SOUL}"
-grep -Fq 'dispatch-review --task-id <task-id>' "${ORCHESTRATOR_SOUL}"
+grep -Fq 'dispatch-review --board <slug> --task-id <task-id>' "${RUNTIME_WRAPPER}"
+grep -Fq 'dispatch-review --board <canonical-slug> --task-id <task-id>' "${RUNTIME_CONTROLLER_SOUL}"
+grep -Fq 'dispatch-review --board <canonical-slug> --task-id <task-id>' "${ORCHESTRATOR_SOUL}"
 grep -Fq '_EXPECTED_HERMES_VERSION = "0.20.4"' "${REVIEW_DISPATCHER}"
 grep -Fq 'if kb.review_dispatch_enabled()' "${REVIEW_DISPATCHER}"
 grep -Fq 'with kb.write_txn(conn)' "${REVIEW_DISPATCHER}"
@@ -106,19 +108,21 @@ import json, pathlib, sys
 path=pathlib.Path(sys.argv[1]); data=json.loads(path.read_text())
 plugin=data["plugins"]["factory-execution-guards"]
 expected={
+    "plugin.yaml":"74bb36d6bb9b63a6453d2c42544586b84a8e165d",
+    "__init__.py":"afdeed78fdb539c0a11498a4a3f8844d55d2a980",
+    "guard.py":"46c5c0082a41ac11c9648efc8a6a12c3de8157a2",
+    "handoff.py":"be5a17896c5c08f0a6f7b890cd11f69a15276272",
+    "supervisor.py":"b0da39ae49d9aca0ed9a816a2a7d15ca9ad8c934",
+}
+predecessor={
     "plugin.yaml":"eb3557b5aee77be6da2aaeae837a32dfe85bcac5",
     "__init__.py":"837945feb0cbe9edc61eed5cfde303210a31859f",
     "guard.py":"157ddbdd684caa85f83963b38d89058873973db3",
     "handoff.py":"87b3e626c55b0be748a9d848d8e3441a57209a26",
 }
-predecessor={
-    "plugin.yaml":"f5136a9df630891a4c2a3504142b4cf623622733",
-    "__init__.py":"8de9ffacc7a7ae6c61a3bc7922313a56d22d64f6",
-    "guard.py":"3c8bad02c637fb78bf7bcd18a440a966ac4179dd",
-}
-if plugin.get("files") != expected: raise SystemExit("ERROR: v0.10.0 current execution-guard pins mismatch")
+if plugin.get("files") != expected: raise SystemExit("ERROR: v0.11.0 current execution-guard pins mismatch")
 replace=plugin.get("replace_from") or []
-if not replace or replace[0] != predecessor: raise SystemExit("ERROR: v0.9.0 is not the immediate reviewed predecessor")
+if not replace or replace[0] != predecessor: raise SystemExit("ERROR: v0.10.0 is not the immediate reviewed predecessor")
 PY
 
 printf '[check] legacy Ox inference kill switch and inherited config cleanup\n'
@@ -143,8 +147,8 @@ grep -Fq 'validate-routing-live' "${GUARD_ENTRY}"
 grep -Fq '"dispatch-review"' "${GUARD_ENTRY}"
 if grep -Fq '"validate-handoff"' "${GUARD_ENTRY}"; then echo 'ERROR: legacy handoff remains in effective runtime allowlist' >&2; exit 1; fi
 
-printf '[check] sealed Claude execution/evidence boundary v0.10.0\n'
-grep -Fq 'version: 0.10.0' "${GUARD_MANIFEST}"
+printf '[check] sealed Claude execution/evidence boundary v0.11.0\n'
+grep -Fq 'version: 0.11.0' "${GUARD_MANIFEST}"
 grep -Fq '_CODER_READ_TOOLS = "Read,Glob,Grep"' "${GUARD_ENTRY}"
 grep -Fq '_SAFE_WORKSPACE_RE' "${GUARD_ENTRY}"
 grep -Fq 'workspace contains characters unsafe for Claude permission grammar' "${GUARD_ENTRY}"
@@ -171,9 +175,12 @@ grep -Fq '_guard._parse_claude_argv = _hardened_parse_claude_argv' "${GUARD_ENTR
 grep -Fq '_PENDING_ATTESTATIONS' "${GUARD}"
 grep -Fq '_COMPLETED_ATTESTATIONS' "${GUARD}"
 grep -Fq 'EVIDENCE_SCHEMA = 6' "${GUARD}"
-grep -Fq 'HANDOFF_SCHEMA = 1' "${HANDOFF}"
+grep -Fq 'HANDOFF_SCHEMA = 2' "${HANDOFF}"
 grep -Fq 'EXECUTION_EVIDENCE_SCHEMA = 6' "${HANDOFF}"
-grep -Fq 'reviewer_completion_authorized' "${GUARD_ENTRY}"
+grep -Fq 'factory_review_approve' "${GUARD_ENTRY}"
+grep -Fq 'def guarded_reviewer_complete' "${HANDOFF}"
+grep -Fq 'def verify_downstream_approval' "${HANDOFF}"
+grep -Fq 'start_new_session=True' "${SUPERVISOR}"
 grep -Fq 'HERMES_KANBAN_STOP_NUDGE' "${GUARD}"
 grep -Fq 'factory_handoff_seal.py' "${RUNTIME_BOOTSTRAP}"
 grep -Fq 'TERMINAL_ARGS_DOMAIN = "software-factory-claude-terminal-args-v1"' "${GUARD}"
@@ -213,4 +220,4 @@ printf '[check] guard adversarial unit tests\n'
 (cd "${ROOT_DIR}" && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -q hermes.test_nudge01_handoff hermes.test_factory_execution_guards hermes.test_factory_execution_guard_profile_resolution hermes.test_factory_execution_guard_terminal_args hermes.test_execution_guard_version_consistency hermes.test_targeted_review_dispatch_guard)
 
 if command -v shellcheck >/dev/null 2>&1; then shellcheck --severity=warning "${BOOTSTRAP}" "${RUNTIME_BOOTSTRAP}" "${PLUGIN_INSTALLER}" "${ANALYST_BOOTSTRAP}" "${ANALYST_VERIFY}" "${RUNTIME_WRAPPER}" "$0"; else echo '[info] shellcheck nie jest zainstalowany; pomijam'; fi
-printf 'OK: statyczna weryfikacja bootstrapu, atomic targeted review dispatch i sealed execution guards v0.10.0 zakończona\n'
+printf 'OK: statyczna weryfikacja bootstrapu, atomic targeted review dispatch i sealed execution guards v0.11.0 zakończona\n'
