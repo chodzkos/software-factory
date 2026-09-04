@@ -16,6 +16,8 @@ Use primarily by `release-manager`. This skill explains the procedure; determini
 - required independent reviews/audits
 - unresolved findings and severity
 - task `REQUIRED_EVIDENCE`
+- explicit canonical Kanban `BOARD_SLUG` and exact same-card `TASK_ID`
+- successful `kanban_runtime_cli.sh verify-approval --board <BOARD_SLUG> --task-id <TASK_ID>` on the current bytes
 
 ## Block when
 
@@ -26,6 +28,7 @@ Use primarily by `release-manager`. This skill explains the procedure; determini
 - required reviewer/audit is missing or decision unparsable
 - credible HIGH/CRITICAL is unresolved
 - required evidence is missing
+- downstream approval revalidation is absent, fails, observes a live mutation lease, or reports board/seal/HEAD/content drift
 - human approval is required by policy and absent
 
-Do not reinterpret `DONE` as `VERIFIED`. Do not merge a new commit under an approval for an older SHA. Return `MERGE_GATE_OK` only for the exact current PR HEAD; otherwise `MERGE_GATE_BLOCKED` with explicit blockers.
+Do not reinterpret `DONE` as `VERIFIED`. Do not merge a new commit under an approval for an older SHA. Never select the board through ambient `kanban/current`; pass the exact board explicitly. Return `MERGE_GATE_OK` only for the exact current PR HEAD and a passing downstream approval revalidation; otherwise `MERGE_GATE_BLOCKED` with explicit blockers.

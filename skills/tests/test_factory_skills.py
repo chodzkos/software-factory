@@ -171,6 +171,8 @@ class FactorySkillTests(unittest.TestCase):
         self.assertIn("- `REVIEWED_SHA != PR_HEAD_SHA`", block)
         self.assertIn("- `VERIFIED_SHA != PR_HEAD_SHA`", block)
         self.assertIn("MERGE_GATE_BLOCKED", text)
+        self.assertIn("verify-approval --board <BOARD_SLUG> --task-id <TASK_ID>", text)
+        self.assertIn("live mutation lease", text)
 
     def test_sha_integrity_records_current_sha(self):
         text = (SKILLS / "custom" / "sha-integrity-check" / "SKILL.md").read_text()

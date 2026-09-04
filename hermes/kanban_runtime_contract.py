@@ -1,10 +1,38 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
+import os
+import re
+import subprocess
 from dataclasses import dataclass
-from pathlib import PurePosixPath
+from pathlib import Path
 from typing import Any, Mapping, Sequence
+
+try:
+    from .model_routing_policy import DuplicateJsonKey, format_route, route_from_payload, strict_json_loads
+except ImportError:
+    from model_routing_policy import DuplicateJsonKey, format_route, route_from_payload, strict_json_loads
+
+
+def _load_handoff_module():
+    try:
+        import factory_handoff_seal as module
+        return module
+    except ImportError:
+        path = Path(__file__).resolve().parent / "plugins" / "factory-execution-guards" / "handoff.py"
+        spec = importlib.util.spec_from_file_location("factory_handoff_seal", path)
+        if spec is None or spec.loader is None:
+            raise RuntimeError("factory handoff seal module unavailable")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+
+_HANDOFF = _load_handoff_module()
+
+_WORKSPACE_RE = re.compile(r"^WORKSPACE:\s*(.*?)\s*$")
 
 
 @dataclass(frozen=True)
@@ -18,15 +46,15 @@ class RuntimeExpectation:
 
 
 def normalize_snapshot(payload: Mapping[str, Any]) -> dict[str, Any]:
-    """Znormalizuj CLI JSON lub kanban_show do jednego kształtu walidatora."""
-
-    if isinstance(payload.get("task"), Mapping):
-        task = dict(payload["task"])
+    if "task" in payload:
+        nested = payload.get("task")
+        if not isinstance(nested, Mapping):
+            return {}
+        task = dict(nested)
         if "parents" not in task and "parents" in payload:
             task["parents"] = payload.get("parents")
     else:
         task = dict(payload)
-
     if "parents" not in task and "parent_ids" in task:
         task["parents"] = task.get("parent_ids")
     return task
@@ -49,8 +77,7 @@ def _records(payload: Mapping[str, Any], key: str) -> tuple[Mapping[str, Any], .
 
 
 def _latest_review_requested_event(payload: Mapping[str, Any]) -> Mapping[str, Any] | None:
-    events = _records(payload, "events")
-    for event in reversed(events):
+    for event in reversed(_records(payload, "events")):
         if event.get("kind") == "review_requested":
             return event
     return None
@@ -61,10 +88,17 @@ def _latest_run(payload: Mapping[str, Any]) -> Mapping[str, Any] | None:
     return runs[-1] if runs else None
 
 
-def validate_runtime(payload: Mapping[str, Any], expectation: RuntimeExpectation) -> list[str]:
-    """Porównaj oczekiwane pola z realnym snapshotem Hermesa fail-closed."""
+def _metadata_workspace(metadata: Mapping[str, Any]) -> str | None:
+    values = [metadata[key] for key in ("workspace_path", "workspace") if key in metadata]
+    if not values or not all(isinstance(value, str) and value == values[0] for value in values):
+        return None
+    return values[0]
 
+
+def validate_runtime(payload: Mapping[str, Any], expectation: RuntimeExpectation) -> list[str]:
     actual = normalize_snapshot(payload)
+    if not actual:
+        return ["runtime_task_missing_or_invalid"]
     errors: list[str] = []
     checks = {
         "assignee": expectation.assignee,
@@ -74,131 +108,168 @@ def validate_runtime(payload: Mapping[str, Any], expectation: RuntimeExpectation
         "max_retries": expectation.max_retries,
     }
     for field, expected in checks.items():
-        if expected is None:
-            continue
-        actual_value = actual.get(field)
-        if actual_value != expected:
-            errors.append(f"{field}: expected={expected!r} actual={actual_value!r}")
-
-    actual_parents = _parents(actual)
-    if actual_parents != expectation.parents:
-        errors.append(f"parents: expected={expectation.parents!r} actual={actual_parents!r}")
+        if expected is not None and actual.get(field) != expected:
+            errors.append(f"{field}: expected={expected!r} actual={actual.get(field)!r}")
+    if _parents(actual) != expectation.parents:
+        errors.append(f"parents: expected={expectation.parents!r} actual={_parents(actual)!r}")
     return errors
 
 
-def resolved_implementation_worktree(payload: Mapping[str, Any]) -> str | None:
-    """Po claimie Hermes zapisuje materializowany worktree bezpośrednio w workspace_path."""
+def _canonical_absolute(raw: str) -> str | None:
+    """Return an existing canonical absolute non-symlink path, otherwise fail closed."""
+    if not isinstance(raw, str) or not raw.startswith("/") or "\x00" in raw:
+        return None
+    trimmed = raw.rstrip("/") or "/"
+    # Check lexical input before pathlib normalizes away '.'/'..' or duplicate separators.
+    pieces = raw.split("/")
+    if any(part in {".", ".."} for part in pieces) or any(part == "" for part in pieces[1:-1]):
+        return None
+    path = Path(trimmed)
+    if not path.exists():
+        return None
+    current = Path(path.anchor)
+    try:
+        for part in path.parts[1:]:
+            current = current / part
+            if current.is_symlink():
+                return None
+        resolved = str(path.resolve(strict=True))
+    except OSError:
+        return None
+    return resolved if resolved == trimmed else None
 
+
+def _declared_repository_root(task: Mapping[str, Any]) -> str | None:
+    body = task.get("body")
+    if not isinstance(body, str):
+        return None
+    values: list[str] = []
+    for line in body.splitlines():
+        match = _WORKSPACE_RE.match(line.strip())
+        if match:
+            values.append(match.group(1))
+    if len(values) != 1 or not values[0].startswith("worktree:"):
+        return None
+    return _canonical_absolute(values[0][len("worktree:"):])
+
+
+def resolved_implementation_worktree(payload: Mapping[str, Any]) -> str | None:
     task = normalize_snapshot(payload)
     if task.get("workspace_kind") != "worktree":
         return None
-    task_id = str(task.get("id") or "")
+    task_id = task.get("id")
     path = task.get("workspace_path")
-    if not task_id or not isinstance(path, str) or not path.startswith("/"):
+    if not isinstance(task_id, str) or not task_id or not isinstance(path, str):
         return None
-    parts = PurePosixPath(path).parts
-    try:
-        index = parts.index(".worktrees")
-    except ValueError:
+    repo_root = _declared_repository_root(task)
+    canonical_path = _canonical_absolute(path)
+    if not repo_root or not canonical_path:
         return None
-    if index + 1 >= len(parts) or parts[index + 1] != task_id:
-        return None
-    return path.rstrip("/")
+    expected = f"{repo_root}/.worktrees/{task_id}"
+    return canonical_path if canonical_path == expected else None
 
 
-def validate_review_handoff(
-    payload: Mapping[str, Any],
-    *,
-    implementer_profile: str,
-    reviewer_profile: str,
-) -> list[str]:
-    """Waliduj bieżący natywny Hermes same-card handoff do independent reviewera."""
-
+def validate_review_handoff(payload: Mapping[str, Any], *, board: str, implementer_profile: str, reviewer_profile: str) -> list[str]:
     task = normalize_snapshot(payload)
+    if not task:
+        return ["implementation_task_missing_or_invalid"]
     errors: list[str] = []
-
     if implementer_profile == reviewer_profile:
         errors.append("implementer_and_reviewer_must_differ")
-
-    task_id = str(task.get("id") or "")
-    if not task_id:
+    task_id = task.get("id")
+    if not isinstance(task_id, str) or not task_id:
         errors.append("implementation_id_missing")
         return errors
-
     resolved_path = resolved_implementation_worktree(payload)
     if not resolved_path:
         errors.append("implementation_resolved_worktree_missing")
         return errors
-
     if task.get("assignee") != reviewer_profile:
-        errors.append(
-            f"review_assignee: expected={reviewer_profile!r} actual={task.get('assignee')!r}"
-        )
+        errors.append(f"review_assignee: expected={reviewer_profile!r} actual={task.get('assignee')!r}")
     if task.get("status") != "review":
         errors.append(f"review_status: expected='review' actual={task.get('status')!r}")
 
     latest_event = _latest_review_requested_event(payload)
-    event_run_id: Any = None
+    event_run_id: int | None = None
     if latest_event is None:
         errors.append("review_requested_event_missing_or_mismatched")
     else:
         event_payload = latest_event.get("payload")
-        if not isinstance(event_payload, Mapping) or (
-            event_payload.get("implementer") != implementer_profile
+        if (
+            not isinstance(event_payload, Mapping)
+            or event_payload.get("implementer") != implementer_profile
             or event_payload.get("reviewer") != reviewer_profile
         ):
             errors.append("review_requested_event_missing_or_mismatched")
-        event_run_id = latest_event.get("run_id")
+        raw_event_run_id = latest_event.get("run_id")
+        if type(raw_event_run_id) is not int:
+            errors.append("review_requested_event_run_id_required")
+        else:
+            event_run_id = raw_event_run_id
 
     latest_run = _latest_run(payload)
-    if latest_run is None or (
-        latest_run.get("profile") != implementer_profile
-        or latest_run.get("outcome") != "review_requested"
-    ):
+    implementer_run_id: int | None = None
+    if latest_run is None or latest_run.get("profile") != implementer_profile or latest_run.get("outcome") != "review_requested":
         errors.append("current_implementer_review_run_missing_or_mismatched")
     else:
-        if event_run_id is not None and latest_run.get("id") != event_run_id:
+        run_id = latest_run.get("id")
+        if type(run_id) is not int:
+            errors.append("current_implementer_run_id_required")
+        elif event_run_id is None or run_id != event_run_id:
             errors.append("review_requested_event_run_mismatch")
-        metadata = latest_run.get("metadata")
-        if isinstance(metadata, Mapping):
-            metadata_path = metadata.get("workspace_path")
-            if metadata_path is not None and metadata_path != resolved_path:
-                errors.append("implementer_review_run_workspace_mismatched")
-
-    return errors
-
-
-def validate_task_graph(
-    actual: Mapping[str, Any],
-    expectation: RuntimeExpectation,
-    *,
-    implementer_profile: str | None = None,
-    reviewer_profile: str | None = None,
-) -> list[str]:
-    errors = validate_runtime(actual, expectation)
-    if implementer_profile is not None or reviewer_profile is not None:
-        if not implementer_profile or not reviewer_profile:
-            errors.append("review_profiles_required")
         else:
-            errors.extend(
-                validate_review_handoff(
-                    actual,
-                    implementer_profile=implementer_profile,
-                    reviewer_profile=reviewer_profile,
-                )
-            )
+            implementer_run_id = run_id
+        metadata = latest_run.get("metadata")
+        if not isinstance(metadata, Mapping):
+            errors.append("implementer_review_run_metadata_required")
+        else:
+            metadata_path = _metadata_workspace(metadata)
+            if metadata_path != resolved_path:
+                errors.append("implementer_review_run_workspace_mismatched")
+            if metadata.get("task_id") != task_id:
+                errors.append("implementer_review_run_task_mismatched")
+    if implementer_profile == "coder-claude" and implementer_run_id is not None:
+        _, seal_errors = _HANDOFF.validate_handoff_seal(
+            board=board,
+            task_id=task_id,
+            run_id=implementer_run_id,
+            implementer=implementer_profile,
+            reviewer=reviewer_profile,
+            workspace=resolved_path,
+            content_state=_HANDOFF.workspace_content_state,
+            require_process_exit=True,
+        )
+        errors.extend(seal_errors)
     return errors
+
+
+def validate_routed_review_handoff(payload: Mapping[str, Any], *, board: str) -> list[str]:
+    route, route_errors = route_from_payload(payload)
+    if route_errors or route is None:
+        return [f"model_routing:{error}" for error in (route_errors or ["unparseable"])]
+    if len(route.required_reviewers) != 1:
+        return ["same_card_review_requires_exactly_one_reviewer"]
+    return validate_review_handoff(
+        payload,
+        board=board,
+        implementer_profile=route.implementer,
+        reviewer_profile=route.required_reviewers[0],
+    )
+
+
+def validate_task_graph(actual: Mapping[str, Any], expectation: RuntimeExpectation) -> list[str]:
+    return validate_runtime(actual, expectation)
 
 
 def format_drift(errors: Sequence[str]) -> str:
-    if not errors:
-        return "RUNTIME_CONTRACT_OK"
-    return "RUNTIME_CONTRACT_DRIFT: " + "; ".join(errors)
+    return "RUNTIME_CONTRACT_OK" if not errors else "RUNTIME_CONTRACT_DRIFT: " + "; ".join(errors)
 
 
 def _json_object(value: str, label: str) -> Mapping[str, Any]:
     try:
-        parsed = json.loads(value)
+        parsed = strict_json_loads(value)
+    except DuplicateJsonKey as exc:
+        raise SystemExit(f"{label}: duplicate JSON key: {exc}") from exc
     except json.JSONDecodeError as exc:
         raise SystemExit(f"{label}: invalid JSON: {exc}") from exc
     if not isinstance(parsed, dict):
@@ -206,38 +277,76 @@ def _json_object(value: str, label: str) -> Mapping[str, Any]:
     return parsed
 
 
+def _live_snapshot(board: str, task_id: str) -> Mapping[str, Any]:
+    """Fetch authoritative live Kanban JSON directly; callers cannot supply snapshot bytes."""
+    if not isinstance(task_id, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", task_id):
+        raise SystemExit("task-id: invalid")
+    try:
+        board = _HANDOFF.canonical_board(board)
+        env = dict(os.environ)
+        env["HERMES_KANBAN_BOARD"] = board
+        result = subprocess.run(
+            ["hermes", "kanban", "show", task_id, "--json"],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=20,
+            env=env,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise SystemExit(f"live-task: unable to fetch {task_id}") from exc
+    return _json_object(result.stdout, "live-task")
+
+
 def _runtime_command(args: argparse.Namespace) -> int:
-    actual = _json_object(args.actual_json, "actual-json")
+    actual = _live_snapshot(args.board, args.task_id)
     expectation = RuntimeExpectation(
-        assignee=args.assignee,
-        workspace_kind=args.workspace_kind,
-        workspace_path=args.workspace_path,
-        branch_name=args.branch_name,
-        max_retries=args.max_retries,
-        parents=tuple(args.parent),
+        args.assignee,
+        args.workspace_kind,
+        args.workspace_path,
+        args.branch_name,
+        args.max_retries,
+        tuple(args.parent),
     )
     errors = validate_runtime(actual, expectation)
     print(format_drift(errors))
     return 0 if not errors else 2
 
 
-def _handoff_command(args: argparse.Namespace) -> int:
-    actual = _json_object(args.actual_json, "actual-json")
-    errors = validate_review_handoff(
-        actual,
-        implementer_profile=args.implementer_profile,
-        reviewer_profile=args.reviewer_profile,
-    )
+def _routed_handoff_command(args: argparse.Namespace) -> int:
+    actual = _live_snapshot(args.board, args.task_id)
+    errors = validate_routed_review_handoff(actual, board=args.board)
     print(format_drift(errors))
     return 0 if not errors else 2
+
+
+def _routing_live_command(args: argparse.Namespace) -> int:
+    actual = _live_snapshot(args.board, args.task_id)
+    route, errors = route_from_payload(actual)
+    if route is None and not errors:
+        errors = ["unparseable"]
+    print(format_route(errors))
+    return 0 if not errors else 2
+
+
+def _approval_command(args: argparse.Namespace) -> int:
+    try:
+        result = _HANDOFF.verify_downstream_approval(args.board, args.task_id)
+    except Exception as exc:
+        print(f"APPROVAL_DRIFT: {exc}")
+        return 2
+    print("APPROVAL_OK " + json.dumps(result, sort_keys=True, separators=(",", ":")))
+    return 0
 
 
 def build_cli_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Software Factory Kanban runtime contract validator")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    runtime = sub.add_parser("runtime", help="Validate one create/show snapshot")
-    runtime.add_argument("--actual-json", required=True)
+    runtime = sub.add_parser("runtime")
+    runtime.add_argument("--board", required=True)
+    runtime.add_argument("--task-id", required=True)
     runtime.add_argument("--assignee", required=True)
     runtime.add_argument("--workspace-kind", required=True)
     runtime.add_argument("--workspace-path", default=None)
@@ -246,11 +355,20 @@ def build_cli_parser() -> argparse.ArgumentParser:
     runtime.add_argument("--parent", action="append", default=[])
     runtime.set_defaults(func=_runtime_command)
 
-    handoff = sub.add_parser("handoff", help="Validate native same-card implementer to reviewer handoff")
-    handoff.add_argument("--actual-json", required=True)
-    handoff.add_argument("--implementer-profile", required=True)
-    handoff.add_argument("--reviewer-profile", required=True)
-    handoff.set_defaults(func=_handoff_command)
+    routed = sub.add_parser("routed-handoff")
+    routed.add_argument("--board", required=True)
+    routed.add_argument("--task-id", required=True)
+    routed.set_defaults(func=_routed_handoff_command)
+
+    routing_live = sub.add_parser("routing-live")
+    routing_live.add_argument("--board", required=True)
+    routing_live.add_argument("--task-id", required=True)
+    routing_live.set_defaults(func=_routing_live_command)
+
+    approval = sub.add_parser("approval")
+    approval.add_argument("--board", required=True)
+    approval.add_argument("--task-id", required=True)
+    approval.set_defaults(func=_approval_command)
     return parser
 
 

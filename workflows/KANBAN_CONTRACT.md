@@ -1,259 +1,222 @@
 # Kanban task contract v1
 
-Ten dokument doprecyzowuje `standards/SOFTWARE_DEVELOPMENT_STANDARD.md` dla Software Factory uruchamianego przez Hermes Kanban. Standard pozostaje nadrzędnym źródłem prawdy.
+Ten dokument doprecyzowuje `standards/SOFTWARE_DEVELOPMENT_STANDARD.md` dla Software Factory uruchamianego przez Hermes Kanban. Standard pozostaje nadrzędnym źródłem prawdy. Politykę modeli i reviewerów doprecyzowuje `workflows/MODEL_ROUTING_POLICY.md`.
 
 ## 1. Tryb orkiestracji
 
-- `kanban.auto_decompose=false` — wbudowany decomposer Hermesa jest wyłączony.
-- Dekompozycję wykonuje jawnie profil `task-decomposer`.
+- `kanban.auto_decompose=false`; dekompozycję wykonuje `task-decomposer`.
 - Każdy task ma jawnego `assignee`; nierozpoznany routing trafia do `routing-sink`.
-- `kanban.auto_subscribe_on_create=true` — twórca tasku może zostać wznowiony po zdarzeniu terminalnym i ocenić dalszy krok.
+- `kanban.auto_subscribe_on_create=true`.
+- `kanban.review_dispatch=false`; Hermes 0.20.4 nie może automatycznie claimować kart z `review`, ponieważ provenance-bound routed-handoff gate musi wykonać się przed reviewer runem. Reviewer jest uruchamiany dopiero przez targetowane `runtime-controller dispatch-review --task-id <task-id>` po zielonych walidacjach.
 - Orchestrator koordynuje, ale nie implementuje i nie wykonuje independent review.
-- Mechaniczne operacje runtime wymagające Hermes CLI wykonuje profil `runtime-controller`; orchestrator sam nie dostaje terminala.
+- Mechaniczne operacje wymagające CLI wykonuje `runtime-controller`; orchestrator nie ma terminala.
 
-## 2. Stany Hermesa
+## 2. Stany i znaczenie DONE
 
-| Stan | Znaczenie w Software Factory |
-|---|---|
-| `triage` | surowy pomysł lub wymaganie; bez automatycznej dekompozycji |
-| `todo` | task opisany, ale oczekuje na zależności lub świadome uruchomienie |
-| `ready` | wszystkie wymagane zależności są spełnione i task może być dispatchowany |
-| `running` | worker wykonuje dokładnie ten task |
-| `blocked` | wymagane wejście/decyzja/provider/evidence uniemożliwia dalszy postęp |
-| `review` | task lub zmiana oczekuje na wymagane review/audit/verification |
-| `done` | ta konkretna karta została zakończona; nie oznacza automatycznie VERIFIED całej zmiany |
-| `archived` | zamknięty historyczny task po zakończeniu lifecycle |
+`triage`, `todo`, `ready`, `running`, `blocked`, `review`, `done`, `archived` zachowują znaczenie Hermesa. `done` pojedynczej karty nie oznacza automatycznie VERIFIED całej zmiany. `IMPLEMENTED != VERIFIED`.
 
-Hermes może przenieść pojedynczą kartę wykonawczą do `done`, gdy worker ją kończy bez wymaganego handoffu albo po zakończeniu jej natywnego review lifecycle. To jest status **karty**, nie automatyczne potwierdzenie całej zmiany. `IMPLEMENTED != VERIFIED`.
+Zmiana może być uznana za VERIFIED dopiero po zamknięciu wszystkich wymaganych review/audit/evidence i bez nierozwiązanych blockerów.
 
-Zmiana feature/bugfix może być uznana za VERIFIED/DONE dopiero wtedy, gdy wszystkie wymagane przez jej task contract review/audyty oraz wymagane evidence są zakończone i nie ma nierozwiązanych blockerów. Orchestrator nie może wywnioskować VERIFIED wyłącznie z zakończenia runu implementera.
+## 3. Task body
 
-## 3. Task body — wymagane pola
-
-Każdy task wykonawczy powinien zawierać poniższy kontrakt Markdown:
+Każdy task wykonawczy zawiera:
 
 ```text
 ## Task Contract
 TYPE: feature|bugfix|audit|docs|release|analysis|architecture|decomposition|review
 RISK: low|medium|high|critical
+SECURITY_SENSITIVE: yes|no
 ASSIGNEE: <profile>
 REPOSITORY: <owner/repo lub path>
-WORKSPACE: none|repo|worktree:<absolute-repo-path>
+WORKSPACE: none|repo|worktree:<absolute-base-repository>
 IMPLEMENTER: <profile|none>
-REQUIRED_REVIEWERS: <comma-separated profiles|none>
+REQUIRED_REVIEWERS: <exact reviewer profile|none for non-code tasks>
 OPTIONAL_REVIEWERS: <comma-separated profiles|none>
 REQUIRED_EVIDENCE: <opis>
 ACCEPTANCE_CRITERIA:
 - ...
 ```
 
-Dla tasku modyfikującego kod `WORKSPACE` musi być `worktree:<absolute-repo-path>`. Jedna logiczna zmiana = jeden branch/worktree/current owner.
+Dla code-changing task/review `SECURITY_SENSITIVE`, `IMPLEMENTER`, `REQUIRED_REVIEWERS` i `WORKSPACE` są obowiązkowe dokładnie raz. `WORKSPACE` musi być `worktree:<absolute-base-repository>`.
 
-Pole `WORKSPACE` jest kontraktem Software Factory. Przy tworzeniu tasku Kanban `workspace_kind=worktree` oraz create-time `workspace_path` wskazują repo bazowe, z którego Hermes utworzy izolowany worktree. Po claimie Hermes zapisuje materializowany worktree bezpośrednio w `workspace_path`; ten post-claim path jest źródłem prawdy dla późniejszego review. Sam tekst `WORKSPACE:` nie tworzy izolacji.
+## 4. Exact model routing
 
-### 3.1. Fail-closed runtime gate
+| Implementer | SECURITY_SENSITIVE | Exact REQUIRED_REVIEWERS |
+|---|---|---|
+| `coder` | `no` | `reviewer-claude` |
+| `coder-claude` | `no` | `reviewer-gpt` |
+| `coder` | `yes` | forbidden |
+| `coder-claude` | `yes` | `reviewer-gpt` |
 
-Pola zapisane wyłącznie w `body` nie są dowodem konfiguracji runtime. Przed dopuszczeniem taska do `ready` oczekiwany kontrakt jest porównywany z **faktycznymi polami taska**.
+`reviewer-gpt` jest przypięty do `openai-codex/gpt-5.6-sol`; canonical bootstrap fizycznie usuwa legacy `fallback_model` i wymaga pustego `fallback_providers`, więc security reviewer nie może odziedziczyć fallbacku z `PRIMARY_PROFILE`.
 
-#### Runtime controller
+`hermes/model_routing_policy.py` egzekwuje exact reviewer set. Malformed CSV, `none`, duplicate fields, unknown profiles, duplicate JSON keys i invalid nested `task` kończą się `MODEL_ROUTING_DRIFT`.
 
-Orchestrator pozostaje coordination-only i nie ma terminala. Hermes 0.20.4 LLM tool `kanban_create` nie potrafi ustawić wszystkich pól wymaganych przez factory contract, w szczególności jawnego `branch_name` i `max_retries`.
+## 5. Fail-closed runtime gate
 
-Dlatego dla kart wymagających tych pól orchestrator deleguje mechaniczne utworzenie i runtime gate do profilu `runtime-controller`.
+Body nie potwierdza pól runtime. Każda niezgodność runtime kończy się `RUNTIME_CONTRACT_DRIFT`, a model/reviewer route `MODEL_ROUTING_DRIFT`. Oba są fail-closed.
 
-`runtime-controller`:
+### 5.1 Runtime controller
 
-- nie implementuje kodu i nie wykonuje independent review,
-- ma osobny minimalny profil runtime,
-- używa terminala wyłącznie do repozytoryjnego wrappera `hermes/kanban_runtime_cli.sh` i walidatora `hermes/kanban_runtime_contract.py`,
-- wrapper whitelistuje tylko operacje `create`, `show`, `block`, `complete`, `validate-runtime`, `validate-handoff` i przekazuje argumenty bez `eval`,
-- nie wykonuje Git, curl, package managerów ani dowolnych poleceń projektu.
+`runtime-controller` ma tylko toolset `terminal` i profile-scoped `factory-execution-guards`. `pre_tool_call` przepuszcza wyłącznie pojedyncze wywołanie wrappera; line break poza quoted argumentem jest odrzucany:
 
-Profil instaluje osobny, obowiązkowy bootstrap:
+```text
+~/.hermes/profiles/runtime-controller/kanban_runtime_cli.sh <allowlisted-op> ...
+```
+
+Allowlist: `create`, `show`, `block`, `complete`, `validate-runtime`, `validate-routed-handoff`, `validate-routing-body`, `validate-routing-live`, `dispatch-review`.
+
+`dispatch-review` ma wyłącznie postać `dispatch-review --task-id <task-id>`. Nie istnieje board-globalny dispatch review w chronionym runtime surface.
+
+Unquoted literal newline/CR, body-independent `validate-handoff`, bezpośrednie `hermes`, Git, Python, curl, file/code tools, shell operators, pipe/chaining i command substitution są mechanicznie blokowane. Quoted wieloliniowy argument jest dopuszczalny wyłącznie jako pojedynczy argument i nadal podlega dokładnej walidacji argv właściwej operacji.
+
+Pre-create routing używa tylko `validate-routing-body --task-body <exact-body>`. Wszystkie post-create/live walidacje oraz targeted dispatch przyjmują `--task-id`; live state jest pobierany autorytatywnie. Runtime-controller nie może podać, przepisać ani sfabrykować `--actual-json` jako live evidence.
+
+Targeted helper jest uruchamiany przez dokładnie wyprowadzony Hermes-managed Python. Wrapper najpierw sprawdza `python -I -c 'import hermes_cli'`, następnie czyści `PYTHONPATH`, `PYTHONHOME`, `PYTHONSTARTUP` i `PYTHONINSPECT` oraz uruchamia helper z `-E -s`, zachowując tylko wymagany katalog skryptu i standardowe biblioteki.
+
+### 5.2 Sticky parent quarantine
+
+Create-time `blocked` nie jest sticky quarantine w Hermes 0.20.4. Runtime-controller tworzy techniczny parent gate przypisany do `routing-sink`, natychmiast zapisuje sticky `kanban block --kind needs_input` z powodem `RUNTIME_CONTRACT_PENDING`, a worker zależy od tego parenta.
+
+`RUNTIME_CONTRACT_DRIFT` lub `MODEL_ROUTING_DRIFT` pozostawia gate blocked. Zgodność pozwala zakończyć tylko techniczny gate.
+
+### 5.3 Runtime fields
+
+Gate waliduje co najmniej `assignee`, `workspace_kind`, create-time `workspace_path`, wymagany `branch_name`, `max_retries`, `parents` i exact model routing z autorytatywnego live body. `max_runtime` pozostaje create-time fail-visible ograniczeniem Hermesa 0.20.4 bez stabilnego readbacku.
+
+## 6. Same-card implementer → reviewer handoff
+
+Po claimie Hermes materializuje worktree. Implementer kończy run przez native `review_requested`; karta przechodzi do `status=review`, reviewer assignee i zachowuje ten sam resolved worktree. Hermes 0.20.4 zamyka wtedy implementer run, dlatego kanoniczny pre-review-claim ma `current_run_id=None`; każdy nie-`None` active run przed targetowanym claimem jest drift i kończy się fail-closed.
+
+Software Factory utrzymuje `kanban.review_dispatch=false`, aby gateway Hermesa 0.20.4 nie przeszedł `review -> running` przed wykonaniem gate. Nie wolno chwilowo włączać auto-dispatchu ani używać board-globalnego `hermes kanban dispatch` do uruchomienia reviewera.
+
+Przed dispatch review runtime-controller wykonuje kolejno:
+
+```text
+validate-routing-live --board <slug> --task-id <task-id>
+validate-routed-handoff --board <slug> --task-id <task-id>
+dispatch-review --board <slug> --task-id <task-id>
+verify-approval --board <slug> --task-id <task-id>
+```
+
+Pierwsze dwa kroki muszą zwrócić PASS przed trzecim. `dispatch-review` nie ufa wcześniejszemu wynikowi tekstowemu: ponownie pobiera i strict-decodes live task oraz ponownie wykonuje routed-handoff validation.
+
+Finalny claim v0.8.0 jest provenance-bound i atomowy względem innych writerów. Helper otwiera `BEGIN IMMEDIATE`, pod tym samym writer lockiem ponownie sprawdza task `id/status/assignee/body/branch/skills/workspace/current_run_id`, najnowszy `review_requested` event i najnowszy implementer run wraz z exact task/workspace metadata. Następnie uruchamia natywny `claim_review_task` poprzez kontrolowany savepoint, nadal w tej samej zewnętrznej transakcji, i ponownie sprawdza obiekt zwrócony przez claim. Jakakolwiek różnica powoduje rollback całego claimu.
+
+Dopiero atomowo zatwierdzony obiekt claimu może zostać użyty do same-worktree reviewer spawn. Późniejsza zmiana mutable task row nie może podmienić profilu/body/workspace przekazanych do `_default_spawn`. Helper jest jawnie przypięty do Hermesa 0.20.4 i ma fail-closed przy brakujących/zmienionych private primitives.
+
+Live walidacje pobierają snapshot samodzielnie przez `hermes kanban show <task-id> --json` i używają strict duplicate-key decodera. Caller-supplied JSON nie jest security inputem.
+
+`validate-routed-handoff` wyprowadza implementera/reviewera wyłącznie z live body i wymaga: dokładnie jednego reviewera, `status=review`, właściwego `task.assignee`, dokładnie jednego `WORKSPACE: worktree:<base-repo>`, istniejący kanoniczny live workspace dokładnie `<base-repo>/.worktrees/<task-id>` bez `.`/`..`/duplicate separator/symlink escape, najnowszy `review_requested` z mandatory prawdziwym integer `run_id` (JSON boolean jest odrzucany), latest implementer run `outcome=review_requested` z tym samym ID oraz run metadata zawierającą exact `task_id` i exact resolved workspace.
+
+Summary ani profile names przekazane osobno nie są security inputem. Przy `CHANGES_REQUIRED` reviewer używa native same-card `kanban_request_changes`.
+
+## 7. Claude Code execution boundary
+
+Software Factory używa profile-scoped `factory-execution-guards` v0.11.0. Wersja 0.11.0 zachowuje reviewed v0.10.0, execution evidence schema v6 i starsze kontrole, dodając supervised mutation lease, board binding, atomic approval, downstream verification oraz handoff schema v2,
+
+Outer GPT nie może używać terminala do `find`, Git, Python, grep ani innych helperów. Coder terminal przyjmuje wyłącznie zainstalowany supervisor z exact board/task/run/workspace i literalnym wewnętrznym argv0 `claude`; `./claude`, `/tmp/claude` i alternatywne ścieżki są blokowane. Supervisor utrzymuje wyłączną lease i osobną sesję/process-group, monitoruje aktywny run oraz worker identity i kończy/reapuje całe należące drzewo przed zwolnieniem lease.
+
+Każdy Claude invocation musi zawierać `--safe-mode`, aby wyłączyć project/user `CLAUDE.md`, hooks, plugins, skills i MCP. Coder wymaga `--permission-mode dontAsk`; reviewer/architect wymagają `--permission-mode plan`.
+
+Prompt musi zawierać dokładnie po jednej osobnej linii:
+
+```text
+TASK_ID: <exact-task-id>
+RUN_ID: <exact-run-id>
+WORKSPACE: <exact-resolved-worktree>
+```
+
+Quoted wieloliniowy prompt jest dozwolony, ale newline/CR poza quoted argumentem nadal jest mechanicznie blokowany jako separator shella. Substringi/prefiksy/sufiksy i duplikaty markerów nie są akceptowane. Każdy modelowy terminal call musi jawnie ustawić `workdir=<exact resolved HERMES_KANBAN_WORKSPACE>`; brak pola, alias leksykalny/symlink, inny katalog, background, PTY, notification/session/task/environment/host/cwd override albo nieznany klucz jest blokowany.
+
+Coder permissions są wyliczane z resolved worktree i muszą mieć dokładnie postać:
+
+```text
+Read,Glob,Grep,Edit(//<exact-resolved-worktree>/**)
+```
+
+Resolved workspace jest dodatkowo akceptowany tylko wtedy, gdy używa bezpiecznego alfabetu bez przecinka, nawiasów, gwiazdek i innych znaków strukturalnych składni Claude permissions. Nie istnieje ad-hoc escaping; niebezpieczna ścieżka jest odrzucana przed zbudowaniem lub zaakceptowaniem `allowedTools`.
+
+Nie ma szerokiego `Write` ani szerokiego `Edit`. `dontAsk` powoduje, że modyfikacja niepasująca do workspace-scoped `Edit(...)` jest odrzucana zamiast pytania o rozszerzenie uprawnień. Coder nie otrzymuje ogólnego `Bash`, Python ani Git. Shell-based testy/static gates są wykonywane jako osobny kontrolowany etap po implementacji, a nie przez Claude Code implementera.
+
+Reviewer/architect exact read-only tools:
+
+```text
+Read,Glob,Grep
+```
+
+Reviewer/architect mają dodatkowo `--permission-mode plan`; nie otrzymują `Bash`, `Write` ani `Edit`.
+
+### 7.1 In-process attestation i evidence schema v6
+
+Przed canonical Claude run `pre_tool_call` tworzy losowy nonce wyłącznie w pamięci worker process i wiąże go z task/run/profile, resolved workspace, `execution_cwd`, command hash, `terminal_args_sha256`, Claude binary path+SHA-256, Git HEAD oraz content-state digest przed wykonaniem. Digest pełnych argumentów używa UTF-8 canonical JSON, sortowania kluczy, stałych separatorów i domeny `software-factory-claude-terminal-args-v1`; optional timeout jest prawdziwym integerem 1..600 i także podlega związaniu.
+
+Git jest uruchamiany przez zaufany absolute binary wybrany z platformowego `os.defpath`, z minimalnym środowiskiem tworzonym od zera. Dziedziczone `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, object/config injection i worker-controlled PATH nie są przekazywane. `rev-parse --show-toplevel` musi rozwiązać się dokładnie do deklarowanego workspace.
+
+Content-state digest obejmuje staged diff oraz wszystkie tracked i untracked paths, także Git-ignored untracked paths. Każda wartość jest długościowo ramkowana, każdy typed path record ma osobny SHA-256, a wynikowy ordered record list jest domenowo rozdzielony (`software-factory-content-state-v2`). Raw file bytes nie mogą udawać separatorów/metadanych następnego rekordu. Regular files są czytane przez no-follow descriptor, a stat przed/po odczycie wykrywa replacement lub zmianę w czasie pomiaru. Symlink target i deletion state są jawnie reprezentowane.
+
+Tracked paths są enumerowane z Git index niezależnie od status hints, więc `assume-unchanged` i `skip-worktree` nie ukrywają ich przed digestem, a `.gitignore` nie wyłącza lokalnej zawartości workspace z attestation.
+
+`post_tool_call` wystawia evidence tylko dla identycznego pre/post digestu pełnych args, matching pending attestation, terminalowego `exit_code=0` i successful Claude JSON result. W Hermes 0.20.4 pominięte wynikowe `cwd` oznacza, że observed cwd pozostał równy zwalidowanemu `command_cwd`, więc efektywnym cwd jest jawny canonical workdir; jeśli `cwd` występuje, musi być stringiem byte-for-byte i kanonicznie identycznym z exact workspace. Malformed, alias albo inny cwd nie tworzy evidence. Schema-6 zapisuje także `execution_cwd`, `terminal_args_sha256`, Git HEAD/content-state po wykonaniu oraz attestation ID wyprowadzony z in-memory nonce.
+
+Sam durable JSON nie odblokowuje lifecycle. `kanban_request_review` albo Claude-backed completion wymaga jednocześnie matching schema-6 file oraz matching completed attestation nadal obecnego w pamięci tego samego worker process, w tym exact `execution_cwd` i `terminal_args_sha256`.
+
+Przed transition guard ponownie sprawdza current Claude binary identity, resolved workspace, Git HEAD i content-state digest. Każda późniejsza zmiana zawartości workspace albo dowolna kolejna próba Claude terminal call — także malformed/rejected — unieważnia poprzedni attestation.
+
+### 7.2 Aktywny run, supervision i handoff schema v2
+
+Przed każdą mutation-capable operacją `coder-claude`, a dla terminala przed attestation i startem procesu, guard wymaga z bazy wybranej przez `HERMES_KANBAN_BOARD` dokładnego task/run/workspace: task `running`, assignee `coder-claude`, true-integer `current_run_id`, aktywny coder run bez `ended_at`/`outcome` oraz zgodną metadata. Brak, malformed state, import/DB/schema drift lub utrata ownership blokuje bez tworzenia nowej attestation i bez nadpisania evidence.
+
+Po successful native request-review guard strict-decodes dokładny wynik i ponownie potwierdza trwały board/task `review`, assignee `reviewer-gpt`, `current_run_id=None`, exact implementer run z `outcome=review_requested`, latest native event i unchanged board-scoped schema-6 content/evidence. Dopiero wtedy atomowo publikuje no-follow handoff schema v2 z zamkniętym polem zestawem: canonical board, task/run/profile/reviewer/workspace, HEAD/content digest, execution-evidence path/hash oraz attestation/command/terminal identities, native event provenance, creation time i PID z Linux `/proc` start tokenem. Duplicate keys, unknown fields, nieprawidłowe typy/schema, symlink, partial/tampered record albo inna druga pieczęć fail closed.
+
+Udany handoff zapisuje również in-process capability seal, usuwa completed attestation i ustawia dokładne `HERMES_KANBAN_STOP_NUDGE=0`. Nudge opt-out jest tylko defense in depth: późniejsza mutacja lub drugi request-review jest blokowany przez seal/utratę aktywnego runu nawet przy kolejnym turnie modelu. Read-only status inspection może pozostać dostępne do zakończenia procesu.
+
+Routed validator i targeted dispatcher wymagają jawnego canonical boardu, niezmienionego schema-v2 seal, HEAD/content/evidence binding, braku żywej mutation lease i potwierdzonego wyjścia exact PID/start-token implementera. Reviewer run metadata wiąże board, schema, seal ID, HEAD/content digest i implementer run. `reviewer-gpt` nie ma terminala, generic file tools, execute_code ani MCP; zatwierdza wyłącznie przez `factory_review_approve`, który rewaliduje i wykonuje completion pod jedną lease oraz DB writer transaction, po czym ponownie mierzy bajty przed commit. `verify-approval --board <slug> --task-id <id>` jest obowiązkową downstream bramką ready/release/merge. `kanban_request_changes` pozostaje dostępne przy drift, ale nie oznacza approval.
+
+## 8. Plugin supply chain
+
+Installer tworzy jeden immutable snapshot current pin set oraz jawnie zatwierdzonych `replace_from` predecessor pin sets po początkowej walidacji manifestu. Późniejsza transakcja nie otwiera ponownie mutable manifestu.
+
+Destination path i wszystkie istniejące komponenty parent są odrzucane, jeśli są symlinkami. Publikacja jest serializowana przez `flock` na zweryfikowanym katalogu destination, bez osobnego symlinkowalnego lock file. `--replace-reviewed` może zastąpić tylko exact current/reviewed predecessor bytes; jedynym tolerowanym runtime noise jest `__pycache__/*.pyc`. Unknown/drifted target jest fail-closed.
+
+Stage jest rehashowany z frozen snapshot, rollback jest uzbrojony przed ruszeniem starego targetu, a post-publish verification failure obowiązkowo przywraca backup. Po udanym commit nowy target nie jest usuwany tylko dlatego, że cleanup starego backupu zawiedzie — cleanup failure jest raportowany osobno.
+
+## 9. Repository analyst fresh deployment
+
+Canonical `bootstrap_profiles.sh` po konfiguracji profili wykonuje `bootstrap_repository_analyst_isolation.sh` oraz `verify_repository_analyst_isolation.sh --live`. Re-run analyst bootstrap używa controlled reviewed replacement: current reviewed bytes plus wyłącznie runtime `__pycache__` mogą zostać odtworzone; unknown target nie może być nadpisany jako „reviewed”.
+
+Przed włączeniem narzędzi bootstrap atomowo usuwa odziedziczone lub stale `plugins.enabled`, `plugins.disabled` i `plugins.entries`, ustawia puste struktury, a następnie włącza wyłącznie `factory-repository-readonly` z `allow_tool_override=false`. Effective config i fizyczny YAML muszą zawierać dokładnie ten jeden enabled plugin, pusty disabled set i dokładnie jeden plugin entry. Sama obecność reviewed pluginu nie wystarcza.
+
+## 10. Integrity skills
+
+`coder-claude`, `reviewer-gpt`, `reviewer-claude` i `architect-claude-opus` są jawnie zadeklarowane w `skills/profiles.yaml`; SHA/workspace/evidence contracts nie kończą się dla nich `unknown profile`.
+
+## 11. Legacy Ox
+
+Ox Alpha nie jest aktywnym backendem. Existing `auditor-ox` dostaje `model.provider=model.default=disabled-legacy`, `factory.execution_backend=disabled-legacy`, empty `fallback_providers`/toolsets, disabled tool search i broad denylist. Bootstrap fizycznie usuwa legacy `fallback_model`, inherited `mcp_servers` oraz stare API-server override keys z profilu.
+
+## 12. Review/audit decision contract
+
+Reviewer kończy dokładnie jedną linią `DECISION: APPROVE` albo `DECISION: CHANGES_REQUIRED`. HIGH/CRITICAL zawsze blokuje merge/release. Brak jednej parsowalnej decyzji oznacza `REVIEW_PENDING`.
+
+## 13. Minimal lifecycle
+
+Normal feature:
+
+`repository-analyst? → architect? → task-decomposer → runtime-controller create/runtime gate → coder|coder-claude → review_requested → runtime-controller routed-handoff gate → targeted exact reviewer dispatch → required audits/evidence → release-manager? → done`
+
+Security-sensitive feature:
+
+`repository-analyst → architect? → task-decomposer → runtime-controller create/runtime gate → coder-claude → review_requested → runtime-controller routed-handoff gate → targeted reviewer-gpt dispatch → required security evidence/audits → release-manager → done`
+
+## 14. Deployment
+
+Canonical profile bootstrap zawiera repository-analyst isolation i ustawia `kanban.review_dispatch=false` na dispatcher profile. Po merge:
 
 ```bash
-PRIMARY_PROFILE=primary-gpt bash hermes/bootstrap_runtime_controller.sh
-```
-
-Brak działającego `runtime-controller` oznacza fail-closed: orchestrator nie może zastąpić wymaganych pól opisem Markdown ani samodzielnie poszerzyć swoich uprawnień o terminal.
-
-#### Kwarantanna
-
-W Hermes 0.20.4 samo `initial_status=blocked` **nie jest sticky quarantine**: create zapisuje status `blocked`, ale nie emituje sticky `blocked` event, więc dispatcher może auto-promote taki task po spełnieniu zależności. Dlatego Software Factory nie używa samego create-time `blocked` jako pre-dispatch gate.
-
-Dla taska wymagającego runtime validation `runtime-controller` stosuje kontrolny parent gate:
-
-1. tworzy osobną kartę kontrolną przypisaną do `routing-sink`,
-2. natychmiast zapisuje na niej sticky `kanban block --kind needs_input` z powodem `RUNTIME_CONTRACT_PENDING`,
-3. dopiero potem tworzy właściwy task z parentem wskazującym tę kartę kontrolną,
-4. właściwy task pozostaje zależny od niedokończonego parenta i nie może zostać promowany do `ready`,
-5. `runtime-controller` waliduje actual runtime fields właściwego taska,
-6. drift => gate parent pozostaje blocked, task nie jest dispatchowany, zapisywane jest `RUNTIME_CONTRACT_DRIFT`,
-7. zgodność => `runtime-controller` kończy wyłącznie techniczną kartę kontrolną, co pozwala zależnemu taskowi przejść dalej.
-
-Karta kontrolna nie jest kartą implementacyjną ani review i nie stanowi evidence wykonania zmiany. Jej jedyną rolą jest zatrzymanie zależnego taska do czasu walidacji. Utworzenie gate i sticky block jest sekwencyjne, nie atomowe; `routing-sink` jest fail-closed backstopem, jeśli gate zostanie claimed w tym krótkim oknie.
-
-#### Powierzchnie read/write Hermesa 0.20.4
-
-Software Factory nie zakłada jednego syntetycznego snapshotu. Używa dwóch rzeczywistych powierzchni:
-
-- przez `runtime-controller`: `hermes/kanban_runtime_cli.sh create ... --json`, który wywołuje `hermes kanban create ... --json` i daje create receipt dla pól dostępnych w CLI JSON, w szczególności `assignee`, `workspace_kind`, create-time `workspace_path`, `branch_name`, `max_retries`,
-- `kanban_show` / `hermes/kanban_runtime_cli.sh show ... --json` do ponownego odczytu taska oraz parent dependency; `parents` mogą być zwrócone obok obiektu `task`, więc `hermes/kanban_runtime_contract.py` normalizuje ten kształt.
-
-Jeżeli task wymaga jawnego `branch_name` albo `max_retries`, wartości muszą zostać ustawione przez `runtime-controller` za pomocą wrappera i flag `--branch ... --max-retries ... --json`, a następnie sprawdzone z create receipt. Nie wolno deklarować tych wartości wyłącznie w Markdown body.
-
-Mechaniczny gate waliduje co najmniej:
-
-- `assignee`,
-- `workspace_kind`,
-- create-time `workspace_path`,
-- `branch_name`, jeżeli jest wymagany,
-- `max_retries`, jeżeli jest wymagany,
-- `parents` przez znormalizowany odczyt taska.
-
-`max_runtime` musi być jawnie ustawiony przy create, ale Hermes 0.20.4 nie wystawia go w stabilnym JSON readback używanym przez ten validator. Software Factory **nie twierdzi**, że `max_runtime` jest obecnie mechanicznie potwierdzony przez ten gate. To jawne ograniczenie pozostaje fail-visible do czasu dodania stabilnego readbacku w Hermesie.
-
-Referencyjna logika normalizacji i walidacji znajduje się w `hermes/kanban_runtime_contract.py`. Każda niezgodność oznacza `RUNTIME_CONTRACT_DRIFT` i nie może zostać przykryta poprawnym tekstem w body lub summary workera.
-
-### 3.2. Handoff implementer → independent reviewer
-
-Dla zmiany wykonywanej w worktree reviewer musi czytać dokładnie artefakt implementera. Software Factory używa natywnego **same-card review flow** Hermesa 0.20.4, zweryfikowanego live w Pilocie 7B.
-
-- task implementera jest tworzony jako `workspace_kind=worktree` z create-time `workspace_path` wskazującym repo bazowe,
-- po claimie Hermes materializuje worktree i zapisuje jego path bezpośrednio w `task.workspace_path`,
-- resolved path jest akceptowany tylko wtedy, gdy jest absolutny i dla taska `t_X` wskazuje `/.worktrees/t_X`; repo root nie jest resolved worktree,
-- implementer kończy swój run przez natywne `review_requested`, nie przez utworzenie osobnej reviewer card,
-- ta sama karta przechodzi do `status=review`, a `assignee` zmienia się na wymagany profil independent reviewera,
-- `workspace_kind` pozostaje `worktree`, a `workspace_path` pozostaje dokładnie tym samym resolved worktree implementera,
-- historia implementacji pozostaje w `runs`: bieżący/najnowszy implementer run ma `outcome=review_requested`,
-- najnowszy event `review_requested` musi wskazywać oczekiwane różne profile `implementer` i `reviewer`,
-- jeśli event zawiera `run_id`, musi on wskazywać dokładnie bieżący run implementera,
-- `metadata.workspace_path` w runie jest dodatkowym corroboration: jeśli istnieje, musi zgadzać się z live `task.workspace_path`; jego brak nie blokuje poprawnego natywnego handoffu,
-- dispatcher uruchamia reviewera na tej samej karcie i w tym samym worktree; nie wolno tworzyć drugiego worktree ani osobnej karty tylko po to, aby przekazać workspace.
-
-Przed dispatch review należy obowiązkowo zlecić `runtime-controller validate-handoff` na live JSON tej samej karty. Brak pozytywnego `RUNTIME_CONTRACT_OK` oznacza fail-closed i reviewer nie może zostać dispatchowany. Validator wymaga co najmniej:
-
-- resolved `workspace_kind=worktree` i `workspace_path=.../.worktrees/<task-id>`,
-- `assignee` równego oczekiwanemu reviewerowi,
-- `status=review`,
-- najnowszego zgodnego eventu `review_requested` z różnymi profilami implementera i reviewera,
-- bieżącego/najnowszego implementer runu z `outcome=review_requested`,
-- spójności `event.run_id` z tym runem, gdy `run_id` jest dostępny,
-- zgodności `metadata.workspace_path` z live resolved worktree tylko wtedy, gdy metadata to pole zawiera.
-
-Brak któregokolwiek z tych dowodów powoduje fail-closed i zatrzymanie dispatch review. Body, summary ani parent result nie zastępują live task/event/run evidence.
-
-Osobny reviewer task pozostaje dopuszczalny wyłącznie wtedy, gdy workflow rzeczywiście wymaga odrębnej jednostki pracy niezależnej od natywnego handoffu tej karty. Nie może służyć jako emulacja same-card worktree review.
-
-## 4. Routing
-
-- analiza repozytorium → `repository-analyst` (Ox best-effort; przy jawnie niedostępnym Ox orchestrator tworzy nowy task analizy na GPT),
-- architektura → `architect`,
-- dekompozycja → `task-decomposer`,
-- mechaniczna kontrola/create runtime → `runtime-controller`,
-- implementacja → `coder`,
-- quick review → `quick-reviewer`,
-- deep review → `critic`,
-- audit obowiązkowy → `auditor-gpt` i `auditor-grok` zgodnie z klasą zadania,
-- Audit 3 → `auditor-ox` tylko jako opcjonalny dodatkowy sygnał,
-- dokumentacja → `docs`,
-- release gate → `release-manager`,
-- nierozpoznany/niebezpieczny routing → `routing-sink`.
-
-## 5. Ox Alpha
-
-Ox Alpha jest opcjonalny i best-effort.
-
-- chwilowy rate limit/przeciążenie nie może blokować podstawowego gate GPT+Grok,
-- dla `repository-analyst` orchestrator może utworzyć zastępczy task na GPT po jawnej porażce Ox,
-- `auditor-ox` przy niedostępności kończy wynik `DECISION: SKIPPED_OX_UNAVAILABLE`,
-- `SKIPPED_OX_UNAVAILABLE` jest dozwolone wyłącznie dla opcjonalnego Audit 3,
-- żadna porażka Ox nie może zostać przedstawiona jako `APPROVE`.
-
-## 6. Kontrakt review/audit
-
-Wynik reviewerów musi kończyć się dokładnie jedną linią decyzji:
-
-```text
-DECISION: APPROVE
-```
-
-albo:
-
-```text
-DECISION: CHANGES_REQUIRED
-```
-
-Dla opcjonalnego `auditor-ox` dopuszczalne jest także:
-
-```text
-DECISION: SKIPPED_OX_UNAVAILABLE
-```
-
-Każdy finding zawiera co najmniej jawne pole `severity`, a także `location`, `evidence`, `impact`, `proposed fix`. Pole severity może być zapisane zwykłym Markdownem, np. `severity: HIGH`, ``- `severity`: HIGH`` albo w tabeli `| severity | HIGH |`.
-
-- wiarygodny HIGH/CRITICAL → `CHANGES_REQUIRED`,
-- brak decyzji, wiele decyzji, dodatkowy nieobsługiwany marker `DECISION:` lub nieparsowalny wynik → `REVIEW_PENDING`, nigdy APPROVE,
-- implementer nie może zatwierdzić własnej zmiany jako independent reviewer.
-
-Parser decyzji nie zgaduje severity z dowolnej prozy; gate opiera się na jawnym polu `severity` w strukturze findingu. Reviewer ma obowiązek użyć tego pola dla każdego findingu.
-
-## 7. Minimalna ścieżka feature/bugfix
-
-Typowy feature:
-
-`repository-analyst? → architect → task-decomposer → runtime-controller → coder → quick-reviewer → critic/required audits → required real evidence → docs? → release-manager? → done`
-
-Typowy bugfix:
-
-`reproducer/root cause → runtime-controller → coder + regression test → tests → quick-reviewer → required independent review → targeted verification → done`
-
-Znaki `?` oznaczają etap wymagany tylko przez zakres/ryzyko/task contract.
-
-## 8. Reguły przejść
-
-- orchestrator nie dispatchuje taska z `RUNTIME_CONTRACT_DRIFT`; jego gate parent pozostaje blocked,
-- brak `runtime-controller` przy tasku wymagającym branch/retry oznacza blocked, nie degradację do LLM-only create,
-- implementer wymagający independent review nie kończy tej karty jako VERIFIED; używa natywnego `review_requested`, po którym ta sama karta przechodzi do `review` i innego assignee,
-- karta może przejść do `done` dopiero po zakończeniu wymaganego review lifecycle albo gdy task contract nie wymaga review,
-- nadrzędna zmiana pozostaje nieweryfikowana, dopóki wszystkie wymagane review/audit/evidence z task contract nie są zamknięte,
-- przy `CHANGES_REQUIRED` aktywny independent reviewer przed zakończeniem swojego review runu wywołuje natywne same-card `kanban_request_changes`; ta sama karta wraca wtedy do implementera i zachowuje ten sam worktree/history; orchestrator nie emuluje tego post-hoc nową kartą, a nową kartę tworzy się tylko dla rzeczywiście nowej, odrębnej pracy,
-- `REVIEW_PENDING` zatrzymuje przejście całej zmiany do VERIFIED/DONE,
-- brak wymaganego evidence → `blocked` albo pozostanie w `review`, nie VERIFIED,
-- native reviewer worktree handoff nie może być zastąpiony drugim worktree, osobną kartą emulującą handoff ani samym parent summary,
-- `release-manager` odmawia release przy brakującym required review/evidence lub wiarygodnym nierozwiązanym HIGH/CRITICAL.
-
-## 9. Obowiązkowy krok wdrożenia Kanbana
-
-Po merge zmian kontraktu Kanban i po zwykłym bootstrapie profili należy wykonać **oba** kroki runtime:
-
-```bash
-PRIMARY_PROFILE=primary-gpt bash hermes/bootstrap_runtime_controller.sh
+PRIMARY_PROFILE=default DISPATCHER_PROFILE=default bash hermes/bootstrap_profiles.sh
+PRIMARY_PROFILE=default bash hermes/bootstrap_runtime_controller.sh
 DISPATCHER_PROFILE=default bash hermes/configure_kanban.sh
 ```
 
-Pierwszy instaluje profil `runtime-controller` i scoped runtime-control surface. Drugi stosuje konfigurację dispatchera Kanban. Oba są wymagane przed utworzeniem pierwszego tasku Software Factory wymagającego runtime gate.
-
-Po wykonaniu należy potwierdzić co najmniej:
-
-```bash
-hermes -p runtime-controller config get toolsets
-hermes -p runtime-controller config get fallback_providers
-hermes -p default config get kanban.auto_decompose
-hermes -p default config get kanban.auto_subscribe_on_create
-hermes -p default config get kanban.orchestrator_profile
-hermes -p default config get kanban.default_assignee
-```
-
-Oczekiwane wartości obejmują:
-
-```text
-["hermes-cli", "kanban", "terminal"]
-[]
-false
-true
-orchestrator
-routing-sink
-```
-
-Dopóki te kroki nie zakończą się poprawnie, Software Factory nie jest gotowy do uruchamiania tasków wymagających runtime gate.
+Przed workerem wymagane są zielone static/adversarial verifiers i live negative capability probes.

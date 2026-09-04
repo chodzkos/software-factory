@@ -17,7 +17,7 @@ from tools.registry import tool_error, tool_result
 
 from . import repo_map
 
-ALLOWED_PROFILE = "repository-analyst"
+ALLOWED_PROFILES = frozenset({"repository-analyst", "reviewer-gpt"})
 TOOLSET = "factory-repository-readonly"
 SAFE_HIDDEN_DIRS = {".github"}
 SKIP_DIRS = set(repo_map.SKIP_DIRS) | {".git", ".hg", ".svn", ".tox", ".mypy_cache", ".pytest_cache"}
@@ -72,7 +72,7 @@ def _has_symlink_component(path: Path) -> bool:
 
 def _bound_workspace() -> Path:
     if not os.environ.get("HERMES_KANBAN_TASK", "").strip(): raise ValueError("missing Kanban task binding")
-    if os.environ.get("HERMES_PROFILE", "").strip() != ALLOWED_PROFILE: raise ValueError("repository-analyst profile required")
+    if os.environ.get("HERMES_PROFILE", "").strip() not in ALLOWED_PROFILES: raise ValueError("authorized read-only profile required")
     raw = os.environ.get("HERMES_KANBAN_WORKSPACE", "").strip()
     if not raw: raise ValueError("missing Kanban workspace binding")
     path = Path(raw)
