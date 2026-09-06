@@ -6,25 +6,41 @@
       "installable": true,
       "activation_status": "reviewed-ready",
       "files": {
-        "plugin.yaml": "e26285a24ab1048c1c61e4dd7bfecd22e7178554",
+        "plugin.yaml": "26acfa353082df034c13505fccf2ea82b5997921",
         "__init__.py": "d1607626706e425b0057f10154a1b923da8f55e7",
         "repo_map.py": "ce7718e0879600631e84a4e44f9c7f97842af9cc",
-        "repository_tools.py": "cc028cb35f54e21660356662c727cabe7f789eca",
+        "repository_tools.py": "190b3c5dbe699eff510d7510d04caea4c177c224",
         "kanban_guard.py": "881dacf7715f8fd0c088df54c9e8d273b15a21da"
-      }
+      },
+      "replace_from": [
+        {
+          "plugin.yaml": "e26285a24ab1048c1c61e4dd7bfecd22e7178554",
+          "__init__.py": "d1607626706e425b0057f10154a1b923da8f55e7",
+          "repo_map.py": "ce7718e0879600631e84a4e44f9c7f97842af9cc",
+          "repository_tools.py": "cc028cb35f54e21660356662c727cabe7f789eca",
+          "kanban_guard.py": "881dacf7715f8fd0c088df54c9e8d273b15a21da"
+        }
+      ]
     },
     "factory-execution-guards": {
       "source": "hermes/plugins/factory-execution-guards",
       "installable": true,
       "activation_status": "reviewed-ready",
       "files": {
-        "plugin.yaml": "74bb36d6bb9b63a6453d2c42544586b84a8e165d",
-        "__init__.py": "afdeed78fdb539c0a11498a4a3f8844d55d2a980",
+        "plugin.yaml": "05e233f3d5e081dfc7fded1a4f368f3fe4c206e9",
+        "__init__.py": "d2b85fb117b30e05c1f0a4dae390af3190a9c0bd",
         "guard.py": "46c5c0082a41ac11c9648efc8a6a12c3de8157a2",
         "handoff.py": "be5a17896c5c08f0a6f7b890cd11f69a15276272",
-        "supervisor.py": "b0da39ae49d9aca0ed9a816a2a7d15ca9ad8c934"
+        "supervisor.py": "b479e4c10ff38fc62764326bbfb49ff2426babca"
       },
       "replace_from": [
+        {
+          "plugin.yaml": "74bb36d6bb9b63a6453d2c42544586b84a8e165d",
+          "__init__.py": "afdeed78fdb539c0a11498a4a3f8844d55d2a980",
+          "guard.py": "46c5c0082a41ac11c9648efc8a6a12c3de8157a2",
+          "handoff.py": "be5a17896c5c08f0a6f7b890cd11f69a15276272",
+          "supervisor.py": "b0da39ae49d9aca0ed9a816a2a7d15ca9ad8c934"
+        },
         {
           "plugin.yaml": "eb3557b5aee77be6da2aaeae837a32dfe85bcac5",
           "__init__.py": "837945feb0cbe9edc61eed5cfde303210a31859f",

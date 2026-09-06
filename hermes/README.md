@@ -21,7 +21,7 @@ Ta sekcja opisuje konfigurację profili Hermesa dla Software Factory. Kanoniczne
 | `auditor-gpt` | audyt GPT | primary GPT |
 | `auditor-grok` | audyt Grok | Grok 4.6 |
 | `docs` | dokumentacja | Gemini Flash-Lite |
-| `release-manager` | release gate | primary GPT |
+| `release-manager` | read-only release decision; no merge authority | primary GPT + confined read-only tools |
 | `routing-sink` | fail-closed fallback | primary GPT bez uprawnień implementacyjnych |
 
 Ox Alpha nie jest aktywnym backendem Software Factory.
@@ -44,7 +44,7 @@ Reviewer set musi być dokładny. Security reviewer jest przypięty do OpenAI, `
 
 Profile Claude nie udają natywnego Anthropica w Hermesie. Outer Hermes koordynuje, ale właściwa praca musi przejść przez `claude-code`.
 
-`factory-execution-guards` v0.11.0 zachowuje v0.10.0 schema-6 terminal/cwd attestation i wcześniejsze kontrole, a dodatkowo wprowadza nadzorowaną dzierżawę procesu, board binding, atomowe approval oraz handoff schema v2:
+`factory-execution-guards` v0.12.0 zachowuje v0.11.0 schema-6 terminal/cwd attestation i handoff schema v2, a dodatkowo wprowadza ptrace/pidfd containment, dokładne profile tool surfaces, fail-closed startup oraz jawną ludzką granicę finalnego merge z handoff schema v2:
 
 - blokuje direct outer-GPT write/patch/code execution,
 - terminal `coder-claude` pozwala wyłącznie na przypięty supervisor z dokładnym board/task/run/workspace i literalnym wewnętrznym `claude`; żaden `find`, Git, Python, grep ani inny helper binary nie jest dopuszczony,
@@ -66,12 +66,12 @@ Profile Claude nie udają natywnego Anthropica w Hermesie. Outer Hermes koordynu
 - `post_tool_call` wymaga udanego `exit_code=0`; w Hermes 0.20.4 brak pola wyniku `cwd` oznacza brak zmiany względem zwalidowanego `command_cwd`, więc efektywnym cwd pozostaje jawny canonical workdir, a obecne pole `cwd` musi być stringiem identycznym z kanonicznym workspace; malformed, alias albo inny cwd nie może utworzyć evidence,
 - sam plik evidence nie odblokowuje lifecycle: wymagany jest też completed attestation nadal obecny w pamięci tego samego worker process,
 - przed każdą mutation-capable operacją `coder-claude` guard czyta aktywną bazę i wymaga dokładnego task/run/board/workspace, stanu `running`, assignee/current-run oraz aktywnego runu bez outcome/end; niepewność blokuje przed attestation i procesem,
-- proces Claude i potomkowie działają w identyfikowanej sesji/process-group pod wyłączną board/task/workspace lease; utrata aktywnego runu, reclaim/timeout, zmiana planszy albo śmierć workera kończy i reapuje należące drzewo przed zwolnieniem lease,
+- Claude pozostaje w zewnętrznej grupie procesu Hermesa i od pierwszego exec jest objęty Linux ptrace fork/vfork/clone + `PTRACE_O_EXITKILL`; dziedziczony seccomp blokuje `CLONE_UNTRACED` i zwraca `ENOSYS` dla `clone3`, pidfds chronią przed PID reuse, a lease jest zwalniana dopiero po śmierci i reap wszystkich traced tasks; brak wymaganego backendu blokuje start,
 - po ścisłym sukcesie native `review_requested` oraz trwałym potwierdzeniu task/run/event powstaje dokładnie jedna atomowa, no-follow pieczęć handoff schema v2 wiążąca kanoniczny board, HEAD/content, board-scoped schema-6 evidence, attestation/command/terminal args, event i PID z Linux process-start tokenem,
 - skuteczny handoff zapisuje in-process seal, usuwa wcześniejszą autoryzację i ustawia `HERMES_KANBAN_STOP_NUDGE=0` wyłącznie jako defense in depth; aktywna bramka nadal mechanicznie blokuje drugi Claude call i inne mutacje,
 - routed validation oraz targeted dispatch wymagają niezmienionych sealed bytes i potwierdzonego wyjścia dokładnego implementer process; dispatch powtarza pomiar pod writer lockiem, po claimie i przed spawnem oraz wiąże reviewer run metadata z pieczęcią,
-- `reviewer-gpt` dostaje wyłącznie board-bound repository-read tools, `kanban_show`, `kanban_request_changes` i `factory_review_approve`; nie ma terminala, execute_code, generic write/patch ani MCP,
-- `factory_review_approve` rewaliduje board/seal/evidence/process/HEAD/content pod tą samą lease i `BEGIN IMMEDIATE`, wykonuje natywną completion przez savepoint i po niej ponownie hashuje bajty przed commit; downstream `verify-approval` powtarza kontrolę przed ready/release/merge,
+- przed pierwszym turnem `reviewer-gpt` isolated Hermes 0.20.4 definition assembly musi zwrócić dokładnie sześć tools: trzy board-bound repository reads, `kanban_show`, `kanban_request_changes` i `factory_review_approve`; brak/tamper/import/registration failure pluginu lub ekstra tool blokuje start,
+- `factory_review_approve` rewaliduje board/seal/evidence/process/HEAD/content pod tą samą lease i `BEGIN IMMEDIATE`, wykonuje natywną completion przez savepoint i po niej ponownie hashuje bajty przed commit,
 - zmiana zawartości workspace, HEAD, resolved workspace, process identity, evidence albo Claude binary po evidence unieważnia handoff/completion; rozpoczęcie kolejnego Claude command również unieważnia poprzedni attestation.
 
 Brak Claude CLI/OAuth/evidence oznacza blocked; nie ma hidden fallbacku.
@@ -98,11 +98,15 @@ verify-approval --board <slug> --task-id <task-id>
 validate-runtime --board <slug> --task-id <task-id> ...
 ```
 
-Validator sam wykonuje `hermes kanban show <task-id> --json` i strict-decodes wynik. Model/runtime-controller nie może sfabrykować `--actual-json` jako live evidence.
+Validator odrzuca nieistniejący jawny board, następnie wykonuje `hermes kanban --board <slug> show <task-id> --json` i strict-decodes wynik. Model/runtime-controller nie może sfabrykować `--actual-json` jako live evidence.
 
 Software Factory wymusza `kanban.review_dispatch=false`. Każda operacja live wymaga jawnego kanonicznego boardu; ambient `kanban/current` nie wybiera bazy. Po native `review_requested` karta pozostaje w `review`, dopóki runtime-controller nie uzyska `MODEL_ROUTING_OK` i `RUNTIME_CONTRACT_OK`. Dopiero wtedy `dispatch-review --board <slug> --task-id <id>` ponownie weryfikuje live handoff i wymaga wyłączonego globalnego review auto-dispatchu.
 
-W v0.11.0 finalny odczyt task/event/run oraz natywny `claim_review_task` wykonują się pod jednym `BEGIN IMMEDIATE`, z ponowną walidacją board-bound handoff schema v2, content-state i implementer-process exit przed i po claimie. Wewnętrzna transakcja Hermesa jest bezpiecznie mapowana na savepoint, wynik claimu jest ponownie sprawdzany, a reviewer run metadata dostaje exact board/seal/HEAD/content/implementer-run binding przed commit. Drift po commit, ale przed spawnem, zapisuje fail-closed spawn failure i nie uruchamia reviewera.
+W v0.12.0 przed claimem exact capability verifier uruchamia rzeczywiste Hermes 0.20.4 `model_tools.get_tool_definitions`; finalny odczyt task/event/run oraz natywny `claim_review_task` nadal wykonują się pod jednym `BEGIN IMMEDIATE`, z ponowną walidacją board-bound handoff schema v2, content-state i implementer-process exit.
+
+## Finalna granica merge
+
+`release-manager` ma dokładnie `factory_repo_map`, `factory_repo_read`, `factory_repo_search` i żadnego Kanban tool. Jego home `~/.hermes/factory-profiles/release-manager` nie znajduje się w assignable registry; legacy `~/.hermes/profiles/release-manager` blokuje bootstrap do czasu właścicielskiej migracji. Canonical `hermes/release_manager_start.py` uruchamia exact actual-surface verifier bezpośrednio przed modelem oraz usuwa wszystkie `HERMES_KANBAN_*`, aby generic dispatcher i worker-tool auto-addition nie miały ścieżki. Profil nie ma terminala, process, file/code execution, delegation, MCP, authenticated browser/computer-use, Git/GitHub write ani publikacji. Zwraca tylko decyzję `RELEASE_APPROVED`/`RELEASE_BLOCKED`; nie jest merge authority. Właściciel uruchamia `kanban_runtime_cli.sh verify-approval --board <slug> --task-id <id>` na dokładnych bieżących bajtach i PR HEAD bezpośrednio przed ręcznym merge. Nie deklarujemy ochrony przed złośliwym owner/root ani innym procesem posiadającym credentials.
 
 Wrapper wyprowadza dokładny Hermes-managed Python ze zweryfikowanego launchera, a przed uruchomieniem helpera czyści `PYTHONPATH`, `PYTHONHOME`, `PYTHONSTARTUP` i `PYTHONINSPECT` oraz używa `-E -s`. Nie istnieje chroniona operacja board-globalnego review dispatchu.
 

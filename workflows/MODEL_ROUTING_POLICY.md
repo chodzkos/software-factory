@@ -76,14 +76,14 @@ validate-routing-body --task-body <exact-task-body>
 Post-create/live validation never trusts caller-supplied JSON. Runtime-controller uses:
 
 ```text
-validate-routing-live --task-id <task-id>
-validate-routed-handoff --task-id <task-id>
-dispatch-review --task-id <task-id>
+validate-routing-live --board <slug> --task-id <task-id>
+validate-routed-handoff --board <slug> --task-id <task-id>
+dispatch-review --board <slug> --task-id <task-id>
 ```
 
 `kanban.review_dispatch=false` is mandatory for the Software Factory dispatcher and runtime-controller. Hermes 0.20.4 must not auto-claim the review lane before provenance validation. The first two operations above must succeed while the card is still `status=review`; only then may the exact task be started through `dispatch-review`.
 
-The runtime validator itself executes `hermes kanban show <task-id> --json` and strict-decodes the result. There is no production runtime-controller operation accepting `--actual-json` and no body-independent `validate-handoff` operation.
+The runtime validator first rejects a nonexistent explicit board, then executes `hermes kanban --board <slug> show <task-id> --json` and strict-decodes the result. There is no production runtime-controller operation accepting `--actual-json` and no body-independent `validate-handoff` operation.
 
 Routed handoff requires:
 
@@ -99,11 +99,11 @@ The targeted dispatcher does not trust a previous text result. It re-fetches liv
 
 ## 7. Claude Code mechanical execution boundary
 
-Software Factory profiles use profile-scoped `factory-execution-guards` v0.11.0. Version 0.11.0 preserves the reviewed v0.10.0 execution evidence schema v6 and all older predecessor controls while adding supervised mutation leases, board binding, atomic approval, downstream revalidation, and handoff schema v2,
+Software Factory profiles use profile-scoped `factory-execution-guards` v0.12.0. Version 0.12.0 preserves the reviewed v0.11.0 execution evidence schema v6 and handoff schema v2, while adding ptrace/pidfd process containment, exact reviewer/release surfaces, fail-closed startup checks, and an explicit human final-merge boundary,
 
 Outer GPT terminal access is **Claude-only**: no `find`, Git, Python, grep or other helper executable is permitted. Direct file/code mutation tools are blocked.
 
-For `coder-claude`, only the installed supervisor with exact board/task/run/workspace followed by literal argv0 `claude` is accepted. The supervisor owns a new process session/group and an exclusive mutation lease, continuously revalidates authorization, and terminates/reaps the identity-bound tree on reclaim, timeout, board switch, ownership loss, or worker death. `./claude`, `/tmp/claude` and alternate paths are refused. Guard resolves the PATH-selected Claude binary itself and binds its resolved path + SHA-256 to the attestation.
+For `coder-claude`, only the installed supervisor with exact board/task/run/workspace followed by literal argv0 `claude` is accepted. Claude remains in the outer Hermes process group and is traced before user code through Linux ptrace fork/vfork/clone events with `PTRACE_O_EXITKILL`; pidfds bind cancellation signals to kernel process identities. An inherited irreversible seccomp filter denies legacy `CLONE_UNTRACED`, returns `ENOSYS` for `clone3`, and rejects the x86-64 x32 alternate syscall-number ABI, forcing supported runtimes onto traced native legacy clone/fork paths and closing the kernel escape flag. The exclusive mutation lease remains held until every traced task is dead and reaped. SIGHUP, SIGINT, SIGTERM, authorization loss, board/ownership drift, exceptions, and normal leader exit with surviving descendants converge on that cleanup path. SIGKILL cannot run Python cleanup; kernel `PTRACE_O_EXITKILL` is the fallback. Missing ptrace, pidfd, seccomp, subreaper, or trace configuration fails closed before Claude user code runs. `./claude`, `/tmp/claude` and alternate paths are refused.
 
 Every invocation requires `--safe-mode`, disabling project/user `CLAUDE.md`, hooks, plugins, skills and MCP. Coder uses `--permission-mode dontAsk`; reviewer/architect use `--permission-mode plan`.
 
@@ -160,7 +160,11 @@ Before every mutation-capable `coder-claude` tool call, the guard independently 
 
 Only a strict successful native request-review result plus matching durable board/task/run/event and unchanged board-scoped schema-6 evidence creates the separate handoff schema v2 record. It is published atomically without following symlinks and binds task/run/profiles/workspace, HEAD/content, evidence file hash, attestation/command/terminal identities, native event, PID, and Linux process-start token. The in-process seal clears prior authorization; `HERMES_KANBAN_STOP_NUDGE=0` suppresses generic Hermes 0.20.4 nudges only as defense in depth.
 
-Routed validation and dispatch require the explicit canonical board, that exact implementer process tree to have exited, no live mutation lease, and all sealed bytes to remain unchanged. `reviewer-gpt` has only bounded repository-read tools, `kanban_show`, `kanban_request_changes`, and `factory_review_approve`; terminal, generic file mutation, execute_code, MCP, and direct CLI/SQLite paths are absent. Approval revalidates and completes under one lease plus DB writer transaction, then rehashes before commit. Downstream `verify-approval --board <slug> --task-id <id>` must pass before ready/release/merge.
+Routed validation and dispatch require the explicit canonical board, that exact implementer process tree to have exited, no live mutation lease, and all sealed bytes to remain unchanged. Before reviewer claim or any model turn, an isolated Hermes 0.20.4 `model_tools.get_tool_definitions` probe verifies installed plugin bytes, scoped override opt-in, profile config, workspace binding, and exact equality with `factory_repo_map`, `factory_repo_read`, `factory_repo_search`, `kanban_show`, `kanban_request_changes`, and `factory_review_approve`. Missing/disabled/tampered/import-failed registration or any extra current/future tool blocks startup. The pre-tool allowlist remains defense in depth.
+
+`release-manager` is read-only and decision-only. Its isolated profile home is `~/.hermes/factory-profiles/release-manager`, deliberately outside the assignable `~/.hermes/profiles/` registry; bootstrap fails closed while a legacy assignable release-manager directory exists. Its exact actual surface is only the three bounded repository tools; it has no Kanban tool at all and no terminal, process, generic file/code execution, delegation, MCP, authenticated browser/computer-use, Git, GitHub API, push, PR-write, publication, or merge capability. Canonical work starts only through `hermes/release_manager_start.py`, which runs the exact capability verifier immediately before the model and uses a separate read-only release binding without any `HERMES_KANBAN_*`, so generic Kanban dispatch and worker-tool auto-addition are impossible. It may return `RELEASE_APPROVED` or `RELEASE_BLOCKED`, but that decision is not merge authority.
+
+The repository owner must run `kanban_runtime_cli.sh verify-approval --board <slug> --task-id <id>` against the exact current workspace bytes and exact current PR HEAD immediately before manually merging. The final GitHub merge is outside the Hermes model's mechanical capability boundary and is a trusted human action. This boundary does not claim protection from a malicious host owner/root or an unrelated process holding the user's GitHub credentials.
 
 ## 8. Runtime-controller mechanical boundary
 

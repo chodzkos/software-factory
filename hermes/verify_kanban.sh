@@ -52,7 +52,11 @@ PYTHONDONTWRITEBYTECODE=1 python3 "${GUARD_VERSION_VERIFY}" --root "${ROOT_DIR}"
 
 printf '[check] provenance-bound live handoff\n'
 grep -Fq 'def _live_snapshot(board: str, task_id: str)' "${RUNTIME_VALIDATOR}"
-grep -Fq '["hermes", "kanban", "show", task_id, "--json"]' "${RUNTIME_VALIDATOR}"
+grep -Fq 'def _explicit_board_exists(board: str)' "${RUNTIME_VALIDATOR}"
+grep -Fq 'if not _explicit_board_exists(board):' "${RUNTIME_VALIDATOR}"
+grep -Fq '["hermes", "kanban", "--board", board, "show", task_id, "--json"]' "${RUNTIME_VALIDATOR}"
+grep -Fq 'env.pop("HERMES_KANBAN_BOARD", None)' "${RUNTIME_VALIDATOR}"
+grep -Fq 'env.pop("HERMES_KANBAN_DB", None)' "${RUNTIME_VALIDATOR}"
 grep -Fq 'strict_json_loads(value)' "${RUNTIME_VALIDATOR}"
 grep -Fq 'type(raw_event_run_id) is not int' "${RUNTIME_VALIDATOR}"
 grep -Fq 'type(run_id) is not int' "${RUNTIME_VALIDATOR}"
@@ -70,7 +74,8 @@ grep -Fq 'REVIEW_DISPATCHER=' "${RUNTIME_WRAPPER}"
 grep -Fq 'resolve_python_from_bash_launcher' "${RUNTIME_WRAPPER}"
 grep -Fq -- "-I -c 'import hermes_cli'" "${RUNTIME_WRAPPER}"
 grep -Fq 'unset PYTHONPATH PYTHONHOME PYTHONSTARTUP PYTHONINSPECT' "${RUNTIME_WRAPPER}"
-grep -Fq 'exec "${hermes_python}" -E -s "${REVIEW_DISPATCHER}" "$@"' "${RUNTIME_WRAPPER}"
+grep -Fq 'exec "${hermes_python}" -E -s "${script}" "$@"' "${RUNTIME_WRAPPER}"
+grep -Fq 'run_hermes_python_script "${VALIDATOR}" routing-live "$@"' "${RUNTIME_WRAPPER}"
 grep -Fq 'hermes-agent/venv/bin/python' "${RUNTIME_WRAPPER}"
 grep -Fq '_EXPECTED_HERMES_VERSION = "0.20.4"' "${REVIEW_DISPATCHER}"
 grep -Fq 'if kb.review_dispatch_enabled()' "${REVIEW_DISPATCHER}"
@@ -126,7 +131,9 @@ PY
 printf '[check] review decision tests\n'
 (cd "${ROOT_DIR}/hermes" && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -q test_review_decision.py)
 printf '[check] runtime contract tests\n'
-(cd "${ROOT_DIR}/hermes" && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -q test_kanban_runtime_contract.py)
+HERMES_PYTHON="${FACTORY_HERMES_PYTHON:-${HOME}/.hermes/hermes-agent/venv/bin/python}"
+[[ -x "${HERMES_PYTHON}" ]] || { echo "ERROR: Hermes Python unavailable: ${HERMES_PYTHON}" >&2; exit 1; }
+(cd "${ROOT_DIR}/hermes" && PYTHONDONTWRITEBYTECODE=1 "${HERMES_PYTHON}" -m unittest -q test_kanban_runtime_contract.py)
 printf '[check] targeted review dispatcher tests\n'
 (cd "${ROOT_DIR}/hermes" && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -q test_kanban_review_dispatch.py test_targeted_review_dispatch_guard.py)
 printf '[check] routed handoff adversarial regression\n'

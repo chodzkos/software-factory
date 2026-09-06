@@ -5,6 +5,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -136,21 +137,31 @@ def _string_sequence(value: Any) -> tuple[str, ...] | None:
     return tuple(value)
 
 
+def _explicit_board_exists(board: str) -> bool:
+    try:
+        from hermes_cli import kanban_db as kb
+    except Exception as exc:
+        raise RuntimeError("live-task: Hermes board API unavailable") from exc
+    checker = getattr(kb, "board_exists", None)
+    if not callable(checker):
+        raise RuntimeError("live-task: explicit board check unavailable")
+    return bool(checker(board))
+
+
 def _live_snapshot(board: str, task_id: str) -> Mapping[str, Any]:
     if not isinstance(task_id, str) or not _TASK_ID_RE.fullmatch(task_id):
         raise RuntimeError("task-id: invalid")
     try:
         board = _HANDOFF.canonical_board(board)
-        env = dict(os.environ)
-        env["HERMES_KANBAN_BOARD"] = board
+        if not _explicit_board_exists(board):
+            raise RuntimeError("live-task: explicit board does not exist")
         result = subprocess.run(
-            ["hermes", "kanban", "show", task_id, "--json"],
+            ["hermes", "kanban", "--board", board, "show", task_id, "--json"],
             check=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
             timeout=20,
-            env=env,
         )
     except (OSError, subprocess.SubprocessError) as exc:
         raise RuntimeError(f"live-task: unable to fetch {task_id}") from exc
@@ -375,6 +386,37 @@ def _seal_drift(
     return errors
 
 
+def _verify_reviewer_startup(*, board: str, task_id: str, workspace: str, run_id: int) -> None:
+    """Uruchom exact Hermes definition assembly przed claimem i pierwszym turnem."""
+    verifier = Path(__file__).resolve().parent / "verify_reviewer_capabilities.py"
+    profile_home = Path.home() / ".hermes" / "profiles" / "reviewer-gpt"
+    try:
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-E",
+                "-s",
+                str(verifier),
+                str(profile_home),
+                "--workspace", workspace,
+                "--task-id", task_id,
+                "--board", board,
+                "--run-id", str(run_id),
+            ],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=90,
+            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RuntimeError("reviewer-gpt capability startup verification failed") from exc
+    markers = [line for line in result.stdout.splitlines() if line.startswith("REVIEWER_CAPABILITY_SURFACE_OK ")]
+    if len(markers) != 1:
+        raise RuntimeError("reviewer-gpt capability startup marker missing")
+
+
 def dispatch_review(task_id: str, *, board: str, snapshot: Mapping[str, Any] | None = None, kb=None) -> int:
     """Atomically validate and spawn exactly one routed same-card reviewer."""
     _assert_expected_hermes_version()
@@ -420,6 +462,12 @@ def dispatch_review(task_id: str, *, board: str, snapshot: Mapping[str, Any] | N
     if seal is None or seal_errors:
         print("RUNTIME_CONTRACT_DRIFT: " + "; ".join(seal_errors or ["handoff_seal_missing"]))
         return 2
+    _verify_reviewer_startup(
+        board=board,
+        task_id=task_id,
+        workspace=expected_workspace,
+        run_id=expected_implementer_run,
+    )
 
     claimed = None
     reviewer_run_id = None

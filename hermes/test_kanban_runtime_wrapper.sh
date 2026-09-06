@@ -4,21 +4,33 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WRAPPER="${ROOT_DIR}/hermes/kanban_runtime_cli.sh"
 TMP_DIR="$(mktemp -d)"
+HERMES_PYTHON="${FACTORY_HERMES_PYTHON:-${HOME}/.hermes/hermes-agent/venv/bin/python}"
 trap 'rm -rf "${TMP_DIR}"' EXIT
+[[ -x "${HERMES_PYTHON}" ]] || { echo "ERROR: Hermes Python unavailable: ${HERMES_PYTHON}" >&2; exit 1; }
 
-cat >"${TMP_DIR}/hermes" <<'EOF'
+cat >"${TMP_DIR}/fake_hermes.py" <<'EOF'
+#!/usr/bin/env python3
+import os
+import sys
+
+if sys.argv[1:] == ["kanban", "--board", "isolated", "show", "t_live", "--json"] and os.environ.get("HERMES_FAKE_SHOW_JSON"):
+    print(os.environ["HERMES_FAKE_SHOW_JSON"])
+    raise SystemExit(0)
+with open(os.environ["HERMES_FAKE_LOG"], "w", encoding="utf-8") as stream:
+    stream.write("\n".join(sys.argv[1:]) + "\n")
+EOF
+chmod +x "${TMP_DIR}/fake_hermes.py"
+cat >"${TMP_DIR}/hermes" <<EOF
 #!/usr/bin/env bash
-set -euo pipefail
-if [[ "$*" == "kanban show t_live --json" && -n "${HERMES_FAKE_SHOW_JSON:-}" ]]; then
-  printf '%s\n' "${HERMES_FAKE_SHOW_JSON}"
-  exit 0
-fi
-printf '%s\n' "$@" >"${HERMES_FAKE_LOG:?}"
+exec "${HERMES_PYTHON}" "${TMP_DIR}/fake_hermes.py" "\$@"
 EOF
 chmod +x "${TMP_DIR}/hermes"
 
 export PATH="${TMP_DIR}:${PATH}"
 export HERMES_FAKE_LOG="${TMP_DIR}/argv.log"
+export HERMES_KANBAN_HOME="${TMP_DIR}/kanban-home"
+mkdir -p "${HERMES_KANBAN_HOME}/kanban/boards/isolated"
+printf '{}\n' >"${HERMES_KANBAN_HOME}/kanban/boards/isolated/board.json"
 
 bash "${WRAPPER}" block --board isolated t_gate RUNTIME CONTRACT PENDING
 mapfile -t argv <"${HERMES_FAKE_LOG}"

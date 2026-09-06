@@ -137,8 +137,10 @@ resolve_hermes_python() {
   esac
 }
 
-run_review_dispatcher() {
-  [[ -f "${REVIEW_DISPATCHER}" ]] || { echo "ERROR: missing ${REVIEW_DISPATCHER}" >&2; exit 2; }
+run_hermes_python_script() {
+  local script="$1"
+  shift
+  [[ -f "${script}" ]] || { echo "ERROR: missing ${script}" >&2; exit 2; }
   local hermes_python
   if ! hermes_python="$(resolve_hermes_python)"; then
     echo "ERROR: unable to resolve Hermes Python runtime capable of importing hermes_cli" >&2
@@ -148,7 +150,11 @@ run_review_dispatcher() {
   # retaining the script directory needed for the reviewed sibling modules.
   unset PYTHONPATH PYTHONHOME PYTHONSTARTUP PYTHONINSPECT
   export PYTHONDONTWRITEBYTECODE=1
-  exec "${hermes_python}" -E -s "${REVIEW_DISPATCHER}" "$@"
+  exec "${hermes_python}" -E -s "${script}" "$@"
+}
+
+run_review_dispatcher() {
+  run_hermes_python_script "${REVIEW_DISPATCHER}" "$@"
 }
 
 [[ $# -ge 1 ]] || usage
@@ -196,22 +202,22 @@ case "${op}" in
   validate-runtime)
     [[ -f "${VALIDATOR}" ]] || { echo "ERROR: missing ${VALIDATOR}" >&2; exit 2; }
     [[ $# -ge 6 && "$1" == "--board" && "$2" =~ ^[a-z0-9][a-z0-9_-]{0,63}$ && "$3" == "--task-id" ]] || usage
-    exec python3 "${VALIDATOR}" runtime "$@"
+    run_hermes_python_script "${VALIDATOR}" runtime "$@"
     ;;
   validate-routed-handoff)
     [[ -f "${VALIDATOR}" ]] || { echo "ERROR: missing ${VALIDATOR}" >&2; exit 2; }
     [[ $# -eq 4 && "$1" == "--board" && "$2" =~ ^[a-z0-9][a-z0-9_-]{0,63}$ && "$3" == "--task-id" && -n "$4" && "$4" != -* ]] || usage
-    exec python3 "${VALIDATOR}" routed-handoff "$@"
+    run_hermes_python_script "${VALIDATOR}" routed-handoff "$@"
     ;;
   validate-routing-body)
     [[ -f "${MODEL_ROUTING_VALIDATOR}" ]] || { echo "ERROR: missing ${MODEL_ROUTING_VALIDATOR}" >&2; exit 2; }
     [[ $# -eq 2 && "$1" == "--task-body" && -n "$2" ]] || usage
-    exec python3 "${MODEL_ROUTING_VALIDATOR}" "$@"
+    run_hermes_python_script "${MODEL_ROUTING_VALIDATOR}" "$@"
     ;;
   validate-routing-live)
     [[ -f "${VALIDATOR}" ]] || { echo "ERROR: missing ${VALIDATOR}" >&2; exit 2; }
     [[ $# -eq 4 && "$1" == "--board" && "$2" =~ ^[a-z0-9][a-z0-9_-]{0,63}$ && "$3" == "--task-id" && -n "$4" && "$4" != -* ]] || usage
-    exec python3 "${VALIDATOR}" routing-live "$@"
+    run_hermes_python_script "${VALIDATOR}" routing-live "$@"
     ;;
   dispatch-review)
     [[ $# -eq 4 && "$1" == "--board" && "$2" =~ ^[a-z0-9][a-z0-9_-]{0,63}$ && "$3" == "--task-id" && -n "$4" && "$4" != -* ]] || usage
@@ -220,7 +226,7 @@ case "${op}" in
   verify-approval)
     [[ -f "${VALIDATOR}" ]] || { echo "ERROR: missing ${VALIDATOR}" >&2; exit 2; }
     [[ $# -eq 4 && "$1" == "--board" && "$2" =~ ^[a-z0-9][a-z0-9_-]{0,63}$ && "$3" == "--task-id" && -n "$4" && "$4" != -* ]] || usage
-    exec python3 "${VALIDATOR}" approval "$@"
+    run_hermes_python_script "${VALIDATOR}" approval "$@"
     ;;
   *)
     usage

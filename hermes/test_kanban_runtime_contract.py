@@ -3,11 +3,21 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import os
+import shutil
+import tempfile
 import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+from hermes_cli import kanban_db as hermes_kanban_db
 
 try:
+    from . import kanban_runtime_contract as runtime_contract
     from .kanban_runtime_contract import (
         RuntimeExpectation,
+        _explicit_board_exists,
+        _live_snapshot,
         format_drift,
         main,
         normalize_snapshot,
@@ -17,8 +27,11 @@ try:
         validate_task_graph,
     )
 except ImportError:
+    import kanban_runtime_contract as runtime_contract
     from kanban_runtime_contract import (
         RuntimeExpectation,
+        _explicit_board_exists,
+        _live_snapshot,
         format_drift,
         main,
         normalize_snapshot,
@@ -59,6 +72,107 @@ def same_card_review_snapshot() -> dict:
 
 
 class RuntimeContractTests(unittest.TestCase):
+    @staticmethod
+    def _create_task(board: str, workspace: str, title: str) -> str:
+        conn = hermes_kanban_db.connect(board=board)
+        try:
+            return hermes_kanban_db.create_task(
+                conn,
+                title=title,
+                assignee=None,
+                workspace_kind="dir",
+                workspace_path=workspace,
+                initial_status="running",
+                board=board,
+            )
+        finally:
+            conn.close()
+
+    def test_nonexistent_explicit_board_never_falls_back_to_ambient_board(self):
+        with tempfile.TemporaryDirectory(prefix="sf-kanban-runtime-red-") as td:
+            with patch.dict(os.environ, {"HERMES_KANBAN_HOME": td}, clear=False):
+                hermes_kanban_db.create_board("ambient")
+                task_id = self._create_task("ambient", td, "ambient collision")
+                Path(td, "kanban").mkdir(parents=True, exist_ok=True)
+                Path(td, "kanban", "current").write_text("ambient\n", encoding="utf-8")
+
+                with self.assertRaises(SystemExit):
+                    _live_snapshot("missing", task_id)
+
+    def test_real_storage_uses_requested_board_when_two_boards_share_task_id(self):
+        with tempfile.TemporaryDirectory(prefix="sf-kanban-runtime-exact-") as td:
+            with patch.dict(os.environ, {"HERMES_KANBAN_HOME": td}, clear=False):
+                hermes_kanban_db.create_board("ambient")
+                hermes_kanban_db.create_board("requested")
+                task_id = self._create_task("requested", td, "requested task")
+
+                source = hermes_kanban_db.connect(board="requested")
+                ambient = hermes_kanban_db.connect(board="ambient")
+                try:
+                    row = source.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+                    columns = [item[1] for item in source.execute("PRAGMA table_info(tasks)")]
+                    values = [row[column] for column in columns]
+                    values[columns.index("title")] = "ambient collision"
+                    placeholders = ",".join("?" for _ in columns)
+                    ambient.execute(
+                        f"INSERT INTO tasks ({','.join(columns)}) VALUES ({placeholders})",
+                        values,
+                    )
+                    ambient.commit()
+                finally:
+                    source.close()
+                    ambient.close()
+
+                Path(td, "kanban", "current").write_text("ambient\n", encoding="utf-8")
+                payload = _live_snapshot("requested", task_id)
+                self.assertEqual(payload["task"]["title"], "requested task")
+
+    def test_nonexistent_board_causes_zero_show_calls(self):
+        with patch.object(runtime_contract, "_explicit_board_exists", return_value=False), patch.object(
+            runtime_contract.subprocess, "run"
+        ) as run:
+            with self.assertRaisesRegex(SystemExit, "explicit board does not exist"):
+                _live_snapshot("missing", "t_collision")
+        run.assert_not_called()
+
+    def test_show_uses_explicit_board_argv_and_removes_ambient_overrides(self):
+        completed = __import__("subprocess").CompletedProcess([], 0, stdout="{}", stderr="")
+        with patch.object(runtime_contract, "_explicit_board_exists", return_value=True), patch.object(
+            runtime_contract.subprocess, "run", return_value=completed
+        ) as run, patch.dict(
+            os.environ,
+            {"HERMES_KANBAN_BOARD": "ambient", "HERMES_KANBAN_DB": "/tmp/ambient.db"},
+            clear=False,
+        ):
+            self.assertEqual(_live_snapshot("requested", "t_exact"), {})
+        self.assertEqual(
+            run.call_args.args[0],
+            ["hermes", "kanban", "--board", "requested", "show", "t_exact", "--json"],
+        )
+        self.assertNotIn("HERMES_KANBAN_BOARD", run.call_args.kwargs["env"])
+        self.assertNotIn("HERMES_KANBAN_DB", run.call_args.kwargs["env"])
+
+    def test_missing_board_existence_api_fails_closed(self):
+        with patch.object(hermes_kanban_db, "board_exists", None):
+            with self.assertRaisesRegex(RuntimeError, "explicit board check unavailable"):
+                _explicit_board_exists("requested")
+
+    def test_board_disappearance_between_check_and_show_fails_closed(self):
+        with tempfile.TemporaryDirectory(prefix="sf-kanban-runtime-race-") as td:
+            with patch.dict(os.environ, {"HERMES_KANBAN_HOME": td}, clear=False):
+                hermes_kanban_db.create_board("doomed")
+                task_id = self._create_task("doomed", td, "doomed task")
+                original_check = runtime_contract._explicit_board_exists
+
+                def remove_after_check(board: str) -> bool:
+                    exists = original_check(board)
+                    shutil.rmtree(hermes_kanban_db.board_dir(board))
+                    return exists
+
+                with patch.object(runtime_contract, "_explicit_board_exists", side_effect=remove_after_check):
+                    with self.assertRaisesRegex(SystemExit, "unable to fetch"):
+                        _live_snapshot("doomed", task_id)
+
     def test_cli_create_snapshot_passes(self):
         actual = {"id":"t_impl","assignee":"coder","workspace_kind":"worktree","workspace_path":"/repo","branch_name":"pilot/x","max_retries":1}
         self.assertEqual(validate_runtime(actual, RuntimeExpectation("coder","worktree","/repo","pilot/x",1)), [])

@@ -57,6 +57,30 @@ expect_helper_exec() {
   echo "OK: ${label}"
 }
 
+expect_validator_exec() {
+  local label="$1"
+  local rc
+  rm -f "${HERMES_TEST_PY_LOG}" "${HERMES_TEST_ENV_LOG}"
+  set +e
+  PYTHONPATH="${TMP_DIR}/attacker-path" \
+  PYTHONHOME="${TMP_DIR}/attacker-home" \
+  PYTHONSTARTUP="${TMP_DIR}/attacker-startup" \
+  PYTHONINSPECT=1 \
+    bash "${WRAPPER}" validate-routing-live --board isolated --task-id t_probe >/dev/null 2>&1
+  rc=$?
+  set -e
+  [[ ${rc} -eq 37 ]] || { echo "ERROR: ${label}: expected fake Hermes Python rc=37, got ${rc}" >&2; exit 1; }
+  mapfile -t argv <"${HERMES_TEST_PY_LOG}"
+  local expected=("-E" "-s" "${ROOT_DIR}/hermes/kanban_runtime_contract.py" "routing-live" "--board" "isolated" "--task-id" "t_probe")
+  [[ "${argv[*]}" == "${expected[*]}" ]] || { echo "ERROR: ${label}: validator argv mismatch" >&2; exit 1; }
+  grep -Fxq 'PYTHONPATH=<unset>' "${HERMES_TEST_ENV_LOG}"
+  grep -Fxq 'PYTHONHOME=<unset>' "${HERMES_TEST_ENV_LOG}"
+  grep -Fxq 'PYTHONSTARTUP=<unset>' "${HERMES_TEST_ENV_LOG}"
+  grep -Fxq 'PYTHONINSPECT=<unset>' "${HERMES_TEST_ENV_LOG}"
+  grep -Fxq 'PYTHONDONTWRITEBYTECODE=1' "${HERMES_TEST_ENV_LOG}"
+  echo "OK: ${label}"
+}
+
 expect_fail_closed() {
   local label="$1"
   local rc
@@ -91,6 +115,7 @@ chmod +x "${TMP_DIR}/hermes"
 PATH="${TMP_DIR}:${ORIGINAL_PATH}"
 export PATH
 expect_helper_exec "Hermes 0.20.4 bash launcher resolves literal venv Python and sanitizes helper env"
+expect_validator_exec "live validator resolves the same literal Hermes Python and sanitizes helper env"
 
 # Direct env-python launchers remain supported, but only after import probe.
 cat >"${TMP_DIR}/hermes" <<'EOF'
@@ -145,4 +170,4 @@ PATH="${FAKE_HOME}/.local/bin:${ORIGINAL_PATH}"
 export HOME PATH
 expect_helper_exec "managed Hermes venv fallback"
 
-printf 'OK: targeted review helper binds to a sanitized Hermes Python runtime, including the production bash-wrapper shape\n'
+printf 'OK: live validators and targeted review helper bind to a sanitized Hermes Python runtime, including the production bash-wrapper shape\n'

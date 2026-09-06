@@ -70,8 +70,20 @@ class ReviewerCapabilityBoundaryTests(unittest.TestCase):
                 "toolsets": ["factory-repository-readonly", "factory-execution-guards"],
                 "platform_toolsets": {"cli": ["factory-repository-readonly", "factory-execution-guards", "kanban", "no_mcp"]},
                 "mcp_servers": {},
-                "agent": {"disabled_toolsets": ["terminal", "file", "code_execution", "bfl", "x_search"]},
-                "plugins": {"enabled": ["factory-repository-readonly", "factory-execution-guards"]},
+                "tools": {"tool_search": {"enabled": "off"}},
+                "agent": {"disabled_toolsets": [
+                    "terminal", "file", "code_execution", "web", "browser", "image_gen",
+                    "delegation", "computer_use", "cronjob", "skills", "vision", "todo",
+                    "memory", "session_search", "clarify", "messaging", "tts", "moa",
+                    "bfl", "x_search", "mcp",
+                ]},
+                "plugins": {
+                    "enabled": ["factory-repository-readonly", "factory-execution-guards"],
+                    "entries": {
+                        "factory-execution-guards": {"allow_tool_override": True},
+                        "factory-repository-readonly": {"allow_tool_override": False},
+                    },
+                },
             }
             (profile / "config.yaml").write_text(json.dumps(config), encoding="utf-8")
             hermes_source = str(Path.home() / ".hermes" / "hermes-agent")
@@ -81,7 +93,10 @@ class ReviewerCapabilityBoundaryTests(unittest.TestCase):
             finally:
                 sys.path.remove(hermes_source)
         self.assertEqual(result["forbidden"], [])
-        self.assertIn("factory_review_approve", result["tools"])
+        self.assertEqual(set(result["tools"]), {
+            "factory_repo_map", "factory_repo_read", "factory_repo_search",
+            "kanban_show", "kanban_request_changes", "factory_review_approve",
+        })
 
 
 class BoardBindingTests(unittest.TestCase):

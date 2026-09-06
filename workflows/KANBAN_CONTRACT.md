@@ -7,7 +7,7 @@ Ten dokument doprecyzowuje `standards/SOFTWARE_DEVELOPMENT_STANDARD.md` dla Soft
 - `kanban.auto_decompose=false`; dekompozycję wykonuje `task-decomposer`.
 - Każdy task ma jawnego `assignee`; nierozpoznany routing trafia do `routing-sink`.
 - `kanban.auto_subscribe_on_create=true`.
-- `kanban.review_dispatch=false`; Hermes 0.20.4 nie może automatycznie claimować kart z `review`, ponieważ provenance-bound routed-handoff gate musi wykonać się przed reviewer runem. Reviewer jest uruchamiany dopiero przez targetowane `runtime-controller dispatch-review --task-id <task-id>` po zielonych walidacjach.
+- `kanban.review_dispatch=false`; Hermes 0.20.4 nie może automatycznie claimować kart z `review`, ponieważ provenance-bound routed-handoff gate musi wykonać się przed reviewer runem. Reviewer jest uruchamiany dopiero przez targetowane `runtime-controller dispatch-review --board <slug> --task-id <task-id>` po zielonych walidacjach.
 - Orchestrator koordynuje, ale nie implementuje i nie wykonuje independent review.
 - Mechaniczne operacje wymagające CLI wykonuje `runtime-controller`; orchestrator nie ma terminala.
 
@@ -64,13 +64,13 @@ Body nie potwierdza pól runtime. Każda niezgodność runtime kończy się `RUN
 ~/.hermes/profiles/runtime-controller/kanban_runtime_cli.sh <allowlisted-op> ...
 ```
 
-Allowlist: `create`, `show`, `block`, `complete`, `validate-runtime`, `validate-routed-handoff`, `validate-routing-body`, `validate-routing-live`, `dispatch-review`.
+Allowlist: `create`, `show`, `block`, `complete`, `validate-runtime`, `validate-routed-handoff`, `validate-routing-body`, `validate-routing-live`, `dispatch-review`, `verify-approval`.
 
-`dispatch-review` ma wyłącznie postać `dispatch-review --task-id <task-id>`. Nie istnieje board-globalny dispatch review w chronionym runtime surface.
+`dispatch-review` ma wyłącznie postać `dispatch-review --board <slug> --task-id <task-id>`. Nie istnieje board-globalny dispatch review w chronionym runtime surface.
 
 Unquoted literal newline/CR, body-independent `validate-handoff`, bezpośrednie `hermes`, Git, Python, curl, file/code tools, shell operators, pipe/chaining i command substitution są mechanicznie blokowane. Quoted wieloliniowy argument jest dopuszczalny wyłącznie jako pojedynczy argument i nadal podlega dokładnej walidacji argv właściwej operacji.
 
-Pre-create routing używa tylko `validate-routing-body --task-body <exact-body>`. Wszystkie post-create/live walidacje oraz targeted dispatch przyjmują `--task-id`; live state jest pobierany autorytatywnie. Runtime-controller nie może podać, przepisać ani sfabrykować `--actual-json` jako live evidence.
+Pre-create routing używa tylko `validate-routing-body --task-body <exact-body>`. Wszystkie post-create/live walidacje oraz targeted dispatch przyjmują jawne `--board <slug> --task-id <id>`; live state jest pobierany autorytatywnie. Runtime-controller nie może podać, przepisać ani sfabrykować `--actual-json` jako live evidence.
 
 Targeted helper jest uruchamiany przez dokładnie wyprowadzony Hermes-managed Python. Wrapper najpierw sprawdza `python -I -c 'import hermes_cli'`, następnie czyści `PYTHONPATH`, `PYTHONHOME`, `PYTHONSTARTUP` i `PYTHONINSPECT` oraz uruchamia helper z `-E -s`, zachowując tylko wymagany katalog skryptu i standardowe biblioteki.
 
@@ -105,7 +105,7 @@ Finalny claim v0.8.0 jest provenance-bound i atomowy względem innych writerów.
 
 Dopiero atomowo zatwierdzony obiekt claimu może zostać użyty do same-worktree reviewer spawn. Późniejsza zmiana mutable task row nie może podmienić profilu/body/workspace przekazanych do `_default_spawn`. Helper jest jawnie przypięty do Hermesa 0.20.4 i ma fail-closed przy brakujących/zmienionych private primitives.
 
-Live walidacje pobierają snapshot samodzielnie przez `hermes kanban show <task-id> --json` i używają strict duplicate-key decodera. Caller-supplied JSON nie jest security inputem.
+Live walidacje najpierw odrzucają nieistniejący jawny board, następnie pobierają snapshot przez `hermes kanban --board <slug> show <task-id> --json` i używają strict duplicate-key decodera. Caller-supplied JSON nie jest security inputem.
 
 `validate-routed-handoff` wyprowadza implementera/reviewera wyłącznie z live body i wymaga: dokładnie jednego reviewera, `status=review`, właściwego `task.assignee`, dokładnie jednego `WORKSPACE: worktree:<base-repo>`, istniejący kanoniczny live workspace dokładnie `<base-repo>/.worktrees/<task-id>` bez `.`/`..`/duplicate separator/symlink escape, najnowszy `review_requested` z mandatory prawdziwym integer `run_id` (JSON boolean jest odrzucany), latest implementer run `outcome=review_requested` z tym samym ID oraz run metadata zawierającą exact `task_id` i exact resolved workspace.
 
@@ -113,9 +113,9 @@ Summary ani profile names przekazane osobno nie są security inputem. Przy `CHAN
 
 ## 7. Claude Code execution boundary
 
-Software Factory używa profile-scoped `factory-execution-guards` v0.11.0. Wersja 0.11.0 zachowuje reviewed v0.10.0, execution evidence schema v6 i starsze kontrole, dodając supervised mutation lease, board binding, atomic approval, downstream verification oraz handoff schema v2,
+Software Factory używa profile-scoped `factory-execution-guards` v0.12.0. Wersja 0.12.0 zachowuje reviewed v0.11.0, execution evidence schema v6 oraz handoff schema v2, dodając ptrace/pidfd containment, exact profile tool surfaces, fail-closed startup i jawną ludzką granicę finalnego merge,
 
-Outer GPT nie może używać terminala do `find`, Git, Python, grep ani innych helperów. Coder terminal przyjmuje wyłącznie zainstalowany supervisor z exact board/task/run/workspace i literalnym wewnętrznym argv0 `claude`; `./claude`, `/tmp/claude` i alternatywne ścieżki są blokowane. Supervisor utrzymuje wyłączną lease i osobną sesję/process-group, monitoruje aktywny run oraz worker identity i kończy/reapuje całe należące drzewo przed zwolnieniem lease.
+Outer GPT nie może używać terminala do `find`, Git, Python, grep ani innych helperów. Coder terminal przyjmuje wyłącznie zainstalowany supervisor z exact board/task/run/workspace i literalnym wewnętrznym argv0 `claude`; `./claude`, `/tmp/claude` i alternatywne ścieżki są blokowane. Claude pozostaje w zewnętrznej grupie Hermesa, a supervisor śledzi fork/vfork/clone przez ptrace `EXITKILL`, wiąże sygnały pidfd i kończy/reapuje wszystkie traced tasks przed zwolnieniem lease. Dziedziczony nieusuwalny seccomp odrzuca `CLONE_UNTRACED` i wymusza fallback z `clone3` do śledzonego legacy clone. Brak wymaganego ptrace/pidfd/seccomp/subreaper blokuje start przed wykonaniem kodu Claude.
 
 Każdy Claude invocation musi zawierać `--safe-mode`, aby wyłączyć project/user `CLAUDE.md`, hooks, plugins, skills i MCP. Coder wymaga `--permission-mode dontAsk`; reviewer/architect wymagają `--permission-mode plan`.
 
@@ -171,7 +171,11 @@ Po successful native request-review guard strict-decodes dokładny wynik i ponow
 
 Udany handoff zapisuje również in-process capability seal, usuwa completed attestation i ustawia dokładne `HERMES_KANBAN_STOP_NUDGE=0`. Nudge opt-out jest tylko defense in depth: późniejsza mutacja lub drugi request-review jest blokowany przez seal/utratę aktywnego runu nawet przy kolejnym turnie modelu. Read-only status inspection może pozostać dostępne do zakończenia procesu.
 
-Routed validator i targeted dispatcher wymagają jawnego canonical boardu, niezmienionego schema-v2 seal, HEAD/content/evidence binding, braku żywej mutation lease i potwierdzonego wyjścia exact PID/start-token implementera. Reviewer run metadata wiąże board, schema, seal ID, HEAD/content digest i implementer run. `reviewer-gpt` nie ma terminala, generic file tools, execute_code ani MCP; zatwierdza wyłącznie przez `factory_review_approve`, który rewaliduje i wykonuje completion pod jedną lease oraz DB writer transaction, po czym ponownie mierzy bajty przed commit. `verify-approval --board <slug> --task-id <id>` jest obowiązkową downstream bramką ready/release/merge. `kanban_request_changes` pozostaje dostępne przy drift, ale nie oznacza approval.
+Routed validator i targeted dispatcher wymagają jawnego canonical boardu, niezmienionego schema-v2 seal, HEAD/content/evidence binding, braku żywej mutation lease i potwierdzonego wyjścia exact PID/start-token implementera. Przed reviewer claimem isolated Hermes 0.20.4 `get_tool_definitions` musi zwrócić dokładnie sześć dozwolonych tools; brak/tamper/import/registration failure pluginu albo dodatkowy tool blokuje start. `factory_review_approve` rewaliduje i wykonuje completion pod jedną lease oraz DB writer transaction, po czym ponownie mierzy bajty przed commit.
+
+`release-manager` jest wyłącznie read-only profilem decyzji z trzema bounded repository tools i bez żadnego Kanban tool. Jego isolated home `~/.hermes/factory-profiles/release-manager` leży poza assignable registry `~/.hermes/profiles`; bootstrap odmawia, jeśli istnieje legacy assignable directory. Canonical `hermes/release_manager_start.py` uruchamia actual capability verifier bezpośrednio przed modelem i usuwa wszystkie `HERMES_KANBAN_*`, więc generic dispatch i auto-dodanie worker mutation tools są niemożliwe. Może zwrócić `RELEASE_APPROVED`/`RELEASE_BLOCKED`, ale nie może merge/push/mark-ready/edytować PR/publikować. `pr-merge-gate` jest checklistą dowodową i procedurą decyzji, nie mechaniczną warstwą merge.
+
+Właściciel repo uruchamia `kanban_runtime_cli.sh verify-approval --board <slug> --task-id <id>` na dokładnych bieżących bajtach i dokładnym PR HEAD bezpośrednio przed ręcznym GitHub merge. Finalny merge jest zaufaną czynnością człowieka poza mechaniczną granicą Hermes modelu; sama decyzja agenta nie nadaje merge authority. Threat model nie obejmuje złośliwego host owner/root ani obcego procesu używającego poświadczeń GitHub użytkownika.
 
 ## 8. Plugin supply chain
 

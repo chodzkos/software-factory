@@ -1,4 +1,4 @@
-"""Fail-closed verifier for the exact reviewer-gpt model-visible surface."""
+"""Fail-closed verifier for the read-only release-manager tool surface."""
 from __future__ import annotations
 
 import argparse
@@ -23,7 +23,6 @@ except ImportError:
 
 REQUIRED_TOOLS = frozenset({
     "factory_repo_map", "factory_repo_read", "factory_repo_search",
-    "factory_review_approve", "kanban_show", "kanban_request_changes",
 })
 
 
@@ -31,13 +30,13 @@ def verify(
     profile_home: Path,
     *,
     workspace: Path | None = None,
-    task_id: str = "t_capability_probe",
+    task_id: str = "t_release_capability_probe",
     board: str = "isolated",
     run_id: int = 1,
 ) -> dict[str, object]:
     return verify_profile(
         profile_home,
-        profile="reviewer-gpt",
+        profile="release-manager",
         expected_tools=REQUIRED_TOOLS,
         workspace=(workspace or Path(__file__).resolve().parent.parent),
         task_id=task_id,
@@ -50,18 +49,12 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("profile_home", type=Path)
     parser.add_argument("--workspace", type=Path, default=Path.cwd())
-    parser.add_argument("--task-id", default="t_capability_probe")
+    parser.add_argument("--task-id", default="t_release_capability_probe")
     parser.add_argument("--board", default="isolated")
     parser.add_argument("--run-id", type=int, default=1)
     args = parser.parse_args()
-    result = verify(
-        args.profile_home,
-        workspace=args.workspace,
-        task_id=args.task_id,
-        board=args.board,
-        run_id=args.run_id,
-    )
-    print("REVIEWER_CAPABILITY_SURFACE_OK " + json.dumps(result, sort_keys=True, separators=(",", ":")))
+    result = verify(args.profile_home, workspace=args.workspace, task_id=args.task_id, board=args.board, run_id=args.run_id)
+    print("RELEASE_MANAGER_CAPABILITY_SURFACE_OK " + json.dumps(result, sort_keys=True, separators=(",", ":")))
     return 0
 
 

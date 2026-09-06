@@ -277,16 +277,31 @@ def _json_object(value: str, label: str) -> Mapping[str, Any]:
     return parsed
 
 
+def _explicit_board_exists(board: str) -> bool:
+    """Use the installed Hermes runtime API to reject ambient-board fallback."""
+    try:
+        from hermes_cli import kanban_db as kb
+    except Exception as exc:
+        raise RuntimeError("live-task: Hermes board API unavailable") from exc
+    checker = getattr(kb, "board_exists", None)
+    if not callable(checker):
+        raise RuntimeError("live-task: explicit board check unavailable")
+    return bool(checker(board))
+
+
 def _live_snapshot(board: str, task_id: str) -> Mapping[str, Any]:
     """Fetch authoritative live Kanban JSON directly; callers cannot supply snapshot bytes."""
     if not isinstance(task_id, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", task_id):
         raise SystemExit("task-id: invalid")
     try:
         board = _HANDOFF.canonical_board(board)
+        if not _explicit_board_exists(board):
+            raise SystemExit("live-task: explicit board does not exist")
         env = dict(os.environ)
-        env["HERMES_KANBAN_BOARD"] = board
+        env.pop("HERMES_KANBAN_BOARD", None)
+        env.pop("HERMES_KANBAN_DB", None)
         result = subprocess.run(
-            ["hermes", "kanban", "show", task_id, "--json"],
+            ["hermes", "kanban", "--board", board, "show", task_id, "--json"],
             check=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -294,6 +309,8 @@ def _live_snapshot(board: str, task_id: str) -> Mapping[str, Any]:
             timeout=20,
             env=env,
         )
+    except RuntimeError as exc:
+        raise SystemExit(str(exc)) from exc
     except (OSError, subprocess.SubprocessError) as exc:
         raise SystemExit(f"live-task: unable to fetch {task_id}") from exc
     return _json_object(result.stdout, "live-task")

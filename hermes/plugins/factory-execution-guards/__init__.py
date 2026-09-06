@@ -18,12 +18,20 @@ _PROTECTED_PROFILES = frozenset({
     "reviewer-claude",
     "architect-claude-opus",
     "reviewer-gpt",
+    "release-manager",
 })
 _CLAUDE_PROFILES = frozenset({"coder-claude", "reviewer-claude", "architect-claude-opus"})
 _REVIEWER_GPT_TOOLS = frozenset({
     "factory_repo_map", "factory_repo_read", "factory_repo_search",
     "kanban_show", "kanban_request_changes", "factory_review_approve",
 })
+_RELEASE_MANAGER_TOOLS = frozenset({
+    "factory_repo_map", "factory_repo_read", "factory_repo_search",
+})
+_PROFILE_MODEL_TOOLS = {
+    "reviewer-gpt": _REVIEWER_GPT_TOOLS,
+    "release-manager": _RELEASE_MANAGER_TOOLS,
+}
 _CODER_READ_TOOLS = "Read,Glob,Grep"
 _READONLY_TOOLS = "Read,Glob,Grep"
 _REQUIRED_BOOL_FLAGS = frozenset({"--safe-mode"})
@@ -441,10 +449,11 @@ def on_pre_tool_call(*args, **kwargs):
     if blocked is not None and os.environ.get("HERMES_PROFILE", "").strip() in _PROTECTED_PROFILES:
         return blocked
     profile = os.environ.get("HERMES_PROFILE", "").strip()
-    if profile == "reviewer-gpt" and tool_name not in _REVIEWER_GPT_TOOLS:
+    allowed = _PROFILE_MODEL_TOOLS.get(profile)
+    if allowed is not None and tool_name not in allowed:
         return {
             "action": "block",
-            "message": "reviewer-gpt tool refused: read-only review capability boundary",
+            "message": f"{profile} tool refused: profile capability boundary",
         }
     return _guard.on_pre_tool_call(*args, **kwargs)
 
@@ -480,7 +489,46 @@ def _handle_review_approve(args: dict, **_kwargs) -> str:
         return tool_error(f"factory_review_approve: {exc}")
 
 
+def _disabled_kanban_handler(_args: dict, **_kwargs) -> str:
+    from tools.registry import tool_error
+
+    return tool_error("native Kanban tool is not available in this confined profile")
+
+
+def _never_available() -> bool:
+    return False
+
+
+def _install_scoped_kanban_filters(ctx, profile: str) -> None:
+    """Ukryj każdy natywny tool Kanban poza jawną listą bieżącego profilu."""
+    allowed = _PROFILE_MODEL_TOOLS.get(profile)
+    if allowed is None:
+        return
+    from tools.registry import registry
+
+    entries = [entry for entry in registry.get_all_entries() if entry.toolset == "kanban"]
+    if not entries:
+        raise RuntimeError("Hermes native Kanban registry unavailable")
+    for entry in entries:
+        if entry.name in allowed:
+            continue
+        handle = ctx.register_tool(
+            name=entry.name,
+            toolset=entry.toolset,
+            schema=entry.schema,
+            handler=_disabled_kanban_handler,
+            check_fn=_never_available,
+            emoji=entry.emoji,
+            override=True,
+        )
+        if handle is None:
+            raise RuntimeError(f"scoped Kanban filter registration failed: {entry.name}")
+
+
 def register(ctx) -> None:
+    _activate_profile_identity()
+    profile = os.environ.get("HERMES_PROFILE", "").strip()
+    _install_scoped_kanban_filters(ctx, profile)
     register_tool = getattr(ctx, "register_tool", None)
     if not callable(register_tool):
         raise RuntimeError("Hermes plugin tool registration unavailable")

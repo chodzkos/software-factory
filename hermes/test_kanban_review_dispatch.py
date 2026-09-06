@@ -199,8 +199,39 @@ ACCEPTANCE_CRITERIA:
     }
 
 
+class LiveSnapshotBoardTests(unittest.TestCase):
+    def test_missing_board_is_rejected_before_show_subprocess(self):
+        with patch.object(dispatch, "_explicit_board_exists", return_value=False), patch.object(
+            dispatch.subprocess, "run"
+        ) as run:
+            with self.assertRaisesRegex(RuntimeError, "explicit board does not exist"):
+                dispatch._live_snapshot("does-not-exist", "t_missing")
+        run.assert_not_called()
+
+    def test_show_uses_explicit_board_cli_selector(self):
+        completed = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout='{"task":{"id":"t_live"}}', stderr=""
+        )
+        with patch.object(dispatch, "_explicit_board_exists", return_value=True), patch.object(
+            dispatch.subprocess, "run", return_value=completed
+        ) as run:
+            result = dispatch._live_snapshot("isolated", "t_live")
+        self.assertEqual(result["task"]["id"], "t_live")
+        self.assertEqual(
+            run.call_args.args[0],
+            ["hermes", "kanban", "--board", "isolated", "show", "t_live", "--json"],
+        )
+
+
 class TargetedReviewDispatchTests(unittest.TestCase):
-    def _dispatch(self, task_id: str, *, snapshot: dict, kb: FakeKanbanDB) -> int:
+    def _dispatch(
+        self,
+        task_id: str,
+        *,
+        snapshot: dict,
+        kb: FakeKanbanDB,
+        startup_error: Exception | None = None,
+    ) -> int:
         seal = {
             "board": "isolated",
             "seal_id": "a" * 64,
@@ -211,6 +242,10 @@ class TargetedReviewDispatchTests(unittest.TestCase):
             dispatch._HANDOFF,
             "validate_handoff_seal",
             return_value=(seal, []),
+        ), patch.object(
+            dispatch,
+            "_verify_reviewer_startup",
+            side_effect=startup_error,
         ):
             return dispatch.dispatch_review(task_id, board="isolated", snapshot=snapshot, kb=kb)
 
@@ -268,6 +303,20 @@ class TargetedReviewDispatchTests(unittest.TestCase):
         self.assertEqual(kb.worker_pids, [("t_live", 4242)])
         self.assertEqual(kb.hooks, [("t_live", 4242)])
         self.assertEqual(kb.failures, [])
+
+    def test_capability_startup_failure_prevents_claim_and_model_spawn(self):
+        td, snap, kb = self._fixture()
+        self.addCleanup(td.cleanup)
+        with patch.object(dispatch, "_assert_expected_hermes_version", return_value=None):
+            with self.assertRaisesRegex(RuntimeError, "synthetic capability failure"):
+                self._dispatch(
+                    "t_live",
+                    snapshot=snap,
+                    kb=kb,
+                    startup_error=RuntimeError("synthetic capability failure"),
+                )
+        self.assertEqual(kb.claimed_ids, [])
+        self.assertEqual(kb.spawned, [])
 
     def test_refuses_when_global_review_autodispatch_is_enabled(self):
         td, snap, kb = self._fixture(auto_review=True)

@@ -36,6 +36,20 @@ VERSION_PATTERNS = {
         re.MULTILINE,
     ),
 }
+VERSION_ONLY_PATTERNS = {
+    "hermes/profiles/reviewer-claude/SOUL.md": re.compile(
+        r"^- Profil ma aktywny `factory-execution-guards` v(?P<value>[0-9]+\.[0-9]+\.[0-9]+):",
+        re.MULTILINE,
+    ),
+    "hermes/profiles/architect-claude-opus/SOUL.md": re.compile(
+        r"^- Profil ma aktywny `factory-execution-guards` v(?P<value>[0-9]+\.[0-9]+\.[0-9]+):",
+        re.MULTILINE,
+    ),
+    "hermes/profiles/release-manager/SOUL.md": re.compile(
+        r"^- Profil ma aktywny `factory-execution-guards` v(?P<value>[0-9]+\.[0-9]+\.[0-9]+)\.",
+        re.MULTILINE,
+    ),
+}
 SCHEMA_PATTERNS = {
     "hermes/README.md": re.compile(
         r"^- evidence schema v(?P<value>[0-9]+) wiąże ", re.MULTILINE
@@ -203,6 +217,19 @@ def collect_consistency_errors(
                 f"{relative}: current handoff schema {document_handoff_schema} "
                 f"!= implementation {handoff_schema}"
             )
+
+    for relative, version_pattern in VERSION_ONLY_PATTERNS.items():
+        path = overrides.get(relative, root / relative)
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError as exc:
+            errors.append(f"{relative}: cannot read authoritative document: {exc}")
+            continue
+        document_version = _single_marker_value(version_pattern, text)
+        if document_version is None:
+            errors.append(f"{relative}: expected exactly one structured current guard version marker")
+        elif document_version != version:
+            errors.append(f"{relative}: current guard version {document_version} != plugin {version}")
 
     return errors
 
