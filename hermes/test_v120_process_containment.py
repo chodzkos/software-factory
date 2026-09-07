@@ -1,6 +1,7 @@
 """Regresje v0.12.0 dla kernelowego ograniczenia drzewa Claude."""
 from __future__ import annotations
 
+import json
 import os
 import signal
 import subprocess
@@ -294,28 +295,41 @@ class HermesOuterTimeoutTests(unittest.TestCase):
                 if descendant_pid > 0:
                     _kill_identity(descendant_pid)
 
-    def test_active_run_loss_kills_rapid_double_fork_setsid_descendant(self) -> None:
+    def _exercise_ready_double_fork(self, trigger: str) -> None:
+        """Separate active-run loss from root exit; never assume fork timing."""
+        self.assertIn(trigger, {"active", "leader", "positive-control"})
         with tempfile.TemporaryDirectory(prefix="sf-v120-setsid-") as td:
             root = Path(td)
             workspace = root / "workspace"
             workspace.mkdir()
             active = root / "active"
             active.write_text("yes", encoding="utf-8")
-            ready = root / "ready"
             descendant_file = root / "descendant-pid"
+            write_gate = root / "allow-write"
+            leader_exit = root / "leader-exit"
             sentinel = root / "late"
+            child_log = root / "supervisor.log"
             fake = root / "claude"
             fake.write_text(
                 "#!/usr/bin/env python3\n"
-                "import os,pathlib,sys,time\n"
-                "ready,pid_file,sentinel=sys.argv[1:4]\n"
-                "pathlib.Path(ready).write_text('ready')\n"
+                "import json,os,pathlib,sys,time\n"
+                "pid_file,write_gate,leader_exit,sentinel=map(pathlib.Path,sys.argv[1:5])\n"
+                "leader=os.getpid()\n"
                 "first=os.fork()\n"
                 "if first==0:\n"
                 " os.setsid(); second=os.fork()\n"
                 " if second==0:\n"
-                "  pathlib.Path(pid_file).write_text(str(os.getpid())); time.sleep(1.2); pathlib.Path(sentinel).write_text('late-setsid'); os._exit(0)\n"
+                "  pending=pid_file.with_suffix('.pending')\n"
+                "  pending.write_text(json.dumps({'pid':os.getpid(),'leader':leader,'sid':os.getsid(0)}))\n"
+                "  pending.replace(pid_file)\n"
+                "  while not write_gate.exists(): time.sleep(0.01)\n"
+                "  pending=sentinel.with_suffix('.pending'); pending.write_text('late-setsid'); pending.replace(sentinel)\n"
+                "  while True: time.sleep(0.01)\n"
                 " os._exit(0)\n"
+                # Keep the original leader alive until the test explicitly ends
+                # its run or requests leader exit. Immediate root exit is a
+                # DIFFERENT cancellation trigger from active-run revocation.
+                "while not leader_exit.exists(): time.sleep(0.01)\n"
                 "os._exit(0)\n",
                 encoding="utf-8",
             )
@@ -328,34 +342,93 @@ class HermesOuterTimeoutTests(unittest.TestCase):
                 f"m._HANDOFF.active_coder_run_matches=lambda: pathlib.Path({str(active)!r}).exists()\n"
                 "m._HANDOFF._load_kanban_db=lambda: object(); m._ambient_board=lambda _kb: 'isolated'\n"
                 "worker_pid,worker_start=m._HANDOFF._process_identity(os.getppid())\n"
-                f"raise SystemExit(m.supervise(['claude',{str(ready)!r},{str(descendant_file)!r},{str(sentinel)!r}],board='isolated',task_id='t_v120',run_id=9,workspace={str(workspace)!r},worker_pid=worker_pid,worker_start=worker_start,poll_seconds=0.01))\n",
+                f"raise SystemExit(m.supervise(['claude',{str(descendant_file)!r},{str(write_gate)!r},{str(leader_exit)!r},{str(sentinel)!r}],board='isolated',task_id='t_v120',run_id=9,workspace={str(workspace)!r},worker_pid=worker_pid,worker_start=worker_start,poll_seconds=0.01))\n",
                 encoding="utf-8",
             )
             env = dict(os.environ)
             env.update(PATH=f"{root}:{env.get('PATH', '')}", HOME=str(root), HERMES_KANBAN_BOARD="isolated", HERMES_KANBAN_TASK="t_v120", HERMES_KANBAN_RUN_ID="9", HERMES_KANBAN_WORKSPACE=str(workspace))
-            proc = subprocess.Popen([sys.executable, str(runner)], cwd=workspace, env=env, start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             descendant_pid = -1
-            try:
-                _wait_for(ready)
-                time.sleep(0.15)
-                active.unlink()
-                _wait_for(descendant_file)
-                descendant_pid = int(descendant_file.read_text(encoding="utf-8"))
-                self.assertEqual(proc.wait(timeout=4.0), 125)
-                with self.assertRaises(Exception):
+            descendant_fd = None
+            with child_log.open("wb") as output:
+                proc = subprocess.Popen([sys.executable, str(runner)], cwd=workspace, env=env, start_new_session=True, stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT)
+                try:
+                    # Readiness is an atomic publication by the real grandchild,
+                    # after setsid/double-fork. A dead supervisor is not readiness.
+                    deadline = time.monotonic() + 5.0
+                    while not descendant_file.exists():
+                        self.assertIsNone(proc.poll(), child_log.read_text(encoding="utf-8", errors="replace"))
+                        self.assertLess(time.monotonic(), deadline, "grandchild did not become ready; " + child_log.read_text(encoding="utf-8", errors="replace"))
+                        time.sleep(0.01)
+                    identity = json.loads(descendant_file.read_text(encoding="utf-8"))
+                    descendant_pid = identity["pid"]
+                    descendant_fd = os.pidfd_open(descendant_pid, 0)
+                    self.assertIsNone(proc.poll(), "supervisor exited before cancellation")
+                    os.kill(identity["leader"], 0)
                     os.kill(descendant_pid, 0)
-                time.sleep(1.3)
-                self.assertFalse(sentinel.exists())
-            finally:
-                if proc.poll() is None:
+                    self.assertEqual(os.getsid(descendant_pid), identity["sid"])
+                    self.assertNotEqual(os.getsid(descendant_pid), os.getsid(proc.pid))
+                    self.assertNotEqual(os.getpgid(descendant_pid), os.getpgid(proc.pid))
+                    self.assertTrue(active.exists())
+                    self.assertFalse(sentinel.exists())
+                    if trigger == "positive-control":
+                        # Prove that a ready, still-authorized descendant really
+                        # can execute the sentinel write; absence is not vacuous.
+                        write_gate.write_text("allowed", encoding="utf-8")
+                        _wait_for(sentinel)
+                        self.assertEqual(sentinel.read_text(encoding="utf-8"), "late-setsid")
+                        self.assertIsNone(proc.poll())
+                        active.unlink()
+                    elif trigger == "active":
+                        active.unlink()
+                    else:
+                        leader_exit.write_text("exit", encoding="utf-8")
+                        self.assertTrue(active.exists())
                     try:
-                        os.killpg(proc.pid, signal.SIGKILL)
-                    except ProcessLookupError:
-                        pass
-                    proc.wait(timeout=2.0)
-                if descendant_pid > 0:
-                    _kill_identity(descendant_pid)
+                        rc = proc.wait(timeout=5.0)
+                    except subprocess.TimeoutExpired:
+                        self.fail("supervisor did not complete cancellation; " + child_log.read_text(encoding="utf-8", errors="replace"))
+                    self.assertEqual(rc, 125, child_log.read_text(encoding="utf-8", errors="replace"))
+                    # Require complete reap, not merely a non-running zombie.
+                    with self.assertRaises(ProcessLookupError):
+                        os.kill(descendant_pid, 0)
+                    with self.assertRaises(ProcessLookupError):
+                        os.kill(identity["leader"], 0)
+                    if trigger != "positive-control":
+                        write_gate.write_text("after-cancellation", encoding="utf-8")
+                        time.sleep(0.15)
+                        self.assertFalse(sentinel.exists())
+                    if trigger == "leader":
+                        self.assertTrue(active.exists(), "leader-exit test must not revoke authorization")
+                finally:
+                    if proc.poll() is None:
+                        try:
+                            os.killpg(proc.pid, signal.SIGTERM)
+                        except ProcessLookupError:
+                            pass
+                        try:
+                            proc.wait(timeout=1.0)
+                        except subprocess.TimeoutExpired:
+                            try:
+                                os.killpg(proc.pid, signal.SIGKILL)
+                            except ProcessLookupError:
+                                pass
+                            proc.wait(timeout=2.0)
+                    if descendant_fd is not None:
+                        try:
+                            signal.pidfd_send_signal(descendant_fd, signal.SIGKILL, None, 0)
+                        except ProcessLookupError:
+                            pass
+                        finally:
+                            os.close(descendant_fd)
 
+    def test_active_run_loss_kills_rapid_double_fork_setsid_descendant(self) -> None:
+        self._exercise_ready_double_fork("active")
+
+    def test_leader_exit_kills_ready_double_fork_setsid_descendant(self) -> None:
+        self._exercise_ready_double_fork("leader")
+
+    def test_authorized_ready_double_fork_can_reach_writer_positive_control(self) -> None:
+        self._exercise_ready_double_fork("positive-control")
 
 if __name__ == "__main__":
     unittest.main()
