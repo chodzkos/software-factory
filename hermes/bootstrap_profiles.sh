@@ -143,7 +143,7 @@ install_execution_guard reviewer-gpt
 install_reviewer_readonly reviewer-gpt
 hermes -p reviewer-gpt config set toolsets '["factory-repository-readonly","factory-execution-guards"]'
 hermes -p reviewer-gpt config set platform_toolsets.cli '["factory-repository-readonly","factory-execution-guards","kanban","no_mcp"]'
-hermes -p reviewer-gpt config set mcp_servers '{}'
+hermes -p reviewer-gpt config set --force mcp_servers '{}'
 hermes -p reviewer-gpt config set agent.disabled_toolsets '["terminal","file","code_execution","web","browser","image_gen","delegation","computer_use","cronjob","skills","vision","todo","memory","session_search","clarify","messaging","tts","moa","bfl","x_search","mcp"]'
 
 # Release-manager jest izolowany poza ~/.hermes/profiles, więc generic Kanban
@@ -158,7 +158,7 @@ release_config set model.default "${primary_model}"
 release_config set fallback_providers '[]'
 release_config set toolsets '["factory-repository-readonly","factory-execution-guards"]'
 release_config set platform_toolsets.cli '["factory-repository-readonly","factory-execution-guards","no_mcp"]'
-release_config set mcp_servers '{}'
+release_config set --force mcp_servers '{}'
 release_config set agent.disabled_toolsets '["terminal","file","code_execution","web","browser","image_gen","delegation","computer_use","cronjob","skills","vision","todo","memory","session_search","clarify","messaging","tts","moa","bfl","x_search","mcp"]'
 release_config set tools.tool_search.enabled off
 release_config set --force factory.execution_backend read-only-release-decision

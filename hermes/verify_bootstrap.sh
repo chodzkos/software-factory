@@ -75,6 +75,10 @@ grep -Fq 'SECURITY_REVIEW_MODEL="gpt-5.6-sol"' "${BOOTSTRAP}"
 grep -Fq 'remove_profile_keys "${profile}" fallback_model model.fallback_model' "${BOOTSTRAP}"
 grep -Fq 'expect_profile_keys_absent reviewer-gpt fallback_model model.fallback_model' "${BOOTSTRAP}"
 grep -Fq 'expect_config reviewer-gpt fallback_providers' "${BOOTSTRAP}"
+grep -Fq "hermes -p reviewer-gpt config set --force mcp_servers '{}'" "${BOOTSTRAP}"
+grep -Fq "release_config set --force mcp_servers '{}'" "${BOOTSTRAP}"
+if grep -Fq "hermes -p reviewer-gpt config set mcp_servers '{}'" "${BOOTSTRAP}"; then echo 'ERROR: reviewer-gpt MCP section reset must use --force on Hermes 0.20.4' >&2; exit 1; fi
+if grep -Fq "release_config set mcp_servers '{}'" "${BOOTSTRAP}"; then echo 'ERROR: release-manager MCP section reset must use --force on Hermes 0.20.4' >&2; exit 1; fi
 grep -Fq 'CONFIG_KEY_REMOVER=' "${RUNTIME_BOOTSTRAP}"
 grep -Fq 'fallback_model model.fallback_model' "${RUNTIME_BOOTSTRAP}"
 
