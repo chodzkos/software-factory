@@ -39,6 +39,28 @@ make_known_execution_guard_predecessor() {
   git -C "$ROOT_DIR" cat-file blob b0da39ae49d9aca0ed9a816a2a7d15ca9ad8c934 >"$target/supervisor.py"
 }
 
+make_known_repository_analyst_d756376_predecessor() {
+  local target="$1"
+  mkdir -p "$target"
+  # Zrecenzowane drzewo poprzednika wdrożone z commita d756376.
+  git -C "$ROOT_DIR" cat-file blob e26285a24ab1048c1c61e4dd7bfecd22e7178554 >"$target/plugin.yaml"
+  git -C "$ROOT_DIR" cat-file blob d1607626706e425b0057f10154a1b923da8f55e7 >"$target/__init__.py"
+  git -C "$ROOT_DIR" cat-file blob ce7718e0879600631e84a4e44f9c7f97842af9cc >"$target/repo_map.py"
+  git -C "$ROOT_DIR" cat-file blob cc028cb35f54e21660356662c727cabe7f789eca >"$target/repository_tools.py"
+  git -C "$ROOT_DIR" cat-file blob 881dacf7715f8fd0c088df54c9e8d273b15a21da >"$target/kanban_guard.py"
+}
+
+make_known_repository_analyst_base_predecessor() {
+  local target="$1"
+  mkdir -p "$target"
+  # Zrecenzowane drzewo v0.2.0 wdrożone z bazowego commita d901cb2.
+  git -C "$ROOT_DIR" cat-file blob e26285a24ab1048c1c61e4dd7bfecd22e7178554 >"$target/plugin.yaml"
+  git -C "$ROOT_DIR" cat-file blob d1607626706e425b0057f10154a1b923da8f55e7 >"$target/__init__.py"
+  git -C "$ROOT_DIR" cat-file blob ce7718e0879600631e84a4e44f9c7f97842af9cc >"$target/repo_map.py"
+  git -C "$ROOT_DIR" cat-file blob 93193e0db3453ef9b5d8f175c5fe4334ff5bf58a >"$target/repository_tools.py"
+  git -C "$ROOT_DIR" cat-file blob 881dacf7715f8fd0c088df54c9e8d273b15a21da >"$target/kanban_guard.py"
+}
+
 printf '[plugin-installer] production candidate reviewed-ready dry-run no write\n'
 prod="$TMP/prod"
 HERMES_PLUGINS_DIR="$prod" bash "$INSTALLER" --plugin factory-repository-readonly --dry-run >/dev/null
@@ -99,6 +121,25 @@ HERMES_PLUGINS_DIR="$dest" bash "$root/hermes/install_factory_plugins.sh" --plug
 diff -qr "$root/hermes/plugins/factory-execution-guards" "$dest/factory-execution-guards" >/dev/null
 if find "$dest" -maxdepth 1 -type d -name '.factory-plugin.backup.*' -print -quit | grep -q .; then echo 'ERROR: reviewed replacement left backup directory behind' >&2; exit 1; fi
 echo 'OK: known reviewed predecessor replaced'
+
+printf '[plugin-installer] reviewed d756376 repository-analyst predecessor replacement\n'
+root="$TMP/repository-analyst-d756376"; make_fixture "$root"; dest="$TMP/repository-analyst-d756376-install"; mkdir -p "$dest"
+make_known_repository_analyst_d756376_predecessor "$dest/factory-repository-readonly"
+HERMES_PLUGINS_DIR="$dest" bash "$root/hermes/install_factory_plugins.sh" --plugin factory-repository-readonly --replace-reviewed >/dev/null
+diff -qr "$root/hermes/plugins/factory-repository-readonly" "$dest/factory-repository-readonly" >/dev/null
+
+printf '[plugin-installer] reviewed d901cb2 repository-analyst predecessor replacement\n'
+root="$TMP/repository-analyst-base"; make_fixture "$root"; dest="$TMP/repository-analyst-base-install"; mkdir -p "$dest"
+make_known_repository_analyst_base_predecessor "$dest/factory-repository-readonly"
+HERMES_PLUGINS_DIR="$dest" bash "$root/hermes/install_factory_plugins.sh" --plugin factory-repository-readonly --dry-run --replace-reviewed >/dev/null
+HERMES_PLUGINS_DIR="$dest" bash "$root/hermes/install_factory_plugins.sh" --plugin factory-repository-readonly --replace-reviewed >/dev/null
+diff -qr "$root/hermes/plugins/factory-repository-readonly" "$dest/factory-repository-readonly" >/dev/null
+root="$TMP/repository-analyst-base-drift"; make_fixture "$root"; dest="$TMP/repository-analyst-base-drift-install"; mkdir -p "$dest"
+make_known_repository_analyst_base_predecessor "$dest/factory-repository-readonly"
+printf '\n# unreviewed base-tree drift\n' >> "$dest/factory-repository-readonly/repository_tools.py"
+expect_fail "drifted d901cb2 repository-analyst predecessor" env HERMES_PLUGINS_DIR="$dest" bash "$root/hermes/install_factory_plugins.sh" --plugin factory-repository-readonly --replace-reviewed
+
+echo 'OK: exact d901cb2 repository-analyst predecessor replaced; drift rejected'
 
 printf '[plugin-installer] post-publish verification failure restores exact known predecessor\n'
 root="$TMP/rollback"; make_fixture "$root"; dest="$TMP/rollback-install"; mkdir -p "$dest"
