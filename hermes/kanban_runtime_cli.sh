@@ -32,7 +32,7 @@ EOF
 probe_hermes_python() {
   local candidate="$1"
   [[ "${candidate}" == /* && -x "${candidate}" ]] || return 1
-  if PYTHONDONTWRITEBYTECODE=1 "${candidate}" -I -c 'import hermes_cli' >/dev/null 2>&1; then
+  if PYTHONDONTWRITEBYTECODE=1 "${candidate}" -B -I -c 'import hermes_cli' >/dev/null 2>&1; then
     printf '%s\n' "${candidate}"
     return 0
   fi
@@ -150,7 +150,7 @@ run_hermes_python_script() {
   # retaining the script directory needed for the reviewed sibling modules.
   unset PYTHONPATH PYTHONHOME PYTHONSTARTUP PYTHONINSPECT
   export PYTHONDONTWRITEBYTECODE=1
-  exec "${hermes_python}" -E -s "${script}" "$@"
+  exec "${hermes_python}" -B -E -s "${script}" "$@"
 }
 
 run_review_dispatcher() {

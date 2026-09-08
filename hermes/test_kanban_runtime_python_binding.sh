@@ -13,7 +13,7 @@ make_fake_python() {
   cat >"${path}" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-if [[ "$#" -eq 3 && "$1" == "-I" && "$2" == "-c" && "$3" == "import hermes_cli" ]]; then
+if [[ "$#" -eq 4 && "$1" == "-B" && "$2" == "-I" && "$3" == "-c" && "$4" == "import hermes_cli" ]]; then
   exit 0
 fi
 printf '%s\n' "$@" >"${HERMES_TEST_PY_LOG:?}"
@@ -43,7 +43,7 @@ expect_helper_exec() {
   set -e
   [[ ${rc} -eq 37 ]] || { echo "ERROR: ${label}: expected fake Hermes Python rc=37, got ${rc}" >&2; exit 1; }
   mapfile -t argv <"${HERMES_TEST_PY_LOG}"
-  local expected=("-E" "-s" "${ROOT_DIR}/hermes/kanban_review_dispatch.py" "--board" "isolated" "--task-id" "t_probe")
+  local expected=("-B" "-E" "-s" "${ROOT_DIR}/hermes/kanban_review_dispatch.py" "--board" "isolated" "--task-id" "t_probe")
   [[ ${#argv[@]} -eq ${#expected[@]} ]] || { echo "ERROR: ${label}: helper argv length mismatch" >&2; exit 1; }
   local i
   for i in "${!expected[@]}"; do
@@ -71,7 +71,7 @@ expect_validator_exec() {
   set -e
   [[ ${rc} -eq 37 ]] || { echo "ERROR: ${label}: expected fake Hermes Python rc=37, got ${rc}" >&2; exit 1; }
   mapfile -t argv <"${HERMES_TEST_PY_LOG}"
-  local expected=("-E" "-s" "${ROOT_DIR}/hermes/kanban_runtime_contract.py" "routing-live" "--board" "isolated" "--task-id" "t_probe")
+  local expected=("-B" "-E" "-s" "${ROOT_DIR}/hermes/kanban_runtime_contract.py" "routing-live" "--board" "isolated" "--task-id" "t_probe")
   [[ "${argv[*]}" == "${expected[*]}" ]] || { echo "ERROR: ${label}: validator argv mismatch" >&2; exit 1; }
   grep -Fxq 'PYTHONPATH=<unset>' "${HERMES_TEST_ENV_LOG}"
   grep -Fxq 'PYTHONHOME=<unset>' "${HERMES_TEST_ENV_LOG}"
@@ -94,6 +94,36 @@ expect_fail_closed() {
   echo "OK fail-closed: ${label}"
 }
 
+expect_real_python_bytecode_control() {
+  local fixture="${TMP_DIR}/bytecode-fixture"
+  local pycs
+  mkdir -p "${fixture}"
+  cat >"${fixture}/loaded_module.py" <<'PY'
+VALUE = 1
+PY
+  cat >"${fixture}/load_module.py" <<'PY'
+import importlib.util
+import pathlib
+
+source = pathlib.Path(__file__).with_name("loaded_module.py")
+spec = importlib.util.spec_from_file_location("loaded_module", source)
+module = importlib.util.module_from_spec(spec)
+assert spec.loader is not None
+spec.loader.exec_module(module)
+PY
+
+  PYTHONDONTWRITEBYTECODE=1 python3 -E -s "${fixture}/load_module.py"
+  shopt -s nullglob
+  pycs=("${fixture}/__pycache__/loaded_module."*.pyc)
+  shopt -u nullglob
+  [[ ${#pycs[@]} -gt 0 ]] || { echo 'ERROR: python -E did not reproduce ignored PYTHONDONTWRITEBYTECODE' >&2; exit 1; }
+  rm -rf "${fixture}/__pycache__"
+
+  PYTHONDONTWRITEBYTECODE=1 python3 -B -E -s "${fixture}/load_module.py"
+  [[ ! -e "${fixture}/__pycache__" ]] || { echo 'ERROR: python -B -E -s wrote bytecode' >&2; exit 1; }
+  echo 'OK: real Python requires -B when -E ignores PYTHONDONTWRITEBYTECODE'
+}
+
 export HERMES_TEST_PY_LOG="${TMP_DIR}/python-argv.log"
 export HERMES_TEST_ENV_LOG="${TMP_DIR}/python-env.log"
 FAKE_PY="${TMP_DIR}/python-hermes-test"
@@ -114,6 +144,7 @@ EOF
 chmod +x "${TMP_DIR}/hermes"
 PATH="${TMP_DIR}:${ORIGINAL_PATH}"
 export PATH
+expect_real_python_bytecode_control
 expect_helper_exec "Hermes 0.20.4 bash launcher resolves literal venv Python and sanitizes helper env"
 expect_validator_exec "live validator resolves the same literal Hermes Python and sanitizes helper env"
 
