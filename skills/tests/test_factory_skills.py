@@ -170,7 +170,12 @@ class FactorySkillTests(unittest.TestCase):
         block = text.split("## Block when", 1)[1].split("\n## ", 1)[0]
         self.assertIn("- `REVIEWED_SHA != PR_HEAD_SHA`", block)
         self.assertIn("- `VERIFIED_SHA != PR_HEAD_SHA`", block)
-        self.assertIn("MERGE_GATE_BLOCKED", text)
+        self.assertIn("RELEASE_BLOCKED", text)
+        self.assertIn("RELEASE_APPROVED", text)
+        self.assertIn("not a mechanical merge enforcement layer", text)
+        self.assertIn("No agent decision alone constitutes merge authority", text)
+        self.assertIn("verify-approval --board <BOARD_SLUG> --task-id <TASK_ID>", text)
+        self.assertIn("live mutation lease", text)
 
     def test_sha_integrity_records_current_sha(self):
         text = (SKILLS / "custom" / "sha-integrity-check" / "SKILL.md").read_text()

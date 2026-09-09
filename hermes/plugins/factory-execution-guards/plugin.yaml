@@ -1,0 +1,9 @@
+name: factory-execution-guards
+version: 0.12.0
+description: Ptrace/pidfd-contained Claude execution, exact profile tool surfaces, board-bound handoff, and atomic approval.
+entrypoint: __init__:register
+provides_tools:
+  - factory_review_approve
+provides_hooks:
+  - pre_tool_call
+  - post_tool_call
