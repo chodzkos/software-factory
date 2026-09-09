@@ -104,7 +104,8 @@ grep -Fq '"write_txn",' "${REVIEW_DISPATCHER}"
 
 printf '[check] sanitized targeted helper Python execution\n'
 grep -Fq 'unset PYTHONPATH PYTHONHOME PYTHONSTARTUP PYTHONINSPECT' "${RUNTIME_WRAPPER}"
-grep -Fq 'exec "${hermes_python}" -E -s "${script}" "$@"' "${RUNTIME_WRAPPER}"
+grep -Fq -- "-B -I -c 'import hermes_cli'" "${RUNTIME_WRAPPER}"
+grep -Fq 'exec "${hermes_python}" -B -E -s "${script}" "$@"' "${RUNTIME_WRAPPER}"
 grep -Fq 'run_hermes_python_script "${VALIDATOR}" routing-live "$@"' "${RUNTIME_WRAPPER}"
 
 printf '[check] transactional reviewed plugin upgrade\n'

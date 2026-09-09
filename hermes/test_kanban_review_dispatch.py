@@ -465,6 +465,7 @@ class TargetedReviewDispatchTests(unittest.TestCase):
             from pathlib import Path
             from unittest.mock import patch
 
+            assert sys.dont_write_bytecode, "native claim regression must use explicit -B"
             repo_root = Path(sys.argv[1]).resolve()
             sys.path.insert(0, str(repo_root / "hermes"))
             import kanban_review_dispatch as dispatch
@@ -562,7 +563,7 @@ class TargetedReviewDispatchTests(unittest.TestCase):
             """
         )
         result = subprocess.run(
-            [str(hermes_python), "-I", "-c", script, str(repo_root)],
+            [str(hermes_python), "-B", "-I", "-c", script, str(repo_root)],
             check=False,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -578,6 +579,115 @@ class TargetedReviewDispatchTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, msg=result.stdout)
         self.assertIn("NATIVE_HERMES_WRITE_TXN_CLAIM_OK", result.stdout)
+
+
+class BytecodeClosureTests(unittest.TestCase):
+    """Regresje izolowanych interpreterów potomnych i kanonicznych bramek."""
+
+    def test_reviewer_startup_has_explicit_bytecode_suppression(self):
+        completed = subprocess.CompletedProcess([], 0, "REVIEWER_CAPABILITY_SURFACE_OK {}\n")
+        with patch.object(dispatch.subprocess, "run", return_value=completed) as run:
+            dispatch._verify_reviewer_startup(
+                board="isolated", task_id="t_probe", workspace="/tmp/workspace", run_id=7
+            )
+        argv = run.call_args.args[0]
+        self.assertEqual(argv[:4], [dispatch.sys.executable, "-B", "-E", "-s"])
+        self.assertTrue(run.call_args.kwargs["check"])
+        self.assertEqual(run.call_args.kwargs["timeout"], 90)
+        self.assertEqual(run.call_args.kwargs["env"]["PYTHONDONTWRITEBYTECODE"], "1")
+
+    def test_reviewer_startup_still_fails_on_subprocess_error(self):
+        with patch.object(dispatch.subprocess, "run", side_effect=subprocess.CalledProcessError(3, ["probe"])):
+            with self.assertRaisesRegex(RuntimeError, "startup verification failed"):
+                dispatch._verify_reviewer_startup(
+                    board="isolated", task_id="t_probe", workspace="/tmp/workspace", run_id=7
+                )
+
+    def test_reviewer_startup_rejects_duplicate_success_markers(self):
+        output = "REVIEWER_CAPABILITY_SURFACE_OK {}\n" * 2
+        completed = subprocess.CompletedProcess([], 0, output)
+        with patch.object(dispatch.subprocess, "run", return_value=completed):
+            with self.assertRaisesRegex(RuntimeError, "startup marker missing"):
+                dispatch._verify_reviewer_startup(
+                    board="isolated", task_id="t_probe", workspace="/tmp/workspace", run_id=7
+                )
+
+    def test_isolated_dispatch_import_never_needs_repository_cache(self):
+        # Kontrole dodatnie i chronione importy używają osobnych drzew tymczasowych.
+        # Import bez -B nigdy nie wskazuje repozytorium ani zainstalowanych pluginów.
+        import shutil
+        import sys
+
+        source = Path(__file__).resolve().parent
+        files = (
+            "kanban_review_dispatch.py", "kanban_runtime_contract.py", "model_routing_policy.py",
+            "plugins/factory-execution-guards/handoff.py",
+        )
+        script = (
+            "import pathlib,sys; sys.path.insert(0,sys.argv[1]); "
+            "import kanban_review_dispatch; "
+            "assert bool(sys.dont_write_bytecode)==(sys.argv[2]=='1')"
+        )
+        env = {"PATH": os.defpath, "PYTHONDONTWRITEBYTECODE": "1"}
+        with tempfile.TemporaryDirectory(prefix="factory-bytecode-regression-") as td:
+            for isolation in (("-I",), ("-E", "-s")):
+                for suppress in (False, True):
+                    with self.subTest(isolation=isolation, suppress=suppress):
+                        fixture = Path(td) / ("-".join(isolation) + str(int(suppress)))
+                        for rel in files:
+                            target = fixture / rel
+                            target.parent.mkdir(parents=True, exist_ok=True)
+                            shutil.copyfile(source / rel, target)
+                        flags = (["-B"] if suppress else []) + list(isolation)
+                        result = subprocess.run(
+                            [sys.executable, *flags, "-c", script, str(fixture), str(int(suppress))],
+                            env=env, cwd=td, stdin=subprocess.DEVNULL,
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=30,
+                            check=False,
+                        )
+                        self.assertEqual(result.returncode, 0, result.stdout)
+                        cache = fixture / "plugins/factory-execution-guards/__pycache__"
+                        if suppress:
+                            self.assertFalse(list(fixture.rglob("*.pyc")))
+                            self.assertFalse(cache.exists())
+                        else:
+                            self.assertTrue(list(cache.glob("handoff.*.pyc")))
+
+    def test_literal_isolated_review_child_commands_require_B(self):
+        import ast
+
+        root = Path(__file__).resolve().parent
+        observed = 0
+        for rel in ("kanban_review_dispatch.py", "test_kanban_review_dispatch.py"):
+            tree = ast.parse((root / rel).read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call) or not node.args:
+                    continue
+                if not isinstance(node.func, ast.Attribute) or node.func.attr not in {"run", "Popen"}:
+                    continue
+                argv = node.args[0]
+                if not isinstance(argv, (ast.List, ast.Tuple)):
+                    continue
+                flags = [x.value for x in argv.elts if isinstance(x, ast.Constant) and isinstance(x.value, str)]
+                if "-I" in flags or "-E" in flags:
+                    observed += 1
+                    self.assertIn("-B", flags, rel)
+        self.assertGreaterEqual(observed, 2)
+
+    def test_canonical_verifiers_pin_the_current_wrapper_flags(self):
+        root = Path(__file__).resolve().parent
+        expected = 'exec "${hermes_python}" -B -E -s "${script}" "$@"'
+        legacy = 'exec "${hermes_python}" -E -s "${script}" "$@"'
+        probe = "-B -I -c 'import hermes_cli'"
+        wrapper = (root / "kanban_runtime_cli.sh").read_text(encoding="utf-8")
+        self.assertIn(expected, wrapper)
+        self.assertIn(probe, wrapper)
+        for name in ("verify_bootstrap.sh", "verify_kanban.sh"):
+            text = (root / name).read_text(encoding="utf-8")
+            with self.subTest(name=name):
+                self.assertTrue("grep -Fq '" + expected + "'" in text, name)
+                self.assertFalse("grep -Fq '" + legacy + "'" in text, name)
+                self.assertIn('grep -Fq -- "' + probe + '"', text)
 
 
 if __name__ == "__main__":

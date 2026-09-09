@@ -394,6 +394,7 @@ def _verify_reviewer_startup(*, board: str, task_id: str, workspace: str, run_id
         result = subprocess.run(
             [
                 sys.executable,
+                "-B",
                 "-E",
                 "-s",
                 str(verifier),
