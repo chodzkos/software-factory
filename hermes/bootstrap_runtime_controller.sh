@@ -19,6 +19,10 @@ PLUGIN_INSTALLER="${ROOT_DIR}/hermes/install_factory_plugins.sh"
 CONFIG_KEY_REMOVER="${ROOT_DIR}/hermes/remove_profile_config_keys.py"
 EXECUTION_GUARD="factory-execution-guards"
 
+# Odmowa dla niezrecenzowanego kandydata musi poprzedzać odczyt konfiguracji
+# przez Hermes i jakikolwiek zapis do profili. Dry-run nie instaluje pluginu.
+HERMES_PLUGINS_DIR="${PROFILE_DIR}/plugins" PYTHONDONTWRITEBYTECODE=1 bash "${PLUGIN_INSTALLER}" --plugin "${EXECUTION_GUARD}" --replace-reviewed --dry-run >/dev/null
+
 command -v hermes >/dev/null 2>&1 || { echo "ERROR: hermes not found in PATH" >&2; exit 1; }
 for path in "${SOUL_SRC}" "${WRAPPER_SRC}" "${VALIDATOR_SRC}" "${MODEL_ROUTING_SRC}" "${REVIEW_DISPATCH_SRC}" "${REVIEWER_VERIFY_SRC}" "${PROFILE_VERIFY_SRC}" "${CAPABILITY_PROBE_SRC}" "${HANDOFF_SRC}" "${PLUGIN_INSTALLER}" "${CONFIG_KEY_REMOVER}"; do test -f "${path}" || { echo "ERROR: missing ${path}" >&2; exit 1; }; done
 

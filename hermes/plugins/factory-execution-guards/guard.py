@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import sys
 import secrets
 import shlex
 import shutil
@@ -14,6 +15,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from . import handoff as _handoff
+from . import review_intent as _review_intent
 
 RUNTIME_PROFILE = "runtime-controller"
 CLAUDE_NORMAL_PROFILES = frozenset({"coder-claude", "reviewer-claude"})
@@ -23,7 +25,7 @@ CLAUDE_PROFILES = CLAUDE_NORMAL_PROFILES | CLAUDE_DEEP_PROFILES
 RUNTIME_OPS = frozenset({"create", "show", "block", "complete", "validate-runtime", "validate-routed-handoff", "validate-routing", "verify-approval"})
 
 CLAUDE_ALLOWED_TOOLS = {
-    "coder-claude": frozenset({"terminal", "read_file", "search_files", "skill", "kanban_show", "kanban_comment", "kanban_heartbeat", "kanban_request_review", "kanban_block"}),
+    "coder-claude": frozenset({"terminal", "read_file", "search_files", "kanban_show", "kanban_comment", "kanban_heartbeat", "kanban_request_review", "kanban_block"}),
     "reviewer-claude": frozenset({"terminal", "read_file", "search_files", "skill", "kanban_show", "kanban_comment", "kanban_heartbeat", "kanban_complete", "kanban_request_changes", "kanban_block"}),
     "architect-claude-opus": frozenset({"terminal", "read_file", "search_files", "skill", "kanban_show", "kanban_comment", "kanban_heartbeat", "kanban_complete", "kanban_block"}),
 }
@@ -100,57 +102,8 @@ def _canonical_claude_identity() -> tuple[str, str] | None:
         return None
 
 
-def _run_git(workspace: str, args: list[str], *, text: bool = False) -> str | bytes:
-    return subprocess.run(
-        ["git", "-C", workspace, *args],
-        check=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-        text=text,
-        timeout=15,
-    ).stdout
-
-
-def _workspace_content_state(workspace: str) -> tuple[str, str] | None:
-    """Return HEAD + digest covering staged state and raw changed/untracked bytes."""
-    try:
-        head = str(_run_git(workspace, ["rev-parse", "HEAD"], text=True)).strip()
-        staged = bytes(_run_git(
-            workspace,
-            ["diff", "--cached", "--binary", "--no-ext-diff", "--no-textconv", "HEAD", "--"],
-        ))
-        raw_paths = bytes(_run_git(workspace, ["ls-files", "-m", "-d", "-o", "--exclude-standard", "-z"]))
-    except (OSError, subprocess.SubprocessError):
-        return None
-    if len(head) != 40 or any(ch not in "0123456789abcdef" for ch in head.lower()):
-        return None
-
-    root = Path(workspace)
-    h = hashlib.sha256()
-    h.update(b"HEAD\0" + head.encode("ascii") + b"\0STAGED\0" + staged + b"\0FILES\0")
-    for raw in sorted(path for path in raw_paths.split(b"\0") if path):
-        rel = Path(os.fsdecode(raw))
-        if rel.is_absolute() or ".." in rel.parts:
-            return None
-        path = root / rel
-        h.update(raw + b"\0")
-        try:
-            st = path.lstat()
-        except FileNotFoundError:
-            h.update(b"DELETED\0")
-            continue
-        h.update(f"MODE:{stat.S_IFMT(st.st_mode):o}:{stat.S_IMODE(st.st_mode):o}\0".encode("ascii"))
-        if stat.S_ISLNK(st.st_mode):
-            h.update(b"SYMLINK\0" + os.fsencode(os.readlink(path)) + b"\0")
-        elif stat.S_ISREG(st.st_mode):
-            h.update(b"FILE\0")
-            with path.open("rb") as handle:
-                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-                    h.update(chunk)
-            h.update(b"\0")
-        else:
-            return None
-    return head, h.hexdigest()
+# Jeden serializer także przy imporcie bez entrypointu pluginu.
+_workspace_content_state = _handoff.workspace_content_state
 
 
 def _command_from_args(args: Any) -> str:
@@ -270,44 +223,13 @@ def _expected_claude_tools(profile: str) -> str:
 
 
 def _parse_claude_argv(profile: str, command: str) -> dict[str, str] | None:
-    tokens = _shell_tokens(command)
-    if not tokens or tokens[0] != "claude" or _canonical_claude_identity() is None:
-        return None
-    values: dict[str, str] = {}
-    seen: set[str] = set()
-    index = 1
-    while index < len(tokens):
-        flag = tokens[index]
-        if not flag.startswith("-") or flag in FORBIDDEN_CLAUDE_FLAGS or flag not in VALUE_FLAGS or flag in seen:
-            return None
-        seen.add(flag)
-        if index + 1 >= len(tokens) or tokens[index + 1].startswith("-"):
-            return None
-        values[flag] = tokens[index + 1]
-        index += 2
-    prompt_flags = [flag for flag in ("-p", "--print") if flag in values]
-    if len(prompt_flags) != 1 or values.get("--model") != _claude_model(profile) or values.get("--output-format") != "json":
-        return None
-    if values.get("--allowedTools") != _expected_claude_tools(profile):
-        return None
-    prompt = values[prompt_flags[0]]
-    task_id, run_id, workspace = _task_id(), _run_id(), _workspace()
-    if task_id and task_id not in prompt:
-        return None
-    if run_id and run_id not in prompt:
-        return None
-    if workspace and workspace not in prompt:
-        return None
-    if "--max-turns" in values:
-        try:
-            turns = int(values["--max-turns"])
-        except ValueError:
-            return None
-        if not 1 <= turns <= 64:
-            return None
-    if "--effort" in values and values["--effort"] not in {"low", "medium", "high"}:
-        return None
-    return values
+    """Standalone import refuses every Claude command (G7, residual from review round 2).
+
+    The package ``__init__`` installs ``_hardened_parse_claude_argv`` (supervisor prefix, required flags, exact
+    task/run/workspace markers, permission mode). A standalone import of this module must never fall back to a
+    weaker parser, so without the package it accepts nothing.
+    """
+    return None
 
 
 def _claude_terminal_allowed(profile: str, command: str) -> bool:
@@ -434,21 +356,8 @@ def _terminal_result_output(result: str, expected_cwd: str) -> tuple[str, str] |
 def on_post_tool_call(tool_name: str = "", args: Any = None, result: str = "", task_id: str = "", **_: Any) -> None:
     profile = _profile()
     if profile == "coder-claude" and tool_name == "kanban_request_review":
-        tid = _task_id(task_id)
-        rid = _run_id()
-        key = _attestation_key(profile, tid, rid)
-        if key in _SEALED_CODER_RUNS or not _evidence_exists(profile, tid):
-            return None
-        try:
-            _handoff.create_handoff_seal(result, content_state=_workspace_content_state)
-        except Exception:
-            return None
-        _SEALED_CODER_RUNS.add(key)
-        _PENDING_ATTESTATIONS.pop(key, None)
-        _COMPLETED_ATTESTATIONS.pop(key, None)
-        # Dokładny opt-out Hermes 0.20.4 jest tylko dodatkową ochroną;
-        # autorytatywna bramka stanu poniżej pozostaje właściwym zabezpieczeniem.
-        os.environ["HERMES_KANBAN_STOP_NUDGE"] = "0"
+        # Autorytatywna publikacja odbywa się w profilowym adapterze transakcji.
+        # Sam post-hook ani podany mu JSON nie mogą utworzyć pieczęci.
         return None
     if profile not in CLAUDE_PROFILES or tool_name != "terminal":
         return None
@@ -546,7 +455,7 @@ def on_pre_tool_call(tool_name: str = "", args: Any = None, task_id: str = "", *
         if tool_name not in CLAUDE_ALLOWED_TOOLS[profile]:
             return _block(f"{profile} tool refused: Claude-backed profile capability boundary")
         tid = _task_id(task_id)
-        if profile == "coder-claude" and tool_name not in {"read_file", "search_files", "skill", "kanban_show"}:
+        if profile == "coder-claude" and tool_name not in {"read_file", "search_files", "kanban_show"}:
             if _attestation_key(profile, tid, _run_id()) in _SEALED_CODER_RUNS:
                 return _block("coder-claude mutation refused: review handoff sealed this process")
             if not _active_coder_run_matches():
@@ -562,8 +471,10 @@ def on_pre_tool_call(tool_name: str = "", args: Any = None, task_id: str = "", *
             if not _start_attestation(profile, context, tid):
                 return _block(f"{profile} Claude attestation could not be initialized")
             return None
-        if profile == "coder-claude" and tool_name == "kanban_request_review" and not _evidence_exists(profile, tid):
-            return _block("coder-claude review request requires successful in-process attested Claude Code evidence")
+        if profile == "coder-claude" and tool_name == "kanban_request_review":
+            if not _evidence_exists(profile, tid):
+                return _block("coder-claude review request requires successful in-process attested Claude Code evidence")
+            _review_intent.prepare(args, sys.modules[__name__])
         if profile in {"reviewer-claude", "architect-claude-opus"} and tool_name == "kanban_complete" and not _evidence_exists(profile, tid):
             return _block(f"{profile} completion requires successful in-process attested Claude Code evidence")
         return None

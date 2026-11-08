@@ -1,9 +1,10 @@
 name: factory-execution-guards
-version: 0.12.0
-description: Ptrace/pidfd-contained Claude execution, exact profile tool surfaces, board-bound handoff, and atomic approval.
+version: 0.13.0
+description: Mandatory worker lifetime, transactional schema-3 handoff, exact capabilities, and ptrace/pidfd containment.
 entrypoint: __init__:register
 provides_tools:
   - factory_review_approve
+  - kanban_request_review
 provides_hooks:
   - pre_tool_call
   - post_tool_call

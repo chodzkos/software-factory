@@ -194,7 +194,10 @@ class ActualCapabilitySurfaceTests(unittest.TestCase):
                     config_path.write_text(json.dumps(config), encoding="utf-8")
                 elif case == "wrong_version":
                     manifest = guard / "plugin.yaml"
-                    manifest.write_text(manifest.read_text(encoding="utf-8").replace("0.12.0", "9.9.9"), encoding="utf-8")
+                    before = manifest.read_text(encoding="utf-8")
+                    changed = before.replace("version: 0.13.0", "version: 9.9.9", 1)
+                    self.assertNotEqual(changed, before)
+                    manifest.write_text(changed, encoding="utf-8")
                 elif case == "import_failure":
                     (guard / "__init__.py").write_text("raise RuntimeError('synthetic import failure')\n", encoding="utf-8")
                 else:

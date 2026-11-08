@@ -26,19 +26,22 @@ EXPECTED_RELEASE_TOOLSETS = frozenset({
 })
 EXPECTED_PLUGIN_SHA256 = {
     "factory-execution-guards": {
-        "plugin.yaml": "863f0c077f00a82e0c531405f6fe66c4aee5629b175507fe60b560475ff535ef",
-        "__init__.py": "cbd3f60302e6ac1cac0122ea5e8a73aa3c89ef3125c006f5a41e87a8a524852f",
-        "guard.py": "f3a8b0f6619b8fd31a68cf7593571df8f2203710d7379e1a5de39186f05fe52c",
-        "handoff.py": "f90ab41c0527276294bb8cf3a6846cbddae6a05b6fc643ab583461753b3e3863",
-        "supervisor.py": "3c3de6531fc9007cad95dc734eddcde1f7cf6cd6b202fce0a03bdb02469928ed",
+        "__init__.py": "c595c6b4f21bbec8b01289a93c4a3e6f12b270a7c28fc950f47f4ca1bf51f5a2",
+        "guard.py": "20f3631f01d5fb0e2f933e9569a49253f7748b9092e4252d69a2ece127060197",
+        "handoff.py": "b0d65969f0c502139fe4d8c3fbec9121d73caedd39ed5805679ef9074a65ea93",
+        "plugin.yaml": "49525d9203b2793ddf920932304ae56524ea8dddf0943e919436864de5bd16eb",
+        "review_intent.py": "c53e8bb17c7e2ace531b52f14311ae4000ef5d04db3cc529c0bd65bda47a9287",
+        "review_registration.py": "3edb0fc832a1928a5f882e19c3be489723bf5fc2a901b993c99a0e4bee2b568a",
+        "review_transaction.py": "9749e781670f9ff9aa9423d193da1be15f132dac4c6d74d3b531b7850800276e",
+        "supervisor.py": "3c3de6531fc9007cad95dc734eddcde1f7cf6cd6b202fce0a03bdb02469928ed"
     },
     "factory-repository-readonly": {
         "plugin.yaml": "b82696753bc88c1bad7eec5266a3b3d4f37152aa703b7fb850b1c08909b1c337",
         "__init__.py": "45985ac4faa072055a4e03d0ae005bd479fca55a3046de23a399067e7545af71",
         "repo_map.py": "88b7d66c33ce8fb8b80e7e8e6bbf47462abda27246386bc9767ee4d62a74ef3c",
         "repository_tools.py": "a93794aa9aeb8496ce46537a7907d9b66473ea2961efc49f3cac904502d61a80",
-        "kanban_guard.py": "f38cb4038757c822eb18ec03faf0b22d8a5ae9f7fb9346410f0433650000b93d",
-    },
+        "kanban_guard.py": "f38cb4038757c822eb18ec03faf0b22d8a5ae9f7fb9346410f0433650000b93d"
+    }
 }
 
 

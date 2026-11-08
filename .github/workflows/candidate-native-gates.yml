@@ -1,0 +1,82 @@
+name: Candidate native gates (not deployment)
+
+on:
+  pull_request:
+  push:
+    branches: [main, feat/model-routing-claude-cross-vendor]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native-gates:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.11']
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          path: sf
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Checkout pinned native dependency
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: NousResearch/hermes-agent
+          ref: 0a0497060ad4bf1ccd7f6846b0c4d4b03f8476f1
+          path: native
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Set up pinned uv
+        uses: astral-sh/setup-uv@6b9c6063abd6010835644d4c2e1bef4cf5cd0fca
+        with:
+          version: '0.10.0'
+          enable-cache: false
+      - name: Apply candidate only inside ephemeral checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C native rev-parse HEAD)" = 0a0497060ad4bf1ccd7f6846b0c4d4b03f8476f1
+          python -B sf/hermes/ci/verify_native_overlay.py --native-root "$PWD/native" --manifest "$PWD/sf/hermes/native_integration/native_overlay.json" --patch "$PWD/sf/hermes/native_integration/native_runtime.patch" --phase before
+          git -C native apply --check ../sf/hermes/native_integration/native_runtime.patch
+          git -C native apply ../sf/hermes/native_integration/native_runtime.patch
+          python -B sf/hermes/ci/verify_native_overlay.py --native-root "$PWD/native" --manifest "$PWD/sf/hermes/native_integration/native_overlay.json" --patch "$PWD/sf/hermes/native_integration/native_runtime.patch" --phase after
+          cmp sf/hermes/native_integration/factory_worker_start.py native/factory_worker_start.py
+          cmp sf/hermes/native_integration/factory_worker_lifetime.py native/factory_worker_lifetime.py
+          cmp sf/hermes/native_integration/factory_model_boundary.py native/factory_model_boundary.py
+          cmp sf/hermes/native_integration/factory_profile_start.py native/factory_profile_start.py
+      - name: Install hashed runtime and test locks (no owner credentials)
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The overlay pyproject overrides vulnerable pins (G6), so the native uv.lock no longer matches it.
+          # The reviewed hashed locks (G5) are the only dependency source; the runtime itself is installed editable.
+          uv venv native/.venv --python "$(command -v python)"
+          uv pip install --python native/.venv/bin/python --require-hashes --no-deps -r sf/hermes/native_integration/runtime.lock.txt -r sf/hermes/native_integration/test.lock.txt
+          uv pip install --python native/.venv/bin/python --no-deps --build-constraints sf/hermes/native_integration/build.lock.txt -e native
+      - name: Run all declared offline collections separately
+        shell: bash
+        run: |
+          set -euo pipefail
+          native/.venv/bin/python -B sf/hermes/ci/run_gates.py \
+            --native-root "$PWD/native" --python "$PWD/native/.venv/bin/python" \
+            --output "$PWD/sf/.factory-local/results/ci-py${{ matrix.python }}"
+      - name: Preserve small logs and machine results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: candidate-gates-py${{ matrix.python }}
+          path: |
+            sf/.factory-local/results/ci-py${{ matrix.python }}/*.log
+            sf/.factory-local/results/ci-py${{ matrix.python }}/*.json
+            sf/.factory-local/results/ci-py${{ matrix.python }}/*.xml
+          if-no-files-found: error
+          retention-days: 7

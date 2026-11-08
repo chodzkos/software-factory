@@ -12,6 +12,9 @@ RUNTIME_WRAPPER="${ROOT_DIR}/hermes/kanban_runtime_cli.sh"
 REVIEW_DISPATCHER="${ROOT_DIR}/hermes/kanban_review_dispatch.py"
 HANDOFF="${ROOT_DIR}/hermes/plugins/factory-execution-guards/handoff.py"
 SUPERVISOR="${ROOT_DIR}/hermes/plugins/factory-execution-guards/supervisor.py"
+REVIEW_TRANSACTION="${ROOT_DIR}/hermes/plugins/factory-execution-guards/review_transaction.py"
+REVIEW_REGISTRATION="${ROOT_DIR}/hermes/plugins/factory-execution-guards/review_registration.py"
+REVIEW_INTENT="${ROOT_DIR}/hermes/plugins/factory-execution-guards/review_intent.py"
 REVIEWER_CAPABILITY_VERIFY="${ROOT_DIR}/hermes/verify_reviewer_capabilities.py"
 RELEASE_CAPABILITY_VERIFY="${ROOT_DIR}/hermes/verify_release_manager_capabilities.py"
 PROFILE_CAPABILITY_VERIFY="${ROOT_DIR}/hermes/verify_profile_capabilities.py"
@@ -125,22 +128,26 @@ import json, pathlib, sys
 path=pathlib.Path(sys.argv[1]); data=json.loads(path.read_text())
 plugin=data["plugins"]["factory-execution-guards"]
 expected={
-    "plugin.yaml":"05e233f3d5e081dfc7fded1a4f368f3fe4c206e9",
-    "__init__.py":"d2b85fb117b30e05c1f0a4dae390af3190a9c0bd",
-    "guard.py":"46c5c0082a41ac11c9648efc8a6a12c3de8157a2",
-    "handoff.py":"be5a17896c5c08f0a6f7b890cd11f69a15276272",
-    "supervisor.py":"b479e4c10ff38fc62764326bbfb49ff2426babca",
+    "__init__.py": "24920c70b2c1795027327cf17b4fdb3fa20ef8ce",
+    "guard.py": "81a27f0e176e6d26779ee2452561e4b6ada10fca",
+    "handoff.py": "0d209311d7c432fa261649614d97db924ddfd12c",
+    "plugin.yaml": "3c7ae8393a21bca6fc8065152af290b1a1115fa8",
+    "review_intent.py": "da2c4ed23d2188eccd1f1745a436ed098129888e",
+    "review_registration.py": "be50e29c963c48376a9c43f0f55ec15bfe829ab1",
+    "review_transaction.py": "a17b2805304efdb1aaae06aa8b9b039891622f2f",
+    "supervisor.py": "b479e4c10ff38fc62764326bbfb49ff2426babca"
 }
 predecessor={
-    "plugin.yaml":"74bb36d6bb9b63a6453d2c42544586b84a8e165d",
-    "__init__.py":"afdeed78fdb539c0a11498a4a3f8844d55d2a980",
-    "guard.py":"46c5c0082a41ac11c9648efc8a6a12c3de8157a2",
-    "handoff.py":"be5a17896c5c08f0a6f7b890cd11f69a15276272",
-    "supervisor.py":"b0da39ae49d9aca0ed9a816a2a7d15ca9ad8c934",
+    "plugin.yaml": "05e233f3d5e081dfc7fded1a4f368f3fe4c206e9",
+    "__init__.py": "d2b85fb117b30e05c1f0a4dae390af3190a9c0bd",
+    "guard.py": "46c5c0082a41ac11c9648efc8a6a12c3de8157a2",
+    "handoff.py": "be5a17896c5c08f0a6f7b890cd11f69a15276272",
+    "supervisor.py": "b479e4c10ff38fc62764326bbfb49ff2426babca"
 }
-if plugin.get("files") != expected: raise SystemExit("ERROR: v0.12.0 current execution-guard pins mismatch")
+if plugin.get("files") != expected: raise SystemExit("ERROR: v0.13.0 current execution-guard pins mismatch")
+if plugin.get("installable") is not True or plugin.get("activation_status") != "staging" or plugin.get("install_scope") != "factory-home-only": raise SystemExit("ERROR: execution guard must be staging with factory-home-only scope")
 replace=plugin.get("replace_from") or []
-if not replace or replace[0] != predecessor: raise SystemExit("ERROR: v0.11.0 is not the immediate reviewed predecessor")
+if not replace or replace[0] != predecessor: raise SystemExit("ERROR: v0.12.0 is not the immediate reviewed predecessor")
 PY
 
 printf '[check] legacy Ox inference kill switch and inherited config cleanup\n'
@@ -165,8 +172,8 @@ grep -Fq 'validate-routing-live' "${GUARD_ENTRY}"
 grep -Fq '"dispatch-review"' "${GUARD_ENTRY}"
 if grep -Fq '"validate-handoff"' "${GUARD_ENTRY}"; then echo 'ERROR: legacy handoff remains in effective runtime allowlist' >&2; exit 1; fi
 
-printf '[check] sealed Claude execution/evidence boundary v0.12.0\n'
-grep -Fq 'version: 0.12.0' "${GUARD_MANIFEST}"
+printf '[check] sealed Claude execution/evidence boundary v0.13.0\n'
+grep -Fq 'version: 0.13.0' "${GUARD_MANIFEST}"
 grep -Fq '_CODER_READ_TOOLS = "Read,Glob,Grep"' "${GUARD_ENTRY}"
 grep -Fq '_SAFE_WORKSPACE_RE' "${GUARD_ENTRY}"
 grep -Fq 'workspace contains characters unsafe for Claude permission grammar' "${GUARD_ENTRY}"
@@ -182,10 +189,14 @@ if grep -Fq 'ls-files", "-c", "-o", "--exclude-standard"' "${HANDOFF}"; then ech
 grep -Fq 'software-factory-content-state-v2' "${HANDOFF}"
 grep -Fq 'def _frame' "${HANDOFF}"
 grep -Fq '_frame(digest, b"entry-sha256", item)' "${HANDOFF}"
-grep -Fq 'def _sanitized_git_env' "${GUARD_ENTRY}"
-grep -Fq 'env=_sanitized_git_env()' "${GUARD_ENTRY}"
-grep -Fq 'shutil.which("git", path=os.defpath)' "${GUARD_ENTRY}"
-grep -Fq 'os.O_NOFOLLOW' "${GUARD_ENTRY}"
+# Sprawdzaj jedyny wykonywany serializer, nie usuniętą martwą kopię entrypointu.
+grep -Fq 'env={"PATH": os.defpath, "HOME": "/nonexistent", "LANG": "C", "LC_ALL": "C",' "${HANDOFF}"
+grep -Fq '"XDG_CONFIG_HOME": "/nonexistent", "GIT_CONFIG_NOSYSTEM": "1",' "${HANDOFF}"
+grep -Fq '"GIT_CONFIG_GLOBAL": os.devnull, "GIT_TERMINAL_PROMPT": "0",' "${HANDOFF}"
+grep -Fq '_workspace_content_state = _handoff.workspace_content_state' "${GUARD}"
+if grep -Eq '^def _workspace_content_state\(' "${GUARD}" || grep -Eq '^def _hardened_workspace_content_state\(' "${GUARD_ENTRY}"; then
+  echo 'ERROR: duplicate/fallback workspace serializer reintroduced' >&2; exit 1
+fi
 grep -Fq '_guard._workspace_content_state = _handoff.workspace_content_state' "${GUARD_ENTRY}"
 grep -Fq 'shutil.which("git", path=os.defpath)' "${HANDOFF}"
 grep -Fq 'getattr(os, "O_NOFOLLOW", 0)' "${HANDOFF}"
@@ -193,7 +204,7 @@ grep -Fq '_guard._parse_claude_argv = _hardened_parse_claude_argv' "${GUARD_ENTR
 grep -Fq '_PENDING_ATTESTATIONS' "${GUARD}"
 grep -Fq '_COMPLETED_ATTESTATIONS' "${GUARD}"
 grep -Fq 'EVIDENCE_SCHEMA = 6' "${GUARD}"
-grep -Fq 'HANDOFF_SCHEMA = 2' "${HANDOFF}"
+grep -Fq 'HANDOFF_SCHEMA = 3' "${HANDOFF}"
 grep -Fq 'EXECUTION_EVIDENCE_SCHEMA = 6' "${HANDOFF}"
 grep -Fq 'factory_review_approve' "${GUARD_ENTRY}"
 grep -Fq 'def guarded_reviewer_complete' "${HANDOFF}"
@@ -206,7 +217,17 @@ grep -Fq '_PR_SET_SECCOMP' "${SUPERVISOR}"
 grep -Fq '_SECCOMP_RET_ERRNO | errno.ENOSYS' "${SUPERVISOR}"
 grep -Fq 'preexec_fn=_trace_me_before_exec' "${SUPERVISOR}"
 if grep -Fq 'start_new_session=True' "${SUPERVISOR}"; then echo 'ERROR: Claude must remain in outer Hermes process group' >&2; exit 1; fi
-grep -Fq 'HERMES_KANBAN_STOP_NUDGE' "${GUARD}"
+grep -Fq 'HERMES_KANBAN_STOP_NUDGE' "${REVIEW_TRANSACTION}"
+grep -Fq 'BEGIN IMMEDIATE' "${REVIEW_TRANSACTION}"
+grep -Fq 'review_operation' "${REVIEW_TRANSACTION}"
+grep -Fq 'commit_review' "${REVIEW_TRANSACTION}"
+grep -Fq 'append_handoff_receipt' "${REVIEW_TRANSACTION}"
+grep -Fq 'factory_handoff_committed' "${HANDOFF}"
+grep -Fq 'def verify_handoff_receipt' "${HANDOFF}"
+grep -Fq 'verify_handoff_receipt(value)' "${HANDOFF}"
+grep -Fq '_review_transaction.register(ctx, _guard)' "${GUARD_ENTRY}"
+grep -Fq 'kanban_request_review' "${REVIEW_REGISTRATION}"
+grep -Fq 'def take(' "${REVIEW_INTENT}"
 grep -Fq 'factory_handoff_seal.py' "${RUNTIME_BOOTSTRAP}"
 grep -Fq 'TERMINAL_ARGS_DOMAIN = "software-factory-claude-terminal-args-v1"' "${GUARD}"
 grep -Fq 'CLAUDE_TERMINAL_ARG_KEYS = frozenset({"command", "workdir", "timeout"})' "${GUARD}"
@@ -245,4 +266,4 @@ printf '[check] guard adversarial unit tests\n'
 (cd "${ROOT_DIR}" && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -q hermes.test_nudge01_handoff hermes.test_factory_execution_guards hermes.test_factory_execution_guard_profile_resolution hermes.test_factory_execution_guard_terminal_args hermes.test_execution_guard_version_consistency hermes.test_targeted_review_dispatch_guard)
 
 if command -v shellcheck >/dev/null 2>&1; then shellcheck --severity=warning "${BOOTSTRAP}" "${RUNTIME_BOOTSTRAP}" "${PLUGIN_INSTALLER}" "${ANALYST_BOOTSTRAP}" "${ANALYST_VERIFY}" "${RUNTIME_WRAPPER}" "$0"; else echo '[info] shellcheck nie jest zainstalowany; pomijam'; fi
-printf 'OK: statyczna weryfikacja bootstrapu, exact profile confinement i sealed execution guards v0.12.0 zakończona\n'
+printf 'OK: statyczna weryfikacja bootstrapu, exact profile confinement i sealed execution guards v0.13.0 zakończona\n'

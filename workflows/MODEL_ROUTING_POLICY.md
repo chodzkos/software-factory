@@ -1,5 +1,7 @@
 # Software Factory Model Routing Policy v1
 
+> **Kandydat źródłowy 0.13.0 — stopień STAGING.** Opis profilu poniżej jest docelowy, nie potwierdza aktywacji na serwerze. Manifest guards: `activation_status=staging`, `install_scope=factory-home-only` — instalacja wyłącznie do oznaczonego, prywatnego `FACTORY_HOME` (nigdy do `~/.hermes` konta logowania). Status produkcyjny `reviewed-ready` wymaga dalszych bramek (hosted CI, ścieżki live, systemd) i recenzji.
+
 This policy supplements `standards/SOFTWARE_DEVELOPMENT_STANDARD.md` and `workflows/KANBAN_CONTRACT.md`. The Standard remains authoritative.
 
 ## 1. Active implementation backends
@@ -93,13 +95,13 @@ Routed handoff requires:
 - latest `review_requested` with matching profiles and mandatory true integer `run_id` (JSON booleans rejected),
 - latest implementer run with `outcome=review_requested` and identical true integer run ID,
 - mandatory run metadata containing exact `task_id` and exact resolved workspace.
-- for `coder-claude`, one strict board-bound handoff schema v2 record binding the exact HEAD/content, execution evidence schema v6, native event, and PID/start identity, with the supervised implementer process tree proven exited.
+- for `coder-claude`, one strict board-bound handoff schema v3 record binding the exact HEAD/content, execution evidence schema v6, native event, and PID/start identity, with the supervised implementer process tree proven exited.
 
 The targeted dispatcher does not trust a previous text result. It re-fetches live state, re-runs routed-handoff validation, requires `review_dispatch=false`, and rechecks task/provenance plus sealed content/process identity under the final writer lock, after the native savepoint claim, and immediately before spawn. The reviewer run metadata binds the handoff schema, seal ID, content digest, and implementer run. Pre-commit drift rolls back; post-commit drift records a spawn failure and launches no reviewer. The helper is pinned to Hermes 0.20.4 and fails closed if primitives drift or disappear. Board-global review dispatch is not exposed.
 
 ## 7. Claude Code mechanical execution boundary
 
-Software Factory profiles use profile-scoped `factory-execution-guards` v0.12.0. Version 0.12.0 preserves the reviewed v0.11.0 execution evidence schema v6 and handoff schema v2, while adding ptrace/pidfd process containment, exact reviewer/release surfaces, fail-closed startup checks, and an explicit human final-merge boundary,
+Software Factory profiles use profile-scoped `factory-execution-guards` v0.13.0. Version 0.13.0 preserves the reviewed v0.11.0 execution evidence schema v6 and handoff schema v3, while adding ptrace/pidfd process containment, exact reviewer/release surfaces, fail-closed startup checks, and an explicit human final-merge boundary,
 
 Outer GPT terminal access is **Claude-only**: no `find`, Git, Python, grep or other helper executable is permitted. Direct file/code mutation tools are blocked.
 
@@ -158,7 +160,7 @@ A durable JSON file alone cannot unlock lifecycle. `kanban_request_review` / Cla
 
 Before every mutation-capable `coder-claude` tool call, the guard independently reads the board selected by the worker environment and requires the exact task/run/workspace to remain active (`running`, assignee/current run exact, no end/outcome, matching metadata). A second terminal call after review handoff is therefore blocked before process launch, new attestation, or evidence replacement.
 
-Only a strict successful native request-review result plus matching durable board/task/run/event and unchanged board-scoped schema-6 evidence creates the separate handoff schema v2 record. It is published atomically without following symlinks and binds task/run/profiles/workspace, HEAD/content, evidence file hash, attestation/command/terminal identities, native event, PID, and Linux process-start token. The in-process seal clears prior authorization; `HERMES_KANBAN_STOP_NUDGE=0` suppresses generic Hermes 0.20.4 nudges only as defense in depth.
+The registered `kanban_request_review` adapter requires a genuinely admitted native operation and consumes its one-use intent under `BEGIN IMMEDIATE`. It invokes native SQL in that transaction, validates the strict result and board/task/run/event/evidence state, atomically publishes a no-follow handoff schema v3 record with a unique `transaction_id`, and appends `factory_handoff_committed` before the same COMMIT. Every seal consumer independently requires a matching committed receipt. A result string or optional post-hook cannot publish or authorize a handoff. The seal binds task/run/profiles/workspace, HEAD/content, evidence hash, attestation/command/terminal identities, native event, PID and Linux start token. A failed or unconfirmed COMMIT is not assumed to have had no effects. `HERMES_KANBAN_STOP_NUDGE=0` is defense in depth after success, not authority by itself.
 
 Routed validation and dispatch require the explicit canonical board, that exact implementer process tree to have exited, no live mutation lease, and all sealed bytes to remain unchanged. Before reviewer claim or any model turn, an isolated Hermes 0.20.4 `model_tools.get_tool_definitions` probe verifies installed plugin bytes, scoped override opt-in, profile config, workspace binding, and exact equality with `factory_repo_map`, `factory_repo_read`, `factory_repo_search`, `kanban_show`, `kanban_request_changes`, and `factory_review_approve`. Missing/disabled/tampered/import-failed registration or any extra current/future tool blocks startup. The pre-tool allowlist remains defense in depth.
 
@@ -193,3 +195,11 @@ Canonical `bootstrap_profiles.sh` ends by running `bootstrap_repository_analyst_
 ## 12. Legacy Ox
 
 A pre-existing `auditor-ox` directory may remain as historical local state, but bootstrap sets both `model.provider` and `model.default` to `disabled-legacy`, sets backend `disabled-legacy`, clears `fallback_providers`/toolsets and disables tool discovery. It also physically removes legacy `fallback_model`, inherited MCP servers and old API-server override keys. `auditor-ox` is absent from active skill manifests/routing.
+
+## Obowiązkowa transakcja i lifetime kandydata 0.13.0
+
+Pre-hook zapisuje tylko jednorazowy zamiar. Sam post-hook ani poprawnie wyglądający wynik nie tworzą pieczęci. Adapter `kanban_request_review` wymaga dopuszczonej operacji natywnego agenta; pod `BEGIN IMMEDIATE` ponownie sprawdza właściciela, wykonuje natywny SQL, wiąże schema 3 z `transaction_id` i zapisuje `factory_handoff_committed`. Każdy odczyt pieczęci wymaga zgodnego, zatwierdzonego receipt z osobnego połączenia. Schema 2 nie jest akceptowana.
+
+Timeout, przerwanie i close trwale odwołują konkretnego workera. Krótka wspólna blokada porządkuje odwołanie z dopuszczeniem handlera i końcowym COMMIT. Odwołanie wygrywające przed COMMIT wymaga rollbacku; COMMIT wygrywający wcześniej może pozostawić trwałe dane. Rozpoczęty handler lub żądanie nie jest ogólnie anulowane, a wynik niepewny nie uprawnia do automatycznego ponowienia. Blokada nie obejmuje całego executora ani sieci.
+
+Dokładne źródła natywne i pluginu stanowią jeden kandydat. Zgodne sumy kontrolne nie oznaczają niezależnej recenzji, zgody na instalację ani kompletnego dowodu ścieżek transportu, CLI czy cache-safe importu.

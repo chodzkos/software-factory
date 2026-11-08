@@ -1,16 +1,14 @@
 """Software Factory execution boundary guards for privileged profiles."""
 from __future__ import annotations
 
-import hashlib
 import os
 import re
-import shutil
-import stat
-import subprocess
 from pathlib import Path
 
 from . import guard as _guard
 from . import handoff as _handoff
+from . import review_intent as _review_intent
+from . import review_transaction as _review_transaction
 
 _PROTECTED_PROFILES = frozenset({
     "runtime-controller",
@@ -55,7 +53,6 @@ _RUNTIME_OPS = frozenset({
 # filesystem path interpolated into that grammar must use a deliberately small
 # portable alphabet rather than attempting ad-hoc escaping.
 _SAFE_WORKSPACE_RE = re.compile(r"^/(?:[A-Za-z0-9._@%+=:-]+/)*[A-Za-z0-9._@%+=:-]+$")
-_CONTENT_STATE_DOMAIN = b"software-factory-content-state-v2"
 
 # Keep the underlying guard's constants synchronized with the hardened entrypoint.
 _guard.RUNTIME_OPS = _RUNTIME_OPS
@@ -144,189 +141,6 @@ def _runtime_terminal_allowed(command: str) -> bool:
     if op == "show":
         return len(args) in {3, 4} and bool(args[2]) and not args[2].startswith("-") and (len(args) == 3 or args[3] == "--json")
     return bool(args)
-
-
-def _trusted_git_binary() -> str | None:
-    """Resolve Git from the platform default PATH, never the worker's PATH."""
-    located = shutil.which("git", path=os.defpath)
-    if not located:
-        return None
-    try:
-        resolved = Path(located).resolve(strict=True)
-    except OSError:
-        return None
-    if not resolved.is_file() or not os.access(resolved, os.X_OK):
-        return None
-    return str(resolved)
-
-
-def _sanitized_git_env() -> dict[str, str]:
-    """Return a minimal environment that cannot redirect Git to another repo."""
-    return {
-        "PATH": os.defpath,
-        "HOME": "/nonexistent",
-        "LANG": "C",
-        "LC_ALL": "C",
-        "XDG_CONFIG_HOME": "/nonexistent",
-        "GIT_CONFIG_NOSYSTEM": "1",
-        "GIT_CONFIG_GLOBAL": os.devnull,
-        "GIT_TERMINAL_PROMPT": "0",
-        "GIT_OPTIONAL_LOCKS": "0",
-    }
-
-
-def _run_git(workspace: str, args: list[str], *, text: bool = False) -> str | bytes:
-    git = _trusted_git_binary()
-    if git is None:
-        raise OSError("trusted git executable unavailable")
-    return subprocess.run(
-        [
-            git,
-            "-c", "core.fsmonitor=false",
-            "-c", "core.hooksPath=/dev/null",
-            "-c", "diff.external=",
-            "-c", "core.attributesfile=/dev/null",
-            "-C", workspace,
-            *args,
-        ],
-        check=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-        text=text,
-        timeout=20,
-        env=_sanitized_git_env(),
-        close_fds=True,
-    ).stdout
-
-
-def _frame(hasher: "hashlib._Hash", tag: bytes, payload: bytes) -> None:
-    """Append one unambiguously length-framed typed value."""
-    if len(tag) > 0xFFFF or len(payload) > 0xFFFFFFFFFFFFFFFF:
-        raise ValueError("content-state frame too large")
-    hasher.update(len(tag).to_bytes(2, "big"))
-    hasher.update(tag)
-    hasher.update(len(payload).to_bytes(8, "big"))
-    hasher.update(payload)
-
-
-def _stat_identity(st: os.stat_result) -> tuple[int, int, int, int, int, int]:
-    return (
-        int(st.st_dev),
-        int(st.st_ino),
-        int(st.st_mode),
-        int(st.st_size),
-        int(st.st_mtime_ns),
-        int(st.st_ctime_ns),
-    )
-
-
-def _regular_file_payload(path: Path, expected: os.stat_result) -> bytes | None:
-    """Hash a regular file through a no-follow descriptor and detect read races."""
-    flags = os.O_RDONLY
-    if hasattr(os, "O_CLOEXEC"):
-        flags |= os.O_CLOEXEC
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
-    try:
-        fd = os.open(path, flags)
-    except OSError:
-        return None
-    try:
-        before = os.fstat(fd)
-        if not stat.S_ISREG(before.st_mode) or _stat_identity(before) != _stat_identity(expected):
-            return None
-        digest = hashlib.sha256()
-        total = 0
-        while True:
-            chunk = os.read(fd, 1024 * 1024)
-            if not chunk:
-                break
-            digest.update(chunk)
-            total += len(chunk)
-        after = os.fstat(fd)
-        if _stat_identity(before) != _stat_identity(after) or total != int(after.st_size):
-            return None
-        return total.to_bytes(8, "big") + digest.digest()
-    finally:
-        os.close(fd)
-
-
-def _symlink_payload(path: Path, expected: os.stat_result) -> bytes | None:
-    try:
-        target = os.fsencode(os.readlink(path))
-        after = path.lstat()
-    except OSError:
-        return None
-    if _stat_identity(expected) != _stat_identity(after) or not stat.S_ISLNK(after.st_mode):
-        return None
-    return target
-
-
-def _content_record(root: Path, raw: bytes) -> bytes | None:
-    rel = Path(os.fsdecode(raw))
-    if rel.is_absolute() or ".." in rel.parts:
-        return None
-    path = root / rel
-    record = hashlib.sha256()
-    _frame(record, b"path", raw)
-    try:
-        st = path.lstat()
-    except FileNotFoundError:
-        _frame(record, b"type", b"deleted")
-        return record.digest()
-    except OSError:
-        return None
-
-    _frame(record, b"mode", int(st.st_mode).to_bytes(8, "big"))
-    if stat.S_ISLNK(st.st_mode):
-        payload = _symlink_payload(path, st)
-        if payload is None:
-            return None
-        _frame(record, b"type", b"symlink")
-        _frame(record, b"target", payload)
-    elif stat.S_ISREG(st.st_mode):
-        payload = _regular_file_payload(path, st)
-        if payload is None:
-            return None
-        _frame(record, b"type", b"file")
-        _frame(record, b"content-sha256", payload)
-    else:
-        return None
-    return record.digest()
-
-
-def _hardened_workspace_content_state(workspace: str) -> tuple[str, str] | None:
-    """Hash HEAD, index and all tracked/untracked paths with canonical framing."""
-    try:
-        root = Path(workspace).resolve(strict=True)
-        top_level = str(_run_git(str(root), ["rev-parse", "--show-toplevel"], text=True)).strip()
-        if str(Path(top_level).resolve(strict=True)) != str(root):
-            return None
-        head = str(_run_git(str(root), ["rev-parse", "HEAD"], text=True)).strip()
-        staged = bytes(_run_git(
-            str(root), ["diff", "--cached", "--binary", "--no-ext-diff", "--no-textconv", "HEAD", "--"]
-        ))
-        # Deliberately omit --exclude-standard: ignored untracked files are security-relevant
-        # workspace state too and must invalidate schema-6 evidence when they change.
-        raw_paths = bytes(_run_git(str(root), ["ls-files", "-c", "-o", "-z"]))
-    except (OSError, subprocess.SubprocessError):
-        return None
-    if len(head) != 40 or any(ch not in "0123456789abcdef" for ch in head.lower()):
-        return None
-
-    digest = hashlib.sha256()
-    try:
-        _frame(digest, b"domain", _CONTENT_STATE_DOMAIN)
-        _frame(digest, b"head", head.encode("ascii"))
-        _frame(digest, b"staged", staged)
-        for raw in sorted(path for path in raw_paths.split(b"\0") if path):
-            record = _content_record(root, raw)
-            if record is None:
-                return None
-            _frame(digest, b"entry-sha256", record)
-    except (OSError, ValueError):
-        return None
-    return head, digest.hexdigest()
 
 
 def _exact_marker(prompt: str, name: str, value: str) -> bool:
@@ -442,6 +256,7 @@ _guard._runtime_terminal_allowed = _runtime_terminal_allowed
 
 
 def on_pre_tool_call(*args, **kwargs):
+    _review_intent.invalidate()
     _activate_profile_identity()
     tool_name = kwargs.get("tool_name", args[0] if args else "")
     tool_args = kwargs.get("args", args[1] if len(args) > 1 else None)
@@ -529,6 +344,7 @@ def register(ctx) -> None:
     _activate_profile_identity()
     profile = os.environ.get("HERMES_PROFILE", "").strip()
     _install_scoped_kanban_filters(ctx, profile)
+    _review_transaction.register(ctx, _guard)
     register_tool = getattr(ctx, "register_tool", None)
     if not callable(register_tool):
         raise RuntimeError("Hermes plugin tool registration unavailable")

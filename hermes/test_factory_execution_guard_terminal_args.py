@@ -8,6 +8,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+from hermes.tests_support.native_review_fixture import NativeReviewDatabase
 
 
 PACKAGE_DIR = Path(__file__).parent / "plugins" / "factory-execution-guards"
@@ -34,13 +35,18 @@ class TerminalArgsExecutionGuardTests(unittest.TestCase):
         GUARD._SEALED_CODER_RUNS.clear()
         self.tempdir = tempfile.TemporaryDirectory()
         self.root = Path(self.tempdir.name)
-        self.workspace = (self.root / "workspace").resolve()
-        self.workspace.mkdir()
+        self.db = NativeReviewDatabase(self.root, task_id="t_guard", run_id=77)
+        self.db.bind_unit_guard(PLUGIN)
+        self.workspace = self.db.workspace
+        self.state_patch = patch.dict(globals(), CONTENT_STATE=PLUGIN._handoff.workspace_content_state(str(self.workspace)))
+        self.state_patch.start()
         self.alias = self.root / "workspace-alias"
         self.alias.symlink_to(self.workspace, target_is_directory=True)
         self.evidence = self.root / "evidence"
 
     def tearDown(self) -> None:
+        self.state_patch.stop()
+        self.db.close()
         self.tempdir.cleanup()
 
     def _env(self, profile: str) -> dict[str, str]:
@@ -134,7 +140,10 @@ class TerminalArgsExecutionGuardTests(unittest.TestCase):
         tool = "kanban_request_review" if profile == "coder-claude" else "kanban_complete"
         patches = self._patches()
         with patch.dict(os.environ, self._env(profile), clear=False), patches[0], patches[1], patches[2], patches[3], patches[4]:
-            return PLUGIN.on_pre_tool_call(tool_name=tool, args={"summary": "done"}, task_id="t_guard")
+            args = {"summary": "done"}
+            if profile == "coder-claude":
+                args.update(reviewer="reviewer-gpt", metadata=self.db.metadata)
+            return PLUGIN.on_pre_tool_call(tool_name=tool, args=args, task_id="t_guard")
 
     def test_all_claude_profiles_accept_exact_explicit_workdir(self):
         for profile in CLAUDE_PROFILES:

@@ -1,5 +1,7 @@
 # Hermes Software Factory
 
+> **Kandydat źródłowy 0.13.0 — stopień STAGING.** Opis profilu poniżej jest docelowy, nie potwierdza aktywacji na serwerze. Manifest guards: `activation_status=staging`, `install_scope=factory-home-only` — instalacja wyłącznie do oznaczonego, prywatnego `FACTORY_HOME` (nigdy do `~/.hermes` konta logowania). Status produkcyjny `reviewed-ready` wymaga dalszych bramek (hosted CI, ścieżki live, systemd) i recenzji.
+
 Ta sekcja opisuje konfigurację profili Hermesa dla Software Factory. Kanoniczne zasady pozostają w `standards/SOFTWARE_DEVELOPMENT_STANDARD.md`, `workflows/KANBAN_CONTRACT.md` i `workflows/MODEL_ROUTING_POLICY.md`.
 
 ## Polityka modeli
@@ -44,7 +46,7 @@ Reviewer set musi być dokładny. Security reviewer jest przypięty do OpenAI, `
 
 Profile Claude nie udają natywnego Anthropica w Hermesie. Outer Hermes koordynuje, ale właściwa praca musi przejść przez `claude-code`.
 
-`factory-execution-guards` v0.12.0 zachowuje v0.11.0 schema-6 terminal/cwd attestation i handoff schema v2, a dodatkowo wprowadza ptrace/pidfd containment, dokładne profile tool surfaces, fail-closed startup oraz jawną ludzką granicę finalnego merge z handoff schema v2:
+`factory-execution-guards` v0.13.0 zachowuje v0.11.0 schema-6 terminal/cwd attestation i handoff schema v3, a dodatkowo wprowadza ptrace/pidfd containment, dokładne profile tool surfaces, fail-closed startup oraz jawną ludzką granicę finalnego merge z handoff schema v3:
 
 - blokuje direct outer-GPT write/patch/code execution,
 - terminal `coder-claude` pozwala wyłącznie na przypięty supervisor z dokładnym board/task/run/workspace i literalnym wewnętrznym `claude`; żaden `find`, Git, Python, grep ani inny helper binary nie jest dopuszczony,
@@ -67,7 +69,7 @@ Profile Claude nie udają natywnego Anthropica w Hermesie. Outer Hermes koordynu
 - sam plik evidence nie odblokowuje lifecycle: wymagany jest też completed attestation nadal obecny w pamięci tego samego worker process,
 - przed każdą mutation-capable operacją `coder-claude` guard czyta aktywną bazę i wymaga dokładnego task/run/board/workspace, stanu `running`, assignee/current-run oraz aktywnego runu bez outcome/end; niepewność blokuje przed attestation i procesem,
 - Claude pozostaje w zewnętrznej grupie procesu Hermesa i od pierwszego exec jest objęty Linux ptrace fork/vfork/clone + `PTRACE_O_EXITKILL`; dziedziczony seccomp blokuje `CLONE_UNTRACED` i zwraca `ENOSYS` dla `clone3`, pidfds chronią przed PID reuse, a lease jest zwalniana dopiero po śmierci i reap wszystkich traced tasks; brak wymaganego backendu blokuje start,
-- po ścisłym sukcesie native `review_requested` oraz trwałym potwierdzeniu task/run/event powstaje dokładnie jedna atomowa, no-follow pieczęć handoff schema v2 wiążąca kanoniczny board, HEAD/content, board-scoped schema-6 evidence, attestation/command/terminal args, event i PID z Linux process-start tokenem,
+- adapter `kanban_request_review` wykonuje natywny SQL we wspólnej transakcji, publikuje no-follow pieczęć schema v3 z `transaction_id` i zapisuje `factory_handoff_committed`; dopiero COMMIT oraz zgodny receipt odczytany z osobnego połączenia autoryzują jej użycie; sam wynik lub post-hook nie publikują pieczęci,
 - skuteczny handoff zapisuje in-process seal, usuwa wcześniejszą autoryzację i ustawia `HERMES_KANBAN_STOP_NUDGE=0` wyłącznie jako defense in depth; aktywna bramka nadal mechanicznie blokuje drugi Claude call i inne mutacje,
 - routed validation oraz targeted dispatch wymagają niezmienionych sealed bytes i potwierdzonego wyjścia dokładnego implementer process; dispatch powtarza pomiar pod writer lockiem, po claimie i przed spawnem oraz wiąże reviewer run metadata z pieczęcią,
 - przed pierwszym turnem `reviewer-gpt` isolated Hermes 0.20.4 definition assembly musi zwrócić dokładnie sześć tools: trzy board-bound repository reads, `kanban_show`, `kanban_request_changes` i `factory_review_approve`; brak/tamper/import/registration failure pluginu lub ekstra tool blokuje start,
@@ -102,7 +104,7 @@ Validator odrzuca nieistniejący jawny board, następnie wykonuje `hermes kanban
 
 Software Factory wymusza `kanban.review_dispatch=false`. Każda operacja live wymaga jawnego kanonicznego boardu; ambient `kanban/current` nie wybiera bazy. Po native `review_requested` karta pozostaje w `review`, dopóki runtime-controller nie uzyska `MODEL_ROUTING_OK` i `RUNTIME_CONTRACT_OK`. Dopiero wtedy `dispatch-review --board <slug> --task-id <id>` ponownie weryfikuje live handoff i wymaga wyłączonego globalnego review auto-dispatchu.
 
-W v0.12.0 przed claimem exact capability verifier uruchamia rzeczywiste Hermes 0.20.4 `model_tools.get_tool_definitions`; finalny odczyt task/event/run oraz natywny `claim_review_task` nadal wykonują się pod jednym `BEGIN IMMEDIATE`, z ponowną walidacją board-bound handoff schema v2, content-state i implementer-process exit.
+W v0.13.0 przed claimem exact capability verifier uruchamia rzeczywiste Hermes 0.20.4 `model_tools.get_tool_definitions`; finalny odczyt task/event/run oraz natywny `claim_review_task` nadal wykonują się pod jednym `BEGIN IMMEDIATE`, z ponowną walidacją board-bound handoff schema v3, content-state i implementer-process exit.
 
 ## Finalna granica merge
 
@@ -112,7 +114,7 @@ Wrapper wyprowadza dokładny Hermes-managed Python ze zweryfikowanego launchera,
 
 Targeted helper jest jawnie przypięty do Hermesa 0.20.4; brak oczekiwanych private primitives albo inna wersja kończy się fail-closed. Review worker zachowuje dokładnie ten sam worktree i otrzymuje `sdlc-review` tak jak natywny review lane Hermesa.
 
-Routed handoff wiąże jawny board oraz live body z assignee/event/run/worktree i handoff schema v2. `WORKSPACE: worktree:<base-repo>` z body musi odpowiadać istniejącemu, kanonicznemu i niesymlinkowanemu live `<base-repo>/.worktrees/<task-id>`, run IDs muszą być prawdziwymi integerami (nie JSON bool), implementer-run metadata musi zawierać exact `task_id` i exact resolved workspace, sealed content/evidence musi nadal pasować, a exact PID/process-start implementera musi już nie być aktywny.
+Routed handoff wiąże jawny board oraz live body z assignee/event/run/worktree i handoff schema v3. `WORKSPACE: worktree:<base-repo>` z body musi odpowiadać istniejącemu, kanonicznemu i niesymlinkowanemu live `<base-repo>/.worktrees/<task-id>`, run IDs muszą być prawdziwymi integerami (nie JSON bool), implementer-run metadata musi zawierać exact `task_id` i exact resolved workspace, sealed content/evidence musi nadal pasować, a exact PID/process-start implementera musi już nie być aktywny.
 
 ## Repository analyst
 
@@ -179,3 +181,11 @@ DISPATCHER_PROFILE=default bash hermes/configure_kanban.sh
 - implementer nie zatwierdza własnej pracy;
 - exact-SHA review i wymagane evidence poprzedzają merge/release;
 - HIGH/CRITICAL blokuje merge.
+
+## Obowiązkowa transakcja i lifetime kandydata 0.13.0
+
+Pre-hook zapisuje tylko jednorazowy zamiar. Sam post-hook ani poprawnie wyglądający wynik nie tworzą pieczęci. Adapter `kanban_request_review` wymaga dopuszczonej operacji natywnego agenta; pod `BEGIN IMMEDIATE` ponownie sprawdza właściciela, wykonuje natywny SQL, wiąże schema 3 z `transaction_id` i zapisuje `factory_handoff_committed`. Każdy odczyt pieczęci wymaga zgodnego, zatwierdzonego receipt z osobnego połączenia. Schema 2 nie jest akceptowana.
+
+Timeout, przerwanie i close trwale odwołują konkretnego workera. Krótka wspólna blokada porządkuje odwołanie z dopuszczeniem handlera i końcowym COMMIT. Odwołanie wygrywające przed COMMIT wymaga rollbacku; COMMIT wygrywający wcześniej może pozostawić trwałe dane. Rozpoczęty handler lub żądanie nie jest ogólnie anulowane, a wynik niepewny nie uprawnia do automatycznego ponowienia. Blokada nie obejmuje całego executora ani sieci.
+
+Dokładne źródła natywne i pluginu stanowią jeden kandydat. Zgodne sumy kontrolne nie oznaczają niezależnej recenzji, zgody na instalację ani kompletnego dowodu ścieżek transportu, CLI czy cache-safe importu.

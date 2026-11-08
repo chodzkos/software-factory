@@ -14,9 +14,9 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
-HANDOFF_SCHEMA = 2
+HANDOFF_SCHEMA = 3
 EXECUTION_EVIDENCE_SCHEMA = 6
-HANDOFF_DOMAIN = "software-factory-review-handoff-v2"
+HANDOFF_DOMAIN = "software-factory-review-handoff-v3"
 _TASK_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 _BOARD_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -25,6 +25,7 @@ _HANDOFF_FIELDS = frozenset(
     {
         "schema",
         "seal_id",
+        "transaction_id",
         "board",
         "task_id",
         "implementer_profile",
@@ -45,7 +46,6 @@ _HANDOFF_FIELDS = frozenset(
         "created_at",
     }
 )
-_TEST_APPROVAL_HOOK = None
 
 
 class DuplicateJsonKey(ValueError):
@@ -661,12 +661,23 @@ def _atomic_write(path: Path, payload: Mapping[str, Any]) -> None:
             tmp.unlink()
 
 
-def create_handoff_seal(
+def create_handoff_seal(result: str, *, content_state: Callable[[str], tuple[str, str] | None]) -> Mapping[str, Any]:
+    """Odmów starej ścieżki post-hook bez autorytetu transakcji zapisu."""
+    raise HandoffError("native transaction adapter required for handoff publication")
+
+
+def _build_handoff_seal(
     result: str,
     *,
     content_state: Callable[[str], tuple[str, str] | None],
+    conn: Any,
+    kb: Any,
+    intent: Any,
+    transaction_id: str,
 ) -> Mapping[str, Any]:
-    """Utwórz pieczęć dopiero po potwierdzonym natywnym review_requested."""
+    """Zbuduj payload w tej samej, jeszcze niezatwierdzonej transakcji natywnej."""
+    if not conn.in_transaction:
+        raise HandoffError("handoff writer transaction missing")
     try:
         decoded = strict_json_loads(result)
     except (DuplicateJsonKey, json.JSONDecodeError, TypeError) as exc:
@@ -684,7 +695,6 @@ def create_handoff_seal(
         or run_id is None
     ):
         raise HandoffError("request-review result identity invalid")
-    kb = _load_kanban_db()
     board = _selected_board(kb)
     evidence, evidence_path, evidence_raw = _execution_evidence(board, task_id, run_id)
     state = content_state(workspace)
@@ -697,53 +707,57 @@ def create_handoff_seal(
     ):
         raise HandoffError("execution evidence content binding invalid")
 
-    with kb.connect_closing(board=board) as conn:
-        task = kb.get_task(conn, task_id)
-        if (
-            task is None
-            or getattr(task, "status", None) != "review"
-            or getattr(task, "assignee", None) != "reviewer-gpt"
-            or getattr(task, "current_run_id", object()) is not None
-            or not _workspace_matches_task(task, task_id, workspace)
-        ):
-            raise HandoffError("durable review task transition invalid")
-        run = conn.execute(
-            "SELECT id, task_id, profile, status, worker_pid, ended_at, outcome, metadata "
-            "FROM task_runs WHERE id = ? AND task_id = ?",
-            (run_id, task_id),
-        ).fetchone()
-        run_metadata = _strict_mapping(_row_value(run, "metadata"))
-        if (
-            _row_value(run, "id") != run_id
-            or _row_value(run, "task_id") != task_id
-            or _row_value(run, "profile") != "coder-claude"
-            or _row_value(run, "status") != "review"
-            or type(_row_value(run, "ended_at")) is not int
-            or _row_value(run, "outcome") != "review_requested"
-            or not _run_metadata_matches(run_metadata, task_id, workspace)
-        ):
-            raise HandoffError("durable implementer run transition invalid")
-        pid, proc_start = _process_identity()
-        if _row_value(run, "worker_pid") != pid:
-            raise HandoffError("implementer process does not own durable run PID")
-        event = conn.execute(
-            "SELECT id, run_id, payload, created_at FROM task_events "
-            "WHERE task_id = ? AND kind = 'review_requested' ORDER BY id DESC LIMIT 1",
-            (task_id,),
-        ).fetchone()
-        event_payload = _strict_mapping(_row_value(event, "payload"))
-        if (
-            type(_row_value(event, "id")) is not int
-            or _row_value(event, "run_id") != run_id
-            or type(_row_value(event, "created_at")) is not int
-            or event_payload is None
-            or event_payload.get("implementer") != "coder-claude"
-            or event_payload.get("reviewer") != "reviewer-gpt"
-        ):
-            raise HandoffError("native review-requested event invalid")
+    task = kb.get_task(conn, task_id)
+    if (
+        task is None
+        or getattr(task, "status", None) != "review"
+        or getattr(task, "assignee", None) != "reviewer-gpt"
+        or getattr(task, "current_run_id", object()) is not None
+        or getattr(task, "worker_pid", object()) is not None
+        or not _workspace_matches_task(task, task_id, workspace)
+    ):
+        raise HandoffError("durable review task transition invalid")
+    run = conn.execute(
+        "SELECT id, task_id, profile, status, worker_pid, started_at, ended_at, outcome, metadata "
+        "FROM task_runs WHERE id = ? AND task_id = ?",
+        (run_id, task_id),
+    ).fetchone()
+    run_metadata = _strict_mapping(_row_value(run, "metadata"))
+    if (
+        _row_value(run, "id") != run_id
+        or _row_value(run, "task_id") != task_id
+        or _row_value(run, "profile") != "coder-claude"
+        or _row_value(run, "status") != "review"
+        or type(_row_value(run, "ended_at")) is not int
+        or _row_value(run, "outcome") != "review_requested"
+        or not _run_metadata_matches(run_metadata, task_id, workspace)
+    ):
+        raise HandoffError("durable implementer run transition invalid")
+    pid, proc_start = _process_identity()
+    if ((pid, proc_start) != (intent.pid, intent.process_start)
+        or _row_value(run, "worker_pid") is not None
+        or _row_value(run, "started_at") != intent.run_started_at):
+        raise HandoffError("native ended worker identity invalid")
+    event = conn.execute(
+        "SELECT id, run_id, payload, created_at FROM task_events "
+        "WHERE task_id = ? AND kind = 'review_requested' ORDER BY id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    event_payload = _strict_mapping(_row_value(event, "payload"))
+    if (
+        type(_row_value(event, "id")) is not int
+        or _row_value(event, "id") <= intent.last_event
+        or _row_value(event, "run_id") != run_id
+        or type(_row_value(event, "created_at")) is not int
+        or event_payload is None
+        or event_payload.get("implementer") != "coder-claude"
+        or event_payload.get("reviewer") != "reviewer-gpt"
+    ):
+        raise HandoffError("native review-requested event invalid")
 
     core = {
         "schema": HANDOFF_SCHEMA,
+        "transaction_id": transaction_id,
         "board": board,
         "task_id": task_id,
         "implementer_profile": "coder-claude",
@@ -765,7 +779,6 @@ def create_handoff_seal(
     }
     seal_id = _sha256_bytes(HANDOFF_DOMAIN.encode("ascii") + b"\0" + _canonical_json(core))
     payload = {**core, "seal_id": seal_id}
-    _atomic_write(handoff_path(board, task_id, run_id), payload)
     return payload
 
 
@@ -780,7 +793,7 @@ def load_handoff_seal(board: str, task_id: str, run_id: int) -> Mapping[str, Any
         raise HandoffError("handoff seal digest invalid")
     if value.get("board") != board or value.get("task_id") != task_id or _true_run_id(value.get("implementer_run_id")) != run_id:
         raise HandoffError("handoff seal task/run invalid")
-    for field in ("seal_id", "content_state_sha256", "execution_evidence_sha256", "attestation_id", "command_sha256", "terminal_args_sha256"):
+    for field in ("transaction_id", "seal_id", "content_state_sha256", "execution_evidence_sha256", "attestation_id", "command_sha256", "terminal_args_sha256"):
         if not isinstance(value.get(field), str) or not _SHA256_RE.fullmatch(value[field]):
             raise HandoffError(f"handoff {field} invalid")
     if (
@@ -803,6 +816,8 @@ def load_handoff_seal(board: str, task_id: str, run_id: int) -> Mapping[str, Any
         or value["created_at"] <= 0
     ):
         raise HandoffError("handoff field identity invalid")
+    verify_handoff_receipt(value)
+
     return value
 
 
@@ -973,17 +988,25 @@ def _reviewer_approval_context(conn: Any, kb: Any, board: str, content_state) ->
         or getattr(task, "status", None) != "running"
         or getattr(task, "assignee", None) != "reviewer-gpt"
         or getattr(task, "current_run_id", None) != reviewer_run
+        or type(getattr(task, "worker_pid", None)) is not int
+        or task.worker_pid != os.getpid()
+        or not isinstance(getattr(task, "claim_lock", None), str) or not task.claim_lock
         or not _workspace_matches_task(task, task_id, workspace)
     ):
         raise HandoffError("active reviewer task identity invalid")
     run = conn.execute(
-        "SELECT id, task_id, profile, status, ended_at, outcome, metadata FROM task_runs WHERE id = ? AND task_id = ?",
+        "SELECT id, task_id, profile, status, ended_at, outcome, metadata, worker_pid, claim_lock FROM task_runs WHERE id = ? AND task_id = ?",
         (reviewer_run, task_id),
     ).fetchone()
     metadata = _strict_mapping(_row_value(run, "metadata"))
     if (
         _row_value(run, "id") != reviewer_run
         or _row_value(run, "profile") != "reviewer-gpt"
+        or type(_row_value(run, "worker_pid")) is not int
+        or _row_value(run, "worker_pid") != os.getpid()
+        or _row_value(run, "claim_lock") != task.claim_lock
+        or (os.environ.get("HERMES_KANBAN_CLAIM_LOCK")
+            and os.environ["HERMES_KANBAN_CLAIM_LOCK"] != task.claim_lock)
         or _row_value(run, "status") != "running"
         or _row_value(run, "ended_at") is not None
         or _row_value(run, "outcome") is not None
@@ -1017,7 +1040,13 @@ def _reviewer_approval_context(conn: Any, kb: Any, board: str, content_state) ->
 
 
 def guarded_reviewer_complete(args: Mapping[str, Any], *, content_state=workspace_content_state) -> Mapping[str, Any]:
-    """Atomowo zatwierdź dokładne bajty pod blokadą DB i dzierżawą worktree."""
+    """Approve exact bytes in an admitted reviewer operation and ordered COMMIT.
+
+    Raw writes are forbidden even with a valid seal; standalone read-only
+    consumers remain independent. A COMMIT error is not rollback evidence.
+    """
+    from factory_worker_lifetime import approval_operation, commit_approval
+    operation = approval_operation(guarded_reviewer_complete)
     if not isinstance(args, Mapping) or frozenset(args) - {"summary"}:
         raise HandoffError("approval arguments are not closed")
     summary = args.get("summary")
@@ -1029,10 +1058,11 @@ def guarded_reviewer_complete(args: Mapping[str, Any], *, content_state=workspac
     workspace = os.environ.get("HERMES_KANBAN_WORKSPACE", "").strip()
     with mutation_lease(board, task_id, workspace, blocking=False):
         with kb.connect_closing(board=board) as conn:
-            with kb.write_txn(conn):
+            if conn.in_transaction:
+                raise HandoffError("approval requires ownership of its outer transaction")
+            conn.execute("BEGIN IMMEDIATE")
+            try:
                 task_id, reviewer_run, workspace, implementer_run, seal = _reviewer_approval_context(conn, kb, board, content_state)
-                if callable(_TEST_APPROVAL_HOOK):
-                    _TEST_APPROVAL_HOOK("after_initial_validation")
                 _, _, _, _, seal = _reviewer_approval_context(conn, kb, board, content_state)
                 approval = {
                     "factory_approval_schema": 1,
@@ -1042,16 +1072,12 @@ def guarded_reviewer_complete(args: Mapping[str, Any], *, content_state=workspac
                     "factory_approval_content_state_sha256": seal["content_state_sha256"],
                     "factory_approval_implementer_run_id": implementer_run,
                 }
-                if callable(_TEST_APPROVAL_HOOK):
-                    _TEST_APPROVAL_HOOK("before_native_complete")
                 ok = kb.complete_task(
                     _SavepointConnection(conn), task_id, summary=summary.strip(), metadata=approval,
                     expected_run_id=reviewer_run, fire_lifecycle_hook=False,
                 )
                 if not ok:
                     raise HandoffError("native reviewer completion refused")
-                if callable(_TEST_APPROVAL_HOOK):
-                    _TEST_APPROVAL_HOOK("after_native_complete")
                 final_seal, errors = validate_handoff_seal(
                     board=board, task_id=task_id, run_id=implementer_run,
                     implementer="coder-claude", reviewer="reviewer-gpt", workspace=workspace,
@@ -1068,6 +1094,14 @@ def guarded_reviewer_complete(args: Mapping[str, Any], *, content_state=workspac
                     or any(stored.get(key) != value for key, value in approval.items())
                 ):
                     raise HandoffError("approved bytes changed during durable completion")
+                commit_approval(operation, conn, guarded_reviewer_complete)
+            finally:
+                if conn.in_transaction:
+                    try:
+                        conn.execute("ROLLBACK")
+                    except BaseException:
+                        operation.state.revoke("approval rollback failed; outcome unknown")
+                        raise
     return {"ok": True, "task_id": task_id, "run_id": reviewer_run, "status": "done", **approval}
 
 
@@ -1120,3 +1154,66 @@ def verify_downstream_approval(board: str, task_id: str, *, content_state=worksp
                 if any(metadata.get(key) != value for key, value in checks.items()):
                     raise HandoffError("durable approval metadata mismatch")
     return {"ok": True, "board": board, "task_id": task_id, **checks}
+
+
+_COMMIT_RECEIPT_KIND = "factory_handoff_committed"
+
+
+def _receipt_native_rows(conn: Any, seal: Mapping[str, Any]) -> tuple[dict, dict]:
+    tid, rid = seal["task_id"], seal["implementer_run_id"]
+    event = conn.execute(
+        "SELECT id,task_id,run_id,kind,payload,created_at FROM task_events WHERE id=?",
+        (seal["review_event_id"],),
+    ).fetchone()
+    run = conn.execute(
+        "SELECT id,task_id,profile,status,worker_pid,started_at,ended_at,outcome,summary,error,metadata "
+        "FROM task_runs WHERE id=? AND task_id=?", (rid, tid),
+    ).fetchone()
+    payload = _strict_mapping(_row_value(event, "payload"))
+    if (event is None or run is None or event["task_id"] != tid or event["run_id"] != rid
+        or event["kind"] != "review_requested" or event["created_at"] != seal["review_event_created_at"]
+        or payload is None or payload.get("implementer") != "coder-claude" or payload.get("reviewer") != "reviewer-gpt"
+        or run["profile"] != "coder-claude" or run["status"] != "review" or run["outcome"] != "review_requested"
+        or run["worker_pid"] is not None or type(run["ended_at"]) is not int
+        or not _run_metadata_matches(_strict_mapping(run["metadata"]), tid, seal["workspace"])):
+        raise HandoffError("committed native handoff rows missing or changed")
+    return dict(event), dict(run)
+
+
+def _receipt_payload(conn: Any, seal: Mapping[str, Any]) -> dict:
+    event, run = _receipt_native_rows(conn, seal)
+    return {"schema": 1, "transaction_id": seal["transaction_id"], "seal_id": seal["seal_id"],
+            "review_event_id": seal["review_event_id"],
+            "native_event_sha256": _sha256_bytes(_canonical_json(event)),
+            "native_run_sha256": _sha256_bytes(_canonical_json(run))}
+
+
+def append_handoff_receipt(conn: Any, seal: Mapping[str, Any]) -> None:
+    """Zapisz receipt razem z natywną zmianą; nie wykonuj tu COMMIT."""
+    if not conn.in_transaction:
+        raise HandoffError("receipt transaction missing")
+    params = (seal["task_id"], seal["implementer_run_id"], _COMMIT_RECEIPT_KIND)
+    if conn.execute("SELECT 1 FROM task_events WHERE task_id=? AND run_id=? AND kind=?", params).fetchone():
+        raise HandoffError("receipt already exists")
+    data = _canonical_json(_receipt_payload(conn, seal)).decode("utf-8")
+    conn.execute("INSERT INTO task_events(task_id,run_id,kind,payload,created_at) VALUES(?,?,?,?,?)",
+                 (*params, data, seal["created_at"]))
+
+
+def verify_handoff_receipt(seal: Mapping[str, Any]) -> None:
+    """Wymagaj trwale widocznego receipt, nie samej obecności pliku JSON."""
+    kb = _load_kanban_db()
+    board = canonical_board(seal["board"])
+    if not kb.board_exists(board):
+        raise HandoffError("receipt board missing")
+    with kb.connect_closing(board=board) as conn:
+        conn.execute("BEGIN")
+        try:
+            rows = list(conn.execute("SELECT payload,created_at FROM task_events WHERE task_id=? AND run_id=? AND kind=?",
+                                     (seal["task_id"], seal["implementer_run_id"], _COMMIT_RECEIPT_KIND)))
+            if len(rows) != 1 or rows[0]["created_at"] != seal["created_at"]:
+                raise HandoffError("committed handoff receipt missing or ambiguous")
+            if _strict_mapping(rows[0]["payload"]) != _receipt_payload(conn, seal):
+                raise HandoffError("committed handoff receipt mismatch")
+        finally:
+            conn.rollback()

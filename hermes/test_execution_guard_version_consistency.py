@@ -17,10 +17,11 @@ class ExecutionGuardVersionConsistencyTests(unittest.TestCase):
     def test_former_stale_v070_active_policy_fails_semantic_verifier(self):
         policy = ROOT / "workflows" / "MODEL_ROUTING_POLICY.md"
         stale = policy.read_text(encoding="utf-8").replace(
-            "`factory-execution-guards` v0.12.0",
+            "`factory-execution-guards` v0.13.0",
             "`factory-execution-guards` v0.7.0",
             1,
         )
+        self.assertNotEqual(stale, policy.read_text(encoding="utf-8"))
         with tempfile.TemporaryDirectory() as td:
             override = Path(td) / "MODEL_ROUTING_POLICY.md"
             override.write_text(stale, encoding="utf-8")
@@ -34,10 +35,11 @@ class ExecutionGuardVersionConsistencyTests(unittest.TestCase):
     def test_stale_handoff_schema_fails_semantic_verifier(self):
         policy = ROOT / "workflows" / "MODEL_ROUTING_POLICY.md"
         stale = policy.read_text(encoding="utf-8").replace(
-            "handoff schema v2,",
+            "handoff schema v3,",
             "handoff schema v1,",
             1,
         )
+        self.assertNotEqual(stale, policy.read_text(encoding="utf-8"))
         with tempfile.TemporaryDirectory() as td:
             override = Path(td) / "MODEL_ROUTING_POLICY.md"
             override.write_text(stale, encoding="utf-8")

@@ -100,8 +100,8 @@ class ReviewerCapabilityBoundaryTests(unittest.TestCase):
 
 
 class BoardBindingTests(unittest.TestCase):
-    def test_schema_two_board_scoped_paths_cannot_collide(self):
-        self.assertEqual(HANDOFF.HANDOFF_SCHEMA, 2)
+    def test_schema_three_board_scoped_paths_cannot_collide(self):
+        self.assertEqual(HANDOFF.HANDOFF_SCHEMA, 3)
         with tempfile.TemporaryDirectory() as home:
             with patch.object(Path, "home", return_value=Path(home)):
                 alpha = HANDOFF.handoff_path("alpha", "t_same", 1)
@@ -119,71 +119,16 @@ class ProcessSupervisionTests(unittest.TestCase):
         self.assertTrue(callable(getattr(supervisor, "mutation_lease", None)))
 
     def test_reclaim_kills_grandchild_prevents_late_write_and_holds_lease(self):
-        with tempfile.TemporaryDirectory() as td:
-            root = Path(td)
-            workspace = root / "workspace"
-            workspace.mkdir()
-            started = root / "started"
-            sentinel = root / "late"
-            fake = root / "claude"
-            fake.write_text(
-                "#!/usr/bin/env python3\n"
-                "import pathlib,subprocess,sys,time\n"
-                "started,sentinel=sys.argv[1:3]\n"
-                "subprocess.Popen([sys.executable,'-c',"
-                "'import pathlib,sys,time; time.sleep(0.7); pathlib.Path(sys.argv[1]).write_text(\\\"late\\\")',sentinel])\n"
-                "pathlib.Path(started).write_text('started')\n"
-                "time.sleep(30)\n",
-                encoding="utf-8",
-            )
-            fake.chmod(0o755)
-            active = {"value": True}
-            result: dict[str, int] = {}
-            worker_pid, worker_start = HANDOFF._process_identity()
-            env = {
-                "PATH": f"{root}:{os.environ.get('PATH', '')}",
-                "HERMES_KANBAN_BOARD": "isolated",
-                "HERMES_KANBAN_TASK": "t_supervise",
-                "HERMES_KANBAN_RUN_ID": "9",
-                "HERMES_KANBAN_WORKSPACE": str(workspace),
-            }
+        fixture = _load("phase_reclaim_fixture", ROOT / "tests_process_supervision" / "reclaim_fixture.py")
+        fixture.check_reclaim(self, PLUGIN)
 
-            def run_supervisor():
-                result["rc"] = SUPERVISOR.supervise(
-                    ["claude", str(started), str(sentinel)], board="isolated",
-                    task_id="t_supervise", run_id=9, workspace=str(workspace),
-                    worker_pid=worker_pid, worker_start=worker_start, poll_seconds=0.01,
-                )
+    def test_reclaim_waits_for_explicit_lease_probe_phase(self):
+        fixture = _load("phase_reclaim_stalled", ROOT / "tests_process_supervision" / "reclaim_fixture.py")
+        fixture.check_reclaim(self, PLUGIN, stalled_probe=True)
 
-            with patch.dict(os.environ, env, clear=False), patch.object(
-                SUPERVISOR._HANDOFF, "active_coder_run_matches", side_effect=lambda: active["value"]
-            ), patch.object(SUPERVISOR, "_ambient_board", return_value="isolated"), patch.object(
-                SUPERVISOR._HANDOFF, "_load_kanban_db", return_value=object()
-            ), patch.object(SUPERVISOR._HANDOFF.Path, "home", return_value=root):
-                thread = threading.Thread(target=run_supervisor, daemon=True)
-                thread.start()
-                deadline = time.monotonic() + 5
-                while not started.exists() and time.monotonic() < deadline:
-                    time.sleep(0.01)
-                self.assertTrue(started.exists())
-                probe = root / "lease_probe.py"
-                probe.write_text(
-                    "import importlib.util,pathlib,sys\n"
-                    f"p=pathlib.Path({str(PLUGIN / 'handoff.py')!r})\n"
-                    "s=importlib.util.spec_from_file_location('lease_probe_handoff',p); m=importlib.util.module_from_spec(s); s.loader.exec_module(m)\n"
-                    f"\ntry:\n with m.mutation_lease('isolated','t_supervise',{str(workspace)!r}): pass\nexcept m.HandoffError: raise SystemExit(7)\nraise SystemExit(0)\n",
-                    encoding="utf-8",
-                )
-                probe_env = dict(os.environ)
-                probe_env["HOME"] = str(root)
-                overlap = __import__("subprocess").run([sys.executable, str(probe)], env=probe_env, check=False)
-                self.assertEqual(overlap.returncode, 7)
-                active["value"] = False
-                thread.join(5)
-                self.assertFalse(thread.is_alive())
-            time.sleep(0.9)
-            self.assertEqual(result.get("rc"), 125)
-            self.assertFalse(sentinel.exists())
+    def test_reclaim_fixture_writer_really_writes_only_on_request(self):
+        fixture = _load("phase_reclaim_writer_control", ROOT / "tests_process_supervision" / "reclaim_fixture.py")
+        fixture.check_reclaim(self, PLUGIN, writer_control=True)
 
     def test_normal_supervised_execution_succeeds_and_releases_lease(self):
         with tempfile.TemporaryDirectory() as td:

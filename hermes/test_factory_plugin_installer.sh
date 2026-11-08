@@ -26,45 +26,83 @@ make_fixture() {
   cp "$ROOT_DIR/hermes/plugins/manifest.json" "$dst/hermes/plugins/manifest.json"
   copy_regular_files "$ROOT_DIR/hermes/plugins/factory-repository-readonly" "$dst/hermes/plugins/factory-repository-readonly"
   copy_regular_files "$ROOT_DIR/hermes/plugins/factory-execution-guards" "$dst/hermes/plugins/factory-execution-guards"
+
+  # Exercise installer mechanics only in a disposable reviewed-ready fixture.
+  # The real source candidate is staging (factory-home-only) and is tested separately below.
+  python3 - "$dst/hermes/plugins/manifest.json" <<'FIXTURE'
+import json, sys
+path = sys.argv[1]
+with open(path) as handle: manifest = json.load(handle)
+spec = manifest["plugins"]["factory-execution-guards"]
+assert spec["installable"] is True and spec["activation_status"] == "staging" and spec["install_scope"] == "factory-home-only"
+spec["activation_status"] = "reviewed-ready"
+del spec["install_scope"]
+with open(path, "w") as handle: json.dump(manifest, handle, indent=2); handle.write("\n")
+FIXTURE
+}
+
+# Retained predecessor bytes, independent of local checkout/history availability.
+# Every read verifies the original Git blob id; these files are never imported.
+read_historical_blob() {
+  python3 - "$1" "$ROOT_DIR/hermes/tests_support/historical_plugin_blobs/$1" <<'HISTORICAL'
+import hashlib, pathlib, re, sys
+sha, raw_path = sys.argv[1:]
+path = pathlib.Path(raw_path)
+if not re.fullmatch(r"[0-9a-f]{40}", sha) or path.is_symlink() or not path.is_file():
+    raise SystemExit("historical plugin blob unavailable")
+content = path.read_bytes()
+actual = hashlib.sha1(b"blob " + str(len(content)).encode() + b"\0" + content).hexdigest()
+if actual != sha:
+    raise SystemExit("historical plugin blob integrity mismatch")
+sys.stdout.buffer.write(content)
+HISTORICAL
 }
 
 make_known_execution_guard_predecessor() {
   local target="$1"
   mkdir -p "$target"
-  # Immediate predecessor v0.11.0 is the exact five-file starting-HEAD tuple.
-  git -C "$ROOT_DIR" cat-file blob 74bb36d6bb9b63a6453d2c42544586b84a8e165d >"$target/plugin.yaml"
-  git -C "$ROOT_DIR" cat-file blob afdeed78fdb539c0a11498a4a3f8844d55d2a980 >"$target/__init__.py"
-  git -C "$ROOT_DIR" cat-file blob 46c5c0082a41ac11c9648efc8a6a12c3de8157a2 >"$target/guard.py"
-  git -C "$ROOT_DIR" cat-file blob be5a17896c5c08f0a6f7b890cd11f69a15276272 >"$target/handoff.py"
-  git -C "$ROOT_DIR" cat-file blob b0da39ae49d9aca0ed9a816a2a7d15ca9ad8c934 >"$target/supervisor.py"
+  # Historical reviewed v0.11.0 fixture; not the immediate v0.12.0 predecessor.
+  read_historical_blob 74bb36d6bb9b63a6453d2c42544586b84a8e165d >"$target/plugin.yaml"
+  read_historical_blob afdeed78fdb539c0a11498a4a3f8844d55d2a980 >"$target/__init__.py"
+  read_historical_blob 46c5c0082a41ac11c9648efc8a6a12c3de8157a2 >"$target/guard.py"
+  read_historical_blob be5a17896c5c08f0a6f7b890cd11f69a15276272 >"$target/handoff.py"
+  read_historical_blob b0da39ae49d9aca0ed9a816a2a7d15ca9ad8c934 >"$target/supervisor.py"
 }
 
 make_known_repository_analyst_d756376_predecessor() {
   local target="$1"
   mkdir -p "$target"
   # Zrecenzowane drzewo poprzednika wdrożone z commita d756376.
-  git -C "$ROOT_DIR" cat-file blob e26285a24ab1048c1c61e4dd7bfecd22e7178554 >"$target/plugin.yaml"
-  git -C "$ROOT_DIR" cat-file blob d1607626706e425b0057f10154a1b923da8f55e7 >"$target/__init__.py"
-  git -C "$ROOT_DIR" cat-file blob ce7718e0879600631e84a4e44f9c7f97842af9cc >"$target/repo_map.py"
-  git -C "$ROOT_DIR" cat-file blob cc028cb35f54e21660356662c727cabe7f789eca >"$target/repository_tools.py"
-  git -C "$ROOT_DIR" cat-file blob 881dacf7715f8fd0c088df54c9e8d273b15a21da >"$target/kanban_guard.py"
+  read_historical_blob e26285a24ab1048c1c61e4dd7bfecd22e7178554 >"$target/plugin.yaml"
+  read_historical_blob d1607626706e425b0057f10154a1b923da8f55e7 >"$target/__init__.py"
+  read_historical_blob ce7718e0879600631e84a4e44f9c7f97842af9cc >"$target/repo_map.py"
+  read_historical_blob cc028cb35f54e21660356662c727cabe7f789eca >"$target/repository_tools.py"
+  read_historical_blob 881dacf7715f8fd0c088df54c9e8d273b15a21da >"$target/kanban_guard.py"
 }
 
 make_known_repository_analyst_base_predecessor() {
   local target="$1"
   mkdir -p "$target"
   # Zrecenzowane drzewo v0.2.0 wdrożone z bazowego commita d901cb2.
-  git -C "$ROOT_DIR" cat-file blob e26285a24ab1048c1c61e4dd7bfecd22e7178554 >"$target/plugin.yaml"
-  git -C "$ROOT_DIR" cat-file blob d1607626706e425b0057f10154a1b923da8f55e7 >"$target/__init__.py"
-  git -C "$ROOT_DIR" cat-file blob ce7718e0879600631e84a4e44f9c7f97842af9cc >"$target/repo_map.py"
-  git -C "$ROOT_DIR" cat-file blob 93193e0db3453ef9b5d8f175c5fe4334ff5bf58a >"$target/repository_tools.py"
-  git -C "$ROOT_DIR" cat-file blob 881dacf7715f8fd0c088df54c9e8d273b15a21da >"$target/kanban_guard.py"
+  read_historical_blob e26285a24ab1048c1c61e4dd7bfecd22e7178554 >"$target/plugin.yaml"
+  read_historical_blob d1607626706e425b0057f10154a1b923da8f55e7 >"$target/__init__.py"
+  read_historical_blob ce7718e0879600631e84a4e44f9c7f97842af9cc >"$target/repo_map.py"
+  read_historical_blob 93193e0db3453ef9b5d8f175c5fe4334ff5bf58a >"$target/repository_tools.py"
+  read_historical_blob 881dacf7715f8fd0c088df54c9e8d273b15a21da >"$target/kanban_guard.py"
 }
 
 printf '[plugin-installer] production candidate reviewed-ready dry-run no write\n'
 prod="$TMP/prod"
 HERMES_PLUGINS_DIR="$prod" bash "$INSTALLER" --plugin factory-repository-readonly --dry-run >/dev/null
 [[ ! -e "$prod" ]] || { echo 'ERROR: production dry-run wrote destination' >&2; exit 1; }
+
+printf '[plugin-installer] staging guard refuses every activation mode outside a factory HOME without writes\n'
+for mode in normal replace dry-run; do
+  case "$mode" in normal) flags=() ;; replace) flags=(--replace-reviewed) ;; dry-run) flags=(--dry-run --replace-reviewed) ;; esac
+  dest="$TMP/blocked-guard-$mode"
+  expect_fail "staging guard without FACTORY_HOME $mode" env -u FACTORY_HOME HERMES_PLUGINS_DIR="$dest" bash "$INSTALLER" --plugin factory-execution-guards "${flags[@]}"
+  [[ ! -e "$dest" ]] || { echo 'ERROR: blocked guard created destination' >&2; exit 1; }
+done
 
 printf '[plugin-installer] exact install and idempotence\n'
 root="$TMP/fixture"; make_fixture "$root"; dest="$TMP/install"

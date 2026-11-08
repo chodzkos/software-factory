@@ -48,6 +48,10 @@ declare -A descriptions=(
   [routing-sink]="Fail-closed sink for unroutable Kanban tasks; blocks the task and requests explicit reassignment."
 )
 
+# Odmowa dla niezrecenzowanego kandydata musi poprzedzać odczyt konfiguracji
+# przez Hermes i jakikolwiek zapis do profili. Dry-run nie instaluje pluginu.
+HERMES_PLUGINS_DIR="${PROFILE_ROOT}/coder-claude/plugins" PYTHONDONTWRITEBYTECODE=1 bash "${PLUGIN_INSTALLER}" --plugin "${EXECUTION_GUARD}" --replace-reviewed --dry-run >/dev/null
+
 command -v hermes >/dev/null 2>&1 || { echo "ERROR: hermes not found in PATH" >&2; exit 1; }
 for required in "${STANDARD_SRC}" "${PLUGIN_INSTALLER}" "${ANALYST_BOOTSTRAP}" "${ANALYST_VERIFY}" "${CONFIG_KEY_REMOVER}" "${REVIEWER_CAPABILITY_VERIFY}" "${RELEASE_CAPABILITY_VERIFY}" "${RELEASE_START}"; do
   [[ -f "${required}" ]] || { echo "ERROR: missing ${required}" >&2; exit 1; }
@@ -86,11 +90,23 @@ install_execution_guard() {
   local profile="$1"
   local dest="${PROFILE_ROOT}/${profile}/plugins"
   local override_flag="--no-allow-tool-override"
-  if [[ "${profile}" == "reviewer-gpt" || "${profile}" == "release-manager" ]]; then override_flag="--allow-tool-override"; fi
+  if [[ "${profile}" == "coder-claude" || "${profile}" == "reviewer-gpt" || "${profile}" == "release-manager" ]]; then override_flag="--allow-tool-override"; fi
   HERMES_PLUGINS_DIR="${dest}" PYTHONDONTWRITEBYTECODE=1 bash "${PLUGIN_INSTALLER}" --plugin "${EXECUTION_GUARD}" --replace-reviewed
   hermes -p "${profile}" plugins enable "${EXECUTION_GUARD}" "${override_flag}"
   hermes -p "${profile}" plugins doctor "${EXECUTION_GUARD}" >/dev/null
   hermes -p "${profile}" config set tools.tool_search.enabled off
+}
+configure_coder_capabilities() {
+  # CLI dispatchera i start workera muszą widzieć ten sam, jawny katalog.
+  hermes -p coder-claude config set toolsets '["terminal","file","kanban","factory-execution-guards"]'
+  hermes -p coder-claude config set platform_toolsets.cli '["terminal","file","kanban","factory-execution-guards","no_mcp"]'
+  hermes -p coder-claude config set --force mcp_servers '{}'
+  hermes -p coder-claude config set agent.disabled_toolsets '[]'
+  # Natywny resolver dopisuje nowe BFL mimo jawnej listy, dopóki użytkownik
+  # nie odrzuci go w katalogu known_builtin_toolsets. Tu odrzucenie jest jawne.
+  hermes -p coder-claude config set --force known_builtin_toolsets.cli '["bfl"]'
+  hermes -p coder-claude config set context.engine compressor
+  hermes -p coder-claude config set tools.tool_search.enabled off
 }
 install_reviewer_readonly() {
   local profile="$1"
@@ -163,6 +179,8 @@ release_config set agent.disabled_toolsets '["terminal","file","code_execution",
 release_config set tools.tool_search.enabled off
 release_config set --force factory.execution_backend read-only-release-decision
 
+# Nie dziedzicz dodatkowych pluginów ani zgód z profilu bazowego.
+remove_profile_keys coder-claude plugins.enabled plugins.disabled plugins.entries
 for profile in coder-claude reviewer-claude architect-claude-opus; do
   hermes -p "${profile}" config set model.provider "${primary_provider}"
   hermes -p "${profile}" config set model.default "${primary_model}"
@@ -170,6 +188,7 @@ for profile in coder-claude reviewer-claude architect-claude-opus; do
   hermes -p "${profile}" config set fallback_providers '[]'
   install_execution_guard "${profile}"
 done
+configure_coder_capabilities
 hermes -p coder-claude config set --force factory.claude_model_class sonnet
 hermes -p reviewer-claude config set --force factory.claude_model_class sonnet
 hermes -p architect-claude-opus config set --force factory.claude_model_class opus

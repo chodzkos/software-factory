@@ -12,7 +12,7 @@ DEST_ROOT="${PROFILE_HOME}/plugins"
 TARGET="${DEST_ROOT}/${PLUGIN}"
 EXPECTED_TOOLSETS='["factory-repository-readonly"]'
 EXPECTED_CLI_TOOLSETS='["factory-repository-readonly","no_mcp"]'
-EXPECTED_DISABLED='["terminal","file","code_execution","web","browser","image_gen","delegation","computer_use","cronjob","skills","vision","todo","memory","session_search","clarify","messaging","tts","moa"]'
+EXPECTED_DISABLED='["terminal","file","code_execution","web","browser","image_gen","delegation","computer_use","cronjob","skills","vision","todo","memory","session_search","clarify","messaging","tts","moa","bfl"]'
 
 command -v hermes >/dev/null 2>&1 || { echo "ERROR: hermes not found in PATH" >&2; exit 1; }
 test -f "${INSTALLER}" || { echo "ERROR: missing plugin installer: ${INSTALLER}" >&2; exit 1; }
@@ -91,7 +91,7 @@ expect_list_exact plugins.disabled
 expect_list_exact platform_toolsets.cli factory-repository-readonly no_mcp
 expect_scalar mcp_servers '{}'
 expect_list_exact toolsets factory-repository-readonly
-expect_list_exact agent.disabled_toolsets terminal file code_execution web browser image_gen delegation computer_use cronjob skills vision todo memory session_search clarify messaging tts moa
+expect_list_exact agent.disabled_toolsets terminal file code_execution web browser image_gen delegation computer_use cronjob skills vision todo memory session_search clarify messaging tts moa bfl
 expect_scalar tools.tool_search.enabled 'off'
 expect_scalar fallback_providers '[]'
 expect_scalar worktree 'false'

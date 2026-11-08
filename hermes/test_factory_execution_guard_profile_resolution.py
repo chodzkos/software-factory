@@ -85,6 +85,25 @@ class ProfileResolutionTests(unittest.TestCase):
         supervisor = str((PACKAGE_DIR / "supervisor.py").resolve())
         return f"{supervisor} --board isolated --task-id t_guard --run-id 77 --workspace {workspace} -- {inner}"
 
+    def test_standalone_guard_import_refuses_every_claude_command(self):
+        # G7: without the package __init__ (which installs the hardened parser) guard.py must not fall back to a
+        # weaker parser. This command was accepted by the former standalone parser with empty task/run/workspace.
+        import types
+        pkg = types.ModuleType("sf_guard_standalone"); pkg.__path__ = [str(PACKAGE_DIR)]; sys.modules[pkg.__name__] = pkg
+        try:
+            spec = importlib.util.spec_from_file_location("sf_guard_standalone.guard", PACKAGE_DIR / "guard.py")
+            mod = importlib.util.module_from_spec(spec); sys.modules[spec.name] = mod; spec.loader.exec_module(mod)
+            self.assertIsNot(mod._parse_claude_argv, PLUGIN._hardened_parse_claude_argv)
+            with patch.object(mod, "_canonical_claude_identity", return_value=("/usr/bin/claude", "0" * 64)), \
+                    patch.dict(os.environ, {"HERMES_KANBAN_TASK": "", "HERMES_KANBAN_RUN_ID": "", "HERMES_KANBAN_WORKSPACE": ""}):
+                command = ("claude -p 'work in " + mod._workspace() + "' --model sonnet --output-format json --allowedTools '"
+                           + mod._expected_claude_tools("coder-claude") + "'")
+                self.assertIsNone(mod._parse_claude_argv("coder-claude", command))
+                self.assertFalse(mod._claude_terminal_allowed("coder-claude", command))
+        finally:
+            for name in [n for n in sys.modules if n == "sf_guard_standalone" or n.startswith("sf_guard_standalone.")]:
+                del sys.modules[name]
+
     def test_hardened_claude_schema_requires_scoped_edit_safe_mode_exact_markers(self):
         with tempfile.TemporaryDirectory() as td:
             workspace=Path(td).resolve()

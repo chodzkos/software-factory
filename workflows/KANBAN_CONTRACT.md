@@ -1,5 +1,7 @@
 # Kanban task contract v1
 
+> **Kandydat źródłowy 0.13.0 — stopień STAGING.** Opis profilu poniżej jest docelowy, nie potwierdza aktywacji na serwerze. Manifest guards: `activation_status=staging`, `install_scope=factory-home-only` — instalacja wyłącznie do oznaczonego, prywatnego `FACTORY_HOME` (nigdy do `~/.hermes` konta logowania). Status produkcyjny `reviewed-ready` wymaga dalszych bramek (hosted CI, ścieżki live, systemd) i recenzji.
+
 Ten dokument doprecyzowuje `standards/SOFTWARE_DEVELOPMENT_STANDARD.md` dla Software Factory uruchamianego przez Hermes Kanban. Standard pozostaje nadrzędnym źródłem prawdy. Politykę modeli i reviewerów doprecyzowuje `workflows/MODEL_ROUTING_POLICY.md`.
 
 ## 1. Tryb orkiestracji
@@ -113,7 +115,7 @@ Summary ani profile names przekazane osobno nie są security inputem. Przy `CHAN
 
 ## 7. Claude Code execution boundary
 
-Software Factory używa profile-scoped `factory-execution-guards` v0.12.0. Wersja 0.12.0 zachowuje reviewed v0.11.0, execution evidence schema v6 oraz handoff schema v2, dodając ptrace/pidfd containment, exact profile tool surfaces, fail-closed startup i jawną ludzką granicę finalnego merge,
+Software Factory używa profile-scoped `factory-execution-guards` v0.13.0. Wersja 0.13.0 zachowuje reviewed v0.11.0, execution evidence schema v6 oraz handoff schema v3, dodając ptrace/pidfd containment, exact profile tool surfaces, fail-closed startup i jawną ludzką granicę finalnego merge,
 
 Outer GPT nie może używać terminala do `find`, Git, Python, grep ani innych helperów. Coder terminal przyjmuje wyłącznie zainstalowany supervisor z exact board/task/run/workspace i literalnym wewnętrznym argv0 `claude`; `./claude`, `/tmp/claude` i alternatywne ścieżki są blokowane. Claude pozostaje w zewnętrznej grupie Hermesa, a supervisor śledzi fork/vfork/clone przez ptrace `EXITKILL`, wiąże sygnały pidfd i kończy/reapuje wszystkie traced tasks przed zwolnieniem lease. Dziedziczony nieusuwalny seccomp odrzuca `CLONE_UNTRACED` i wymusza fallback z `clone3` do śledzonego legacy clone. Brak wymaganego ptrace/pidfd/seccomp/subreaper blokuje start przed wykonaniem kodu Claude.
 
@@ -163,15 +165,15 @@ Sam durable JSON nie odblokowuje lifecycle. `kanban_request_review` albo Claude-
 
 Przed transition guard ponownie sprawdza current Claude binary identity, resolved workspace, Git HEAD i content-state digest. Każda późniejsza zmiana zawartości workspace albo dowolna kolejna próba Claude terminal call — także malformed/rejected — unieważnia poprzedni attestation.
 
-### 7.2 Aktywny run, supervision i handoff schema v2
+### 7.2 Aktywny run, supervision i handoff schema v3
 
 Przed każdą mutation-capable operacją `coder-claude`, a dla terminala przed attestation i startem procesu, guard wymaga z bazy wybranej przez `HERMES_KANBAN_BOARD` dokładnego task/run/workspace: task `running`, assignee `coder-claude`, true-integer `current_run_id`, aktywny coder run bez `ended_at`/`outcome` oraz zgodną metadata. Brak, malformed state, import/DB/schema drift lub utrata ownership blokuje bez tworzenia nowej attestation i bez nadpisania evidence.
 
-Po successful native request-review guard strict-decodes dokładny wynik i ponownie potwierdza trwały board/task `review`, assignee `reviewer-gpt`, `current_run_id=None`, exact implementer run z `outcome=review_requested`, latest native event i unchanged board-scoped schema-6 content/evidence. Dopiero wtedy atomowo publikuje no-follow handoff schema v2 z zamkniętym polem zestawem: canonical board, task/run/profile/reviewer/workspace, HEAD/content digest, execution-evidence path/hash oraz attestation/command/terminal identities, native event provenance, creation time i PID z Linux `/proc` start tokenem. Duplicate keys, unknown fields, nieprawidłowe typy/schema, symlink, partial/tampered record albo inna druga pieczęć fail closed.
+Zarejestrowany adapter `kanban_request_review` wymaga rzeczywiście dopuszczonej operacji natywnego workera. Pod `BEGIN IMMEDIATE` zużywa jednorazowy zamiar, ponownie sprawdza ownership, wykonuje natywny SQL, strict-decodes wynik i potwierdza task/run/event oraz niezmienione evidence. W tej samej transakcji powstają no-follow handoff schema v3 z unikalnym `transaction_id` oraz zdarzenie `factory_handoff_committed`. Dopiero COMMIT i zgodny receipt z osobnego połączenia autoryzują pieczęć. Nie publikuje jej sam post-hook ani tekst sukcesu. Pieczęć wiąże board/task/run/profile/reviewer/workspace, HEAD/content, evidence path/hash, attestation/command/terminal identities, event, creation time i PID/start-token. Duplicate/unknown fields, nieprawidłowe typy, symlink lub inna druga pieczęć powodują odmowę. Błąd potwierdzenia COMMIT wymaga uzgodnienia stanu, nie automatycznego ponowienia.
 
 Udany handoff zapisuje również in-process capability seal, usuwa completed attestation i ustawia dokładne `HERMES_KANBAN_STOP_NUDGE=0`. Nudge opt-out jest tylko defense in depth: późniejsza mutacja lub drugi request-review jest blokowany przez seal/utratę aktywnego runu nawet przy kolejnym turnie modelu. Read-only status inspection może pozostać dostępne do zakończenia procesu.
 
-Routed validator i targeted dispatcher wymagają jawnego canonical boardu, niezmienionego schema-v2 seal, HEAD/content/evidence binding, braku żywej mutation lease i potwierdzonego wyjścia exact PID/start-token implementera. Przed reviewer claimem isolated Hermes 0.20.4 `get_tool_definitions` musi zwrócić dokładnie sześć dozwolonych tools; brak/tamper/import/registration failure pluginu albo dodatkowy tool blokuje start. `factory_review_approve` rewaliduje i wykonuje completion pod jedną lease oraz DB writer transaction, po czym ponownie mierzy bajty przed commit.
+Routed validator i targeted dispatcher wymagają jawnego canonical boardu, niezmienionego schema-v3 seal i zgodnego committed receipt, HEAD/content/evidence binding, braku żywej mutation lease i potwierdzonego wyjścia exact PID/start-token implementera. Przed reviewer claimem isolated Hermes 0.20.4 `get_tool_definitions` musi zwrócić dokładnie sześć dozwolonych tools; brak/tamper/import/registration failure pluginu albo dodatkowy tool blokuje start. `factory_review_approve` rewaliduje i wykonuje completion pod jedną lease oraz DB writer transaction, po czym ponownie mierzy bajty przed commit.
 
 `release-manager` jest wyłącznie read-only profilem decyzji z trzema bounded repository tools i bez żadnego Kanban tool. Jego isolated home `~/.hermes/factory-profiles/release-manager` leży poza assignable registry `~/.hermes/profiles`; bootstrap odmawia, jeśli istnieje legacy assignable directory. Canonical `hermes/release_manager_start.py` uruchamia actual capability verifier bezpośrednio przed modelem i usuwa wszystkie `HERMES_KANBAN_*`, więc generic dispatch i auto-dodanie worker mutation tools są niemożliwe. Może zwrócić `RELEASE_APPROVED`/`RELEASE_BLOCKED`, ale nie może merge/push/mark-ready/edytować PR/publikować. `pr-merge-gate` jest checklistą dowodową i procedurą decyzji, nie mechaniczną warstwą merge.
 
@@ -224,3 +226,11 @@ DISPATCHER_PROFILE=default bash hermes/configure_kanban.sh
 ```
 
 Przed workerem wymagane są zielone static/adversarial verifiers i live negative capability probes.
+
+## Obowiązkowa transakcja i lifetime kandydata 0.13.0
+
+Pre-hook zapisuje tylko jednorazowy zamiar. Sam post-hook ani poprawnie wyglądający wynik nie tworzą pieczęci. Adapter `kanban_request_review` wymaga dopuszczonej operacji natywnego agenta; pod `BEGIN IMMEDIATE` ponownie sprawdza właściciela, wykonuje natywny SQL, wiąże schema 3 z `transaction_id` i zapisuje `factory_handoff_committed`. Każdy odczyt pieczęci wymaga zgodnego, zatwierdzonego receipt z osobnego połączenia. Schema 2 nie jest akceptowana.
+
+Timeout, przerwanie i close trwale odwołują konkretnego workera. Krótka wspólna blokada porządkuje odwołanie z dopuszczeniem handlera i końcowym COMMIT. Odwołanie wygrywające przed COMMIT wymaga rollbacku; COMMIT wygrywający wcześniej może pozostawić trwałe dane. Rozpoczęty handler lub żądanie nie jest ogólnie anulowane, a wynik niepewny nie uprawnia do automatycznego ponowienia. Blokada nie obejmuje całego executora ani sieci.
+
+Dokładne źródła natywne i pluginu stanowią jeden kandydat. Zgodne sumy kontrolne nie oznaczają niezależnej recenzji, zgody na instalację ani kompletnego dowodu ścieżek transportu, CLI czy cache-safe importu.

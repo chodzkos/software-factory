@@ -13,6 +13,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from hermes import kanban_runtime_contract as contract
+from hermes.tests_support.native_review_fixture import NativeReviewWorker
 
 
 HANDOFF = contract._HANDOFF
@@ -61,6 +62,8 @@ class HandoffSealTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix="pr23_nudge01_unit_")
         self.root = Path(self.tmp.name)
+        self.stack = contextlib.ExitStack()
+        self.worker = None
         self.repo = self.root / "repo"
         self.workspace = self.repo / ".worktrees" / "t_seal"
         self.workspace.mkdir(parents=True)
@@ -70,13 +73,14 @@ class HandoffSealTests(unittest.TestCase):
         (self.workspace / "README.md").write_text("sealed\n", encoding="utf-8")
         subprocess.run(["git", "-C", str(self.workspace), "add", "README.md"], check=True)
         subprocess.run(["git", "-C", str(self.workspace), "commit", "-qm", "base"], check=True)
-        self.evidence_root = self.root / "evidence" / "claude-code"
-        self.handoff_root = self.root / "evidence" / "review-handoff"
+        self.evidence_root = self.root / ".hermes" / "factory-evidence" / "claude-code"
+        self.handoff_root = self.root / ".hermes" / "factory-evidence" / "review-handoff"
         self.evidence_root.mkdir(parents=True)
         self.state = HANDOFF.workspace_content_state(str(self.workspace))
         assert self.state is not None
 
     def tearDown(self):
+        self.stack.close()
         self.tmp.cleanup()
 
     def _evidence(self, run_id=17):
@@ -90,8 +94,8 @@ class HandoffSealTests(unittest.TestCase):
             "workspace": str(self.workspace),
             "execution_cwd": str(self.workspace),
             "terminal_args_sha256": "1" * 64,
-            "claude_binary": "/opt/claude",
-            "claude_binary_sha256": "2" * 64,
+            "claude_binary": self.worker.cli_identity[0] if self.worker else "/opt/claude",
+            "claude_binary_sha256": self.worker.cli_identity[1] if self.worker else "2" * 64,
             "session_id": "session",
             "success": True,
             "command_sha256": "3" * 64,
@@ -126,36 +130,9 @@ class HandoffSealTests(unittest.TestCase):
         )
 
     def _create_seal(self):
-        self._evidence()
-        pid, _ = HANDOFF._process_identity()
-        run = {
-            "id": 17,
-            "task_id": "t_seal",
-            "profile": "coder-claude",
-            "status": "review",
-            "worker_pid": pid,
-            "ended_at": int(time.time()),
-            "outcome": "review_requested",
-            "metadata": json.dumps({"task_id": "t_seal", "workspace_path": str(self.workspace)}),
-        }
-        event = {
-            "id": 31,
-            "run_id": 17,
-            "payload": json.dumps({"implementer": "coder-claude", "reviewer": "reviewer-gpt"}),
-            "created_at": int(time.time()),
-        }
-        kb = _Kanban(self._task(), run, event)
-        result = json.dumps({"ok": True, "task_id": "t_seal", "run_id": 17, "status": "review"})
-        roots = self._patch_roots()
-        env = {
-            "HERMES_PROFILE": "coder-claude",
-            "HERMES_KANBAN_TASK": "t_seal",
-            "HERMES_KANBAN_RUN_ID": "17",
-            "HERMES_KANBAN_WORKSPACE": str(self.workspace),
-            "HERMES_KANBAN_BOARD": "isolated",
-        }
-        with roots[0], roots[1], patch.object(HANDOFF, "_load_kanban_db", return_value=kb), patch.dict(os.environ, env, clear=False):
-            return HANDOFF.create_handoff_seal(result, content_state=HANDOFF.workspace_content_state)
+        self.worker = self.stack.enter_context(NativeReviewWorker(self.root, task_id="t_seal", run_id=17, workspace=self.workspace))
+        self.worker.attest(json.loads(self._evidence().read_text()))
+        return self.worker.publish()
 
     def test_active_coder_gate_accepts_only_exact_live_task_run_and_workspace(self):
         run = {
@@ -198,7 +175,7 @@ class HandoffSealTests(unittest.TestCase):
 
     def test_successful_transition_creates_one_closed_schema_seal(self):
         seal = self._create_seal()
-        self.assertEqual(seal["schema"], 2)
+        self.assertEqual(seal["schema"], 3)
         self.assertEqual(seal["board"], "isolated")
         self.assertEqual(seal["implementer_run_id"], 17)
         self.assertEqual(len(list(self.handoff_root.glob("**/*.json"))), 1)
@@ -225,8 +202,8 @@ class HandoffSealTests(unittest.TestCase):
         self.assertTrue(errors)
 
     def test_malformed_or_wrong_request_review_result_creates_no_seal(self):
-        self._evidence()
-        roots = self._patch_roots()
+        # Te same pięć payloadów musi dotrzeć do ŻYWEGO parsera po natywnym SQL.
+        from tools import kanban_tools
         for result in (
             '{"ok":true,"ok":false,"task_id":"t_seal","run_id":17,"status":"review"}',
             json.dumps({"ok": 1, "task_id": "t_seal", "run_id": 17, "status": "review"}),
@@ -234,40 +211,61 @@ class HandoffSealTests(unittest.TestCase):
             json.dumps({"ok": True, "task_id": "t_seal", "run_id": True, "status": "review"}),
             json.dumps({"ok": True, "task_id": "t_seal", "run_id": 17, "status": "review", "extra": 1}),
         ):
-            with self.subTest(result=result), roots[0], roots[1], patch.dict(os.environ, {
-                "HERMES_KANBAN_TASK": "t_seal", "HERMES_KANBAN_RUN_ID": "17",
-                "HERMES_KANBAN_WORKSPACE": str(self.workspace)}, clear=False):
-                with self.assertRaises(HANDOFF.HandoffError):
-                    HANDOFF.create_handoff_seal(result, content_state=HANDOFF.workspace_content_state)
-        self.assertFalse(self.handoff_root.exists())
+            with self.subTest(result=result), tempfile.TemporaryDirectory() as td, \
+                    NativeReviewWorker(Path(td), task_id="t_seal", run_id=17) as worker:
+                worker.attest()
+                def tables():
+                    with worker.kb.connect_closing(board=worker.board) as conn:
+                        return {name: [tuple(row) for row in conn.execute(f"SELECT * FROM {name} ORDER BY rowid")]
+                                for name in ("tasks", "task_runs", "task_events")}
+                before = tables()
+                observed = []
+                build = worker.handoff._build_handoff_seal
+                def inspect_build(payload, **kwargs):
+                    self.assertEqual(payload, result)
+                    self.assertTrue(kwargs["conn"].in_transaction)
+                    try:
+                        return build(payload, **kwargs)
+                    except worker.handoff.HandoffError:
+                        observed.append("live-parser-refused")
+                        raise
+                with patch.object(kanban_tools, "_ok", return_value=result) as returned, \
+                        patch.object(worker.kb, "request_review", wraps=worker.kb.request_review) as sql, \
+                        patch.object(worker.handoff, "_build_handoff_seal", side_effect=inspect_build) as parser:
+                    response = worker.agent._invoke_tool("kanban_request_review", {"summary": "OFFLINE MALFORMED RESULT", "reviewer": "reviewer-gpt", "metadata": worker.metadata}, worker.task_id)
+                self.assertIn("error", json.loads(response))
+                self.assertEqual(returned.call_count, 1)
+                self.assertEqual(sql.call_count, 1, "odmowa nie może poprzedzać natywnego SQL")
+                self.assertEqual(parser.call_count, 1)
+                self.assertEqual(observed, ["live-parser-refused"])
+                self.assertEqual(tables(), before, "rollback wszystkich trzech tabel, w tym receipt")
+                path = worker.handoff.handoff_path(worker.board, worker.task_id, worker.run_id)
+                self.assertFalse(path.exists())
+                self.assertFalse(path.is_symlink())
+                with worker.kb.connect_closing(board=worker.board) as conn:
+                    self.assertEqual(conn.execute("SELECT count(*) FROM task_events WHERE kind='factory_handoff_committed'").fetchone()[0], 0)
+
+    def test_retired_post_hook_seal_creator_always_refuses(self):
+        # Kontrakt usuniętego API; celowo NIE jest testem walidacji payloadu.
+        with self.assertRaises(HANDOFF.HandoffError):
+            HANDOFF.create_handoff_seal(None, content_state=HANDOFF.workspace_content_state)
 
     def test_live_process_blocks_then_exact_exit_allows_and_pid_reuse_is_safe(self):
         seal = self._create_seal()
+        stored = self.worker.handoff.handoff_path("isolated", "t_seal", 17)
+        before = stored.read_bytes()
         roots = self._patch_roots()
+        kwargs = dict(board="isolated", task_id="t_seal", run_id=17, implementer="coder-claude",
+            reviewer="reviewer-gpt", workspace=str(self.workspace), content_state=HANDOFF.workspace_content_state)
         with roots[0], roots[1]:
-            _, alive_errors = HANDOFF.validate_handoff_seal(
-                board="isolated",
-                task_id="t_seal", run_id=17, implementer="coder-claude",
-                reviewer="reviewer-gpt", workspace=str(self.workspace),
-                content_state=HANDOFF.workspace_content_state,
-            )
+            _, alive_errors = HANDOFF.validate_handoff_seal(**kwargs)
             self.assertIn("implementer_process_alive", alive_errors)
-            stored = self.handoff_root / HANDOFF._board_scope("isolated") / "t_seal__17__coder-claude.json"
-            payload = json.loads(stored.read_text())
-            payload["implementer_proc_start"] = str(int(seal["implementer_proc_start"]) + 1)
-            core = {key: payload[key] for key in payload if key != "seal_id"}
-            payload["seal_id"] = hashlib.sha256(
-                HANDOFF.HANDOFF_DOMAIN.encode("ascii") + b"\0" + HANDOFF._canonical_json(core)
-            ).hexdigest()
-            stored.write_text(json.dumps(payload, sort_keys=True) + "\n")
-            _, reused_errors = HANDOFF.validate_handoff_seal(
-                board="isolated",
-                task_id="t_seal", run_id=17, implementer="coder-claude",
-                reviewer="reviewer-gpt", workspace=str(self.workspace),
-                content_state=HANDOFF.workspace_content_state,
-            )
-            self.assertNotIn("implementer_process_alive", reused_errors)
-            self.assertNotIn("implementer_process_unknown", reused_errors)
+            # Modeluj jedynie odczyt jądra po ponownym użyciu PID; pieczęć/receipt niezmienione.
+            with patch.object(HANDOFF, "_process_identity", return_value=(seal["implementer_pid"], str(int(seal["implementer_proc_start"]) + 1))):
+                reused_seal, reused_errors = HANDOFF.validate_handoff_seal(**kwargs)
+            self.assertEqual(reused_errors, [])
+            self.assertEqual(reused_seal, seal)
+            self.assertEqual(stored.read_bytes(), before)
 
     def test_content_drift_and_tampered_evidence_fail_closed(self):
         self._create_seal()
@@ -303,7 +301,8 @@ class HandoffSealTests(unittest.TestCase):
         variants = (
             b'{"schema":2,"schema":2}\n',
             b'{"schema":2}\n',
-            original.replace(b'"schema":2', b'"schema":true'),
+            json.dumps({**json.loads(original), "schema": True}).encode() + b"\n",
+            json.dumps({**json.loads(original), "schema": 2}).encode() + b"\n",
             json.dumps(unknown, sort_keys=True).encode("utf-8") + b"\n",
             original[:-8],
         )
@@ -322,64 +321,20 @@ class HandoffSealTests(unittest.TestCase):
 
     def test_reviewer_completion_binds_exact_run_metadata_and_current_bytes(self):
         seal = self._create_seal()
+        self.worker.start_reviewer(seal)
         roots = self._patch_roots()
-        stored = self.handoff_root / HANDOFF._board_scope("isolated") / "t_seal__17__coder-claude.json"
-        payload = json.loads(stored.read_text())
-        payload["implementer_proc_start"] = str(int(seal["implementer_proc_start"]) + 1)
-        core = {key: payload[key] for key in payload if key != "seal_id"}
-        payload["seal_id"] = hashlib.sha256(
-            HANDOFF.HANDOFF_DOMAIN.encode("ascii") + b"\0" + HANDOFF._canonical_json(core)
-        ).hexdigest()
-        stored.write_text(json.dumps(payload, sort_keys=True) + "\n")
-        metadata = {
-            "factory_handoff_schema": 2,
-            "factory_handoff_board": "isolated",
-            "factory_handoff_seal_id": payload["seal_id"],
-            "factory_handoff_git_head": payload["git_head"],
-            "factory_handoff_content_state_sha256": payload["content_state_sha256"],
-            "factory_handoff_implementer_run_id": 17,
-        }
-        reviewer_run = {
-            "id": 18,
-            "task_id": "t_seal",
-            "profile": "reviewer-gpt",
-            "status": "running",
-            "ended_at": None,
-            "outcome": None,
-            "metadata": json.dumps(metadata),
-        }
-        kb = _Kanban(
-            self._task(status="running", assignee="reviewer-gpt", current_run_id=18),
-            reviewer_run,
-            {},
-        )
-        env = {
-            "HERMES_KANBAN_TASK": "t_seal",
-            "HERMES_KANBAN_RUN_ID": "18",
-            "HERMES_KANBAN_WORKSPACE": str(self.workspace),
-            "HERMES_KANBAN_BOARD": "isolated",
-        }
-        with roots[0], roots[1], patch.object(HANDOFF, "_load_kanban_db", return_value=kb), patch.dict(
-            os.environ, env, clear=False
-        ):
-            self.assertTrue(
-                HANDOFF.reviewer_completion_authorized(
-                    content_state=HANDOFF.workspace_content_state
-                )
-            )
-            reviewer_run["metadata"] = json.dumps({**metadata, "factory_handoff_seal_id": "0" * 64})
-            self.assertFalse(
-                HANDOFF.reviewer_completion_authorized(
-                    content_state=HANDOFF.workspace_content_state
-                )
-            )
-            reviewer_run["metadata"] = json.dumps(metadata)
+        with roots[0], roots[1], patch.object(HANDOFF, "_process_identity", return_value=(seal["implementer_pid"], str(int(seal["implementer_proc_start"]) + 1))):
+            self.assertTrue(HANDOFF.reviewer_completion_authorized(content_state=HANDOFF.workspace_content_state))
+            with self.worker.kb.connect_closing(board="isolated") as conn:
+                metadata = json.loads(conn.execute("SELECT metadata FROM task_runs WHERE id=18").fetchone()[0])
+                conn.execute("UPDATE task_runs SET metadata=? WHERE id=18", (json.dumps({**metadata, "factory_handoff_seal_id": "0" * 64}),))
+                conn.commit()
+            self.assertFalse(HANDOFF.reviewer_completion_authorized(content_state=HANDOFF.workspace_content_state))
+            with self.worker.kb.connect_closing(board="isolated") as conn:
+                conn.execute("UPDATE task_runs SET metadata=? WHERE id=18", (json.dumps(metadata),))
+                conn.commit()
             (self.workspace / "README.md").write_text("review drift\n", encoding="utf-8")
-            self.assertFalse(
-                HANDOFF.reviewer_completion_authorized(
-                    content_state=HANDOFF.workspace_content_state
-                )
-            )
+            self.assertFalse(HANDOFF.reviewer_completion_authorized(content_state=HANDOFF.workspace_content_state))
 
     def test_real_short_lived_child_process_identity(self):
         child = subprocess.Popen(["sleep", "30"])
