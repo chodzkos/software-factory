@@ -215,8 +215,11 @@ class StagingScopeTests(unittest.TestCase):
         login = Path(os.path.realpath(pwd.getpwuid(os.geteuid()).pw_dir))
         for target in (login, login / ".hermes"):
             with self.subTest(target=str(target)):
-                self.refused("must not be, contain or lie inside the login ~/.hermes", factory_home=target, home=target,
-                             dest=target / ".hermes/plugins")
+                # Both are refused. An absent login ~/.hermes (e.g. a CI runner account) is refused by the earlier
+                # existence check; an existing one by the explicit login-home check.
+                expected = ("must not be, contain or lie inside the login ~/.hermes" if target.is_dir() and not target.is_symlink()
+                            else "requires a real absolute FACTORY_HOME")
+                self.refused(expected, factory_home=target, home=target, dest=target / ".hermes/plugins")
 
     def test_group_accessible_factory_home_refused(self):
         self.home.chmod(0o750)
