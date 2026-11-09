@@ -173,6 +173,20 @@ DISPATCHER_PROFILE=default bash hermes/configure_kanban.sh
 
 `bootstrap_profiles.sh` zawiera live repository-analyst isolation gate i już podczas bootstrapu wyłącza globalny review auto-dispatch na dispatcher profile. `bootstrap_runtime_controller.sh` instaluje targetowany review dispatcher i również wymaga `review_dispatch=false` w runtime-controller profile. Po bootstrapie nadal wymagane są live negative/positive probes execution guarda i provenance-bound routed handoffu przed VERIFIED.
 
+### Środowisko dispatchera i targetowanego review (ustalone w pierwszym live handoffie G10)
+
+Wymagane przez istniejące kontrole startu — ich brak kończy się odmową PRZED wywołaniem modelu:
+
+- gateway (dispatcher) i każde `dispatch-review` dostają własny, pusty, prywatny (0700) katalog `PYTHONPYCACHEPREFIX`
+  (wraz z `PYTHONDONTWRITEBYTECODE=1`); start coder-claude i reviewer-gpt odmawia bez niego
+  (`private bytecode cache prefix required`);
+- `FACTORY_HERMES_PYTHON` wskazuje Pythona runtime'u, gdy runtime nie leży w `~/.hermes/hermes-agent/venv`
+  (inaczej weryfikator narzędzi reviewera odmawia przed claimem);
+- trwały wybór boardu (`hermes kanban boards switch <slug>`, plik `kanban/current`) musi być boardem karty kodowej —
+  supervisor coder-claude odmawia przy innym (`supervisor ambient board changed`);
+- gateway nie może przetrwać zakończenia implementera bez nadzoru: martwy proces reviewera po targetowanym dispatchu
+  zostawia run `running`; taką kartę zamyka się `block`, nie ponownym review (routed handoff wymaga ostatniego runu implementera).
+
 ## Założenia procesu
 
 - `PRIMARY_PROFILE` może sterować zwykłymi primary-GPT rolami, ale nie security reviewerem;

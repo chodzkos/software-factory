@@ -35,7 +35,7 @@
       "activation_status": "staging",
       "install_scope": "factory-home-only",
       "files": {
-        "__init__.py": "24920c70b2c1795027327cf17b4fdb3fa20ef8ce",
+        "__init__.py": "0dcf3ad1cdcb15e7c6e9559c136d0ad3ed9d8135",
         "guard.py": "81a27f0e176e6d26779ee2452561e4b6ada10fca",
         "handoff.py": "0d209311d7c432fa261649614d97db924ddfd12c",
         "plugin.yaml": "3c7ae8393a21bca6fc8065152af290b1a1115fa8",
@@ -45,6 +45,16 @@
         "supervisor.py": "b479e4c10ff38fc62764326bbfb49ff2426babca"
       },
       "replace_from": [
+        {
+          "__init__.py": "24920c70b2c1795027327cf17b4fdb3fa20ef8ce",
+          "guard.py": "81a27f0e176e6d26779ee2452561e4b6ada10fca",
+          "handoff.py": "0d209311d7c432fa261649614d97db924ddfd12c",
+          "plugin.yaml": "3c7ae8393a21bca6fc8065152af290b1a1115fa8",
+          "review_intent.py": "da2c4ed23d2188eccd1f1745a436ed098129888e",
+          "review_registration.py": "be50e29c963c48376a9c43f0f55ec15bfe829ab1",
+          "review_transaction.py": "a17b2805304efdb1aaae06aa8b9b039891622f2f",
+          "supervisor.py": "b479e4c10ff38fc62764326bbfb49ff2426babca"
+        },
         {
           "plugin.yaml": "05e233f3d5e081dfc7fded1a4f368f3fe4c206e9",
           "__init__.py": "d2b85fb117b30e05c1f0a4dae390af3190a9c0bd",

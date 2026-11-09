@@ -26,7 +26,7 @@ EXPECTED_RELEASE_TOOLSETS = frozenset({
 })
 EXPECTED_PLUGIN_SHA256 = {
     "factory-execution-guards": {
-        "__init__.py": "c595c6b4f21bbec8b01289a93c4a3e6f12b270a7c28fc950f47f4ca1bf51f5a2",
+        "__init__.py": "f684143323345acb7ef5e315d2dd423dc4e6f0d76e6aed58e02e10d86b98aa27",
         "guard.py": "20f3631f01d5fb0e2f933e9569a49253f7748b9092e4252d69a2ece127060197",
         "handoff.py": "b0d65969f0c502139fe4d8c3fbec9121d73caedd39ed5805679ef9074a65ea93",
         "plugin.yaml": "49525d9203b2793ddf920932304ae56524ea8dddf0943e919436864de5bd16eb",

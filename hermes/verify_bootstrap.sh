@@ -128,7 +128,7 @@ import json, pathlib, sys
 path=pathlib.Path(sys.argv[1]); data=json.loads(path.read_text())
 plugin=data["plugins"]["factory-execution-guards"]
 expected={
-    "__init__.py": "24920c70b2c1795027327cf17b4fdb3fa20ef8ce",
+    "__init__.py": "0dcf3ad1cdcb15e7c6e9559c136d0ad3ed9d8135",
     "guard.py": "81a27f0e176e6d26779ee2452561e4b6ada10fca",
     "handoff.py": "0d209311d7c432fa261649614d97db924ddfd12c",
     "plugin.yaml": "3c7ae8393a21bca6fc8065152af290b1a1115fa8",
@@ -138,16 +138,19 @@ expected={
     "supervisor.py": "b479e4c10ff38fc62764326bbfb49ff2426babca"
 }
 predecessor={
-    "plugin.yaml": "05e233f3d5e081dfc7fded1a4f368f3fe4c206e9",
-    "__init__.py": "d2b85fb117b30e05c1f0a4dae390af3190a9c0bd",
-    "guard.py": "46c5c0082a41ac11c9648efc8a6a12c3de8157a2",
-    "handoff.py": "be5a17896c5c08f0a6f7b890cd11f69a15276272",
+    "__init__.py": "24920c70b2c1795027327cf17b4fdb3fa20ef8ce",
+    "guard.py": "81a27f0e176e6d26779ee2452561e4b6ada10fca",
+    "handoff.py": "0d209311d7c432fa261649614d97db924ddfd12c",
+    "plugin.yaml": "3c7ae8393a21bca6fc8065152af290b1a1115fa8",
+    "review_intent.py": "da2c4ed23d2188eccd1f1745a436ed098129888e",
+    "review_registration.py": "be50e29c963c48376a9c43f0f55ec15bfe829ab1",
+    "review_transaction.py": "a17b2805304efdb1aaae06aa8b9b039891622f2f",
     "supervisor.py": "b479e4c10ff38fc62764326bbfb49ff2426babca"
 }
 if plugin.get("files") != expected: raise SystemExit("ERROR: v0.13.0 current execution-guard pins mismatch")
 if plugin.get("installable") is not True or plugin.get("activation_status") != "staging" or plugin.get("install_scope") != "factory-home-only": raise SystemExit("ERROR: execution guard must be staging with factory-home-only scope")
 replace=plugin.get("replace_from") or []
-if not replace or replace[0] != predecessor: raise SystemExit("ERROR: v0.12.0 is not the immediate reviewed predecessor")
+if not replace or replace[0] != predecessor: raise SystemExit("ERROR: s4 v0.13.0 bytes are not the immediate reviewed predecessor")
 PY
 
 printf '[check] legacy Ox inference kill switch and inherited config cleanup\n'

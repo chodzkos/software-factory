@@ -7,7 +7,7 @@
       "kind": "unittest",
       "directory": "hermes",
       "pattern": "test*.py",
-      "expected_tests": 208
+      "expected_tests": 210
     },
     {
       "name": "start",

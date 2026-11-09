@@ -3,7 +3,7 @@
   "base_tree": "d630de83c47d73912e9648552ec9dd5452fb83cf",
   "source_only": true,
   "installable": false,
-  "patch_sha256": "ff5225c3668b7fd0f8c49f2a642560fad50f6538a72839fb774a73b1a1982b41",
+  "patch_sha256": "c5a5aa5461fe67b0194df2cae73779e3cbde415e3293b3f6b6f3b39e9f602e03",
   "files": {
     "agent/agent_runtime_helpers.py": {
       "sha256": "6ed3d3fb3666a481f6dea2fde47abb1c93c16d5ab329746fef6e44f27cd0399a",
@@ -50,7 +50,7 @@
       "mode": "0o644"
     },
     "factory_worker_start.py": {
-      "sha256": "6445ae5da8aa51043007f464897359362295f1589b27780a168c23c91509865c",
+      "sha256": "a2f470735278661bf156cebf9a78270e9821189e7b98a1040cff540d38937cd1",
       "mode": "0o644"
     },
     "hermes_cli/kanban_db.py": {

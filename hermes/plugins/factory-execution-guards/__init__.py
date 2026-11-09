@@ -319,6 +319,10 @@ def _install_scoped_kanban_filters(ctx, profile: str) -> None:
     allowed = _PROFILE_MODEL_TOOLS.get(profile)
     if allowed is None:
         return
+    # Hermes 0.20.4 `chat` loads plugins in the background "plugin-discovery" thread, which can run before the
+    # main thread imports the builtin tools. Register the native Kanban tools explicitly first (idempotent module
+    # import, as factory_profile_start does) so the scoped filters always see the real registry.
+    from tools import kanban_tools  # noqa: F401
     from tools.registry import registry
 
     entries = [entry for entry in registry.get_all_entries() if entry.toolset == "kanban"]
