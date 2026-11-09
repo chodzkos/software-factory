@@ -28,13 +28,13 @@ make_fixture() {
   copy_regular_files "$ROOT_DIR/hermes/plugins/factory-execution-guards" "$dst/hermes/plugins/factory-execution-guards"
 
   # Exercise installer mechanics only in a disposable reviewed-ready fixture.
-  # The real source candidate is staging (factory-home-only) and is tested separately below.
+  # The real source candidate is reviewed-ready with factory-home-only scope and is tested separately below.
   python3 - "$dst/hermes/plugins/manifest.json" <<'FIXTURE'
 import json, sys
 path = sys.argv[1]
 with open(path) as handle: manifest = json.load(handle)
 spec = manifest["plugins"]["factory-execution-guards"]
-assert spec["installable"] is True and spec["activation_status"] == "staging" and spec["install_scope"] == "factory-home-only"
+assert spec["installable"] is True and spec["activation_status"] == "reviewed-ready" and spec["install_scope"] == "factory-home-only"
 spec["activation_status"] = "reviewed-ready"
 del spec["install_scope"]
 with open(path, "w") as handle: json.dump(manifest, handle, indent=2); handle.write("\n")
@@ -96,11 +96,11 @@ prod="$TMP/prod"
 HERMES_PLUGINS_DIR="$prod" bash "$INSTALLER" --plugin factory-repository-readonly --dry-run >/dev/null
 [[ ! -e "$prod" ]] || { echo 'ERROR: production dry-run wrote destination' >&2; exit 1; }
 
-printf '[plugin-installer] staging guard refuses every activation mode outside a factory HOME without writes\n'
+printf '[plugin-installer] factory-home-only guard refuses every activation mode outside a factory HOME without writes\n'
 for mode in normal replace dry-run; do
   case "$mode" in normal) flags=() ;; replace) flags=(--replace-reviewed) ;; dry-run) flags=(--dry-run --replace-reviewed) ;; esac
   dest="$TMP/blocked-guard-$mode"
-  expect_fail "staging guard without FACTORY_HOME $mode" env -u FACTORY_HOME HERMES_PLUGINS_DIR="$dest" bash "$INSTALLER" --plugin factory-execution-guards "${flags[@]}"
+  expect_fail "factory-home-only guard without FACTORY_HOME $mode" env -u FACTORY_HOME HERMES_PLUGINS_DIR="$dest" bash "$INSTALLER" --plugin factory-execution-guards "${flags[@]}"
   [[ ! -e "$dest" ]] || { echo 'ERROR: blocked guard created destination' >&2; exit 1; }
 done
 

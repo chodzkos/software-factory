@@ -35,17 +35,17 @@ status=spec.get("activation_status")
 if status not in ("reviewed-ready","staging"): raise SystemExit(f"ERROR: plugin activation status is not reviewed-ready: {name}")
 
 def require_factory_home():
-    """Staging plugins install only below FACTORY_HOME/.hermes of a marked, private factory HOME (never the login ~/.hermes)."""
+    """factory-home-only plugins (staging or reviewed-ready) install only below FACTORY_HOME/.hermes of a marked, private factory HOME (never the login ~/.hermes)."""
     raw=os.environ.get("FACTORY_HOME","")
     home=pathlib.Path(raw)
     if not raw or not home.is_absolute() or home.is_symlink() or not home.is_dir() or pathlib.Path(os.path.realpath(home))!=home:
-        raise SystemExit(f"ERROR: staging plugin requires a real absolute FACTORY_HOME: {name}")
+        raise SystemExit(f"ERROR: factory-home-only plugin requires a real absolute FACTORY_HOME: {name}")
     login=pathlib.Path(os.path.realpath(pwd.getpwuid(os.geteuid()).pw_dir)); login_hermes=login/".hermes"
     if home==login or home==login_hermes or login_hermes in home.parents or home in login_hermes.parents:
         raise SystemExit("ERROR: FACTORY_HOME must not be, contain or lie inside the login ~/.hermes")
     st=home.lstat()
     if st.st_uid!=os.geteuid() or stat.S_IMODE(st.st_mode)!=0o700: raise SystemExit("ERROR: FACTORY_HOME must be owned by the installer and mode 0700")
-    if os.environ.get("HOME")!=str(home): raise SystemExit("ERROR: staging plugin install requires HOME=FACTORY_HOME")
+    if os.environ.get("HOME")!=str(home): raise SystemExit("ERROR: factory-home-only plugin install requires HOME=FACTORY_HOME")
     marker=home/".sf-factory-home"; ms=marker.lstat() if os.path.lexists(marker) else None
     if ms is None or not stat.S_ISREG(ms.st_mode) or ms.st_nlink!=1 or ms.st_uid!=os.geteuid() or stat.S_IMODE(ms.st_mode)!=0o600:
         raise SystemExit("ERROR: FACTORY_HOME marker missing or not private")
@@ -54,12 +54,12 @@ def require_factory_home():
     if data!={"schema":"sf-factory-home/v1","factory_home":str(home)}: raise SystemExit("ERROR: FACTORY_HOME marker does not name this home")
     target=pathlib.Path(dest)
     if not target.is_absolute() or pathlib.Path(os.path.normpath(target))!=target or (home/".hermes") not in target.parents:
-        raise SystemExit(f"ERROR: staging plugin destination outside FACTORY_HOME/.hermes: {dest}")
+        raise SystemExit(f"ERROR: factory-home-only plugin destination outside FACTORY_HOME/.hermes: {dest}")
 
-if status=="staging":
-    if spec.get("install_scope")!="factory-home-only": raise SystemExit(f"ERROR: staging plugin without factory-home-only scope: {name}")
-    require_factory_home()
-elif "install_scope" in spec: raise SystemExit(f"ERROR: install_scope is only defined for staging plugins: {name}")
+scope=spec.get("install_scope")
+if "install_scope" in spec and scope!="factory-home-only": raise SystemExit(f"ERROR: unknown install_scope: {name}")
+if status=="staging" and scope!="factory-home-only": raise SystemExit(f"ERROR: staging plugin without factory-home-only scope: {name}")
+if scope=="factory-home-only": require_factory_home()
 expected=f"hermes/plugins/{name}"
 if spec.get("source") != expected: raise SystemExit(f"ERROR: plugin source path mismatch: {name}")
 src=root/expected

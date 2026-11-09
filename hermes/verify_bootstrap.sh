@@ -148,7 +148,7 @@ predecessor={
     "supervisor.py": "b479e4c10ff38fc62764326bbfb49ff2426babca"
 }
 if plugin.get("files") != expected: raise SystemExit("ERROR: v0.13.0 current execution-guard pins mismatch")
-if plugin.get("installable") is not True or plugin.get("activation_status") != "staging" or plugin.get("install_scope") != "factory-home-only": raise SystemExit("ERROR: execution guard must be staging with factory-home-only scope")
+if plugin.get("installable") is not True or plugin.get("activation_status") != "reviewed-ready" or plugin.get("install_scope") != "factory-home-only": raise SystemExit("ERROR: execution guard must be reviewed-ready with factory-home-only scope")
 replace=plugin.get("replace_from") or []
 if not replace or replace[0] != predecessor: raise SystemExit("ERROR: s4 v0.13.0 bytes are not the immediate reviewed predecessor")
 PY

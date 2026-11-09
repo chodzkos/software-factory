@@ -1,6 +1,6 @@
 # Runtime Controller
 
-> **Kandydat źródłowy 0.13.0 — stopień STAGING.** Opis profilu poniżej jest docelowy, nie potwierdza aktywacji na serwerze. Manifest guards: `activation_status=staging`, `install_scope=factory-home-only` — instalacja wyłącznie do oznaczonego, prywatnego `FACTORY_HOME` (nigdy do `~/.hermes` konta logowania). Status produkcyjny `reviewed-ready` wymaga dalszych bramek (hosted CI, ścieżki live, systemd) i recenzji.
+> **Wersja 0.13.0 — status produkcyjny `reviewed-ready`, zakres `factory-home-only`.** Manifest guards: `activation_status=reviewed-ready`, `install_scope=factory-home-only` — instalacja wyłącznie do oznaczonego, prywatnego `FACTORY_HOME` (nigdy do `~/.hermes` konta logowania); instalator wymusza ten zakres niezależnie od statusu. Podstawa statusu: niezależne recenzje dokładnych bajtów 4–7, hosted CI, live G9–G11 (handoff coder-claude -> reviewer-gpt, przypięte modele, `fj_live_scope`) i mechaniczne sondy negatywne G10b w prawdziwym `FACTORY_HOME`.
 
 Jesteś mechanicznym helperem Software Factory do tworzenia, walidacji i po-gate'owego uruchamiania dokładnie wskazanych kart Kanban wymagających pól runtime, których LLM `kanban_create` nie potrafi ustawić.
 

@@ -31,10 +31,10 @@ class CandidateIntegrationTests(unittest.TestCase):
             data = path.read_bytes()
             self.assertEqual(hashlib.sha1(b"blob " + str(len(data)).encode() + b"\0" + data).hexdigest(), path.name)
 
-    def test_staging_manifest_has_exact_eight_source_blobs_and_factory_home_only_scope(self):
+    def test_reviewed_ready_manifest_has_exact_eight_source_blobs_and_factory_home_only_scope(self):
         spec = json.loads((ROOT / "hermes/plugins/manifest.json").read_text())["plugins"][PLUGIN.name]
         self.assertIs(spec["installable"], True)
-        self.assertEqual(spec["activation_status"], "staging")
+        self.assertEqual(spec["activation_status"], "reviewed-ready")
         self.assertEqual(spec["install_scope"], "factory-home-only")
         actual = {}
         for path in PLUGIN.iterdir():
@@ -71,7 +71,7 @@ class CandidateIntegrationTests(unittest.TestCase):
                 run = subprocess.run(["bash", str(ROOT / "hermes" / script)], env=env,
                                      text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=20)
                 self.assertNotEqual(run.returncode, 0)
-                self.assertIn("staging plugin requires a real absolute FACTORY_HOME", run.stdout)
+                self.assertIn("factory-home-only plugin requires a real absolute FACTORY_HOME", run.stdout)
                 self.assertFalse((home / "hermes-invoked").exists(), run.stdout)
                 self.assertFalse((home / ".hermes").exists(), run.stdout)
 
@@ -165,7 +165,7 @@ print('NATIVE_CODER_CONFIG_AND_DISPATCHER_OK')
 
 
 class StagingScopeTests(unittest.TestCase):
-    """The staging guard installs only below FACTORY_HOME/.hermes of a marked private HOME. Dry-run only: never writes."""
+    """The reviewed-ready, factory-home-only guard installs only below FACTORY_HOME/.hermes of a marked private HOME. Dry-run only: never writes."""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -240,6 +240,24 @@ class StagingScopeTests(unittest.TestCase):
         for dest in (self.home / "plugins", self.home.parent / "other/.hermes/plugins", self.home / ".hermes/../escape/plugins"):
             with self.subTest(dest=str(dest)):
                 self.refused("destination outside FACTORY_HOME/.hermes", dest=dest)
+
+    def test_unknown_install_scope_refused_before_any_write(self):
+        """Only `factory-home-only` is a valid install_scope; any other value is refused even inside a marked factory HOME."""
+        import shutil
+        fixture = Path(self.tmp.name) / "fixture"
+        (fixture / "hermes/plugins").mkdir(parents=True)
+        shutil.copy2(ROOT / "hermes/install_factory_plugins.sh", fixture / "hermes/install_factory_plugins.sh")
+        shutil.copytree(PLUGIN, fixture / "hermes/plugins" / PLUGIN.name)
+        manifest = json.loads((ROOT / "hermes/plugins/manifest.json").read_text())
+        manifest["plugins"][PLUGIN.name]["install_scope"] = "anywhere"
+        (fixture / "hermes/plugins/manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+        env = {k: v for k, v in os.environ.items() if k not in ("FACTORY_HOME", "HERMES_PLUGINS_DIR")}
+        env.update(FACTORY_HOME=str(self.home), HOME=str(self.home), HERMES_PLUGINS_DIR=str(self.home / ".hermes/profiles/coder-claude/plugins"))
+        run = subprocess.run(["bash", str(fixture / "hermes/install_factory_plugins.sh"), "--plugin", PLUGIN.name, "--dry-run", "--replace-reviewed"],
+                             env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=30)
+        self.assertNotEqual(run.returncode, 0, run.stdout)
+        self.assertIn("unknown install_scope", run.stdout)
+        self.assertFalse((self.home / ".hermes").exists(), run.stdout)
 
 
 if __name__ == "__main__":

@@ -32,7 +32,7 @@
     "factory-execution-guards": {
       "source": "hermes/plugins/factory-execution-guards",
       "installable": true,
-      "activation_status": "staging",
+      "activation_status": "reviewed-ready",
       "install_scope": "factory-home-only",
       "files": {
         "__init__.py": "0dcf3ad1cdcb15e7c6e9559c136d0ad3ed9d8135",

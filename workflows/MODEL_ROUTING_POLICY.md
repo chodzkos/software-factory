@@ -1,6 +1,6 @@
 # Software Factory Model Routing Policy v1
 
-> **Kandydat źródłowy 0.13.0 — stopień STAGING.** Opis profilu poniżej jest docelowy, nie potwierdza aktywacji na serwerze. Manifest guards: `activation_status=staging`, `install_scope=factory-home-only` — instalacja wyłącznie do oznaczonego, prywatnego `FACTORY_HOME` (nigdy do `~/.hermes` konta logowania). Status produkcyjny `reviewed-ready` wymaga dalszych bramek (hosted CI, ścieżki live, systemd) i recenzji.
+> **Wersja 0.13.0 — status produkcyjny `reviewed-ready`, zakres `factory-home-only`.** Manifest guards: `activation_status=reviewed-ready`, `install_scope=factory-home-only` — instalacja wyłącznie do oznaczonego, prywatnego `FACTORY_HOME` (nigdy do `~/.hermes` konta logowania); instalator wymusza ten zakres niezależnie od statusu. Podstawa statusu: niezależne recenzje dokładnych bajtów 4–7, hosted CI, live G9–G11 (handoff coder-claude -> reviewer-gpt, przypięte modele, `fj_live_scope`) i mechaniczne sondy negatywne G10b w prawdziwym `FACTORY_HOME`.
 
 This policy supplements `standards/SOFTWARE_DEVELOPMENT_STANDARD.md` and `workflows/KANBAN_CONTRACT.md`. The Standard remains authoritative.
 
