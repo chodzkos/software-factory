@@ -84,6 +84,7 @@ Manifest production state:
 
 - `installable=true`
 - `activation_status=reviewed-ready`
+- `install_scope=factory-home-only` for `factory-execution-guards` (the installer requires a marked, private `FACTORY_HOME`, never the login `~/.hermes`)
 
 Required deployment sequence:
 

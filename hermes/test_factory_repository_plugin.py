@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import ast
+import contextlib
 import importlib.util
 import json
 import os
@@ -16,18 +17,27 @@ ROOT = Path(__file__).resolve().parents[1]
 PLUGIN = ROOT / "hermes" / "plugins" / "factory-repository-readonly"
 
 
+@contextlib.contextmanager
 def _install_registry_stub():
     tools = types.ModuleType("tools")
     registry = types.ModuleType("tools.registry")
     registry.tool_result = lambda payload: json.dumps({"result": payload}, ensure_ascii=False)
     registry.tool_error = lambda message, **kw: json.dumps({"error": str(message)}, ensure_ascii=False)
     tools.registry = registry
-    sys.modules["tools"] = tools
-    sys.modules["tools.registry"] = registry
+    missing = object()
+    before = {name: sys.modules.get(name, missing) for name in ("tools", "tools.registry")}
+    sys.modules.update({"tools": tools, "tools.registry": registry})
+    try:
+        yield
+    finally:
+        for name, previous in before.items():
+            if previous is missing:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = previous
 
 
 def load_plugin():
-    _install_registry_stub()
     name = "factory_repository_readonly_testpkg"
     for key in list(sys.modules):
         if key == name or key.startswith(name + "."):
@@ -40,7 +50,8 @@ def load_plugin():
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module
     assert spec and spec.loader
-    spec.loader.exec_module(module)
+    with _install_registry_stub():
+        spec.loader.exec_module(module)
     return module, sys.modules[name + ".repository_tools"]
 
 
@@ -59,6 +70,12 @@ class FakeContext:
 class RepositoryReadonlyPluginTests(unittest.TestCase):
     def setUp(self):
         self.plugin, self.rt = load_plugin()
+
+    def test_loader_restores_host_tools_and_registry_modules(self):
+        before = {name: sys.modules.get(name) for name in ("tools", "tools.registry")}
+        load_plugin()
+        for name, module in before.items():
+            self.assertIs(sys.modules.get(name), module, name)
 
     def bound_env(self, root: Path):
         return patch.dict(

@@ -1,6 +1,6 @@
 name: factory-repository-readonly
-version: 0.2.0
-description: Workspace-bound read-only repository analysis tools and Kanban completion guard for Software Factory repository-analyst.
+version: 0.3.0
+description: Workspace-bound read-only repository tools for analyst, reviewer, and release-decision profiles.
 provides_tools:
   - factory_repo_map
   - factory_repo_read

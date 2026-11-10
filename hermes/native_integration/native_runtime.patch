@@ -1,0 +1,2723 @@
+diff --git a/agent/agent_runtime_helpers.py b/agent/agent_runtime_helpers.py
+index 79cfe58135c51157ff109ffd0a91a1bf6f2f494b..90ce5eafe0f6ff539b676a7f12f5f0f7c1890e85 100644
+--- a/agent/agent_runtime_helpers.py
++++ b/agent/agent_runtime_helpers.py
+@@ -22,6 +22,8 @@ Methods covered:
+ 
+ from __future__ import annotations
+ 
++from factory_worker_lifetime import tool_entry
++
+ import copy
+ import json
+ import logging
+@@ -3035,6 +3037,7 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
+             )
+ 
+ 
++@tool_entry
+ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_id: str,
+                  tool_call_id: Optional[str] = None, messages: list = None,
+                  pre_tool_block_checked: bool = False,
+diff --git a/agent/anthropic_adapter.py b/agent/anthropic_adapter.py
+index ccc2a96269b63d1f088438ca8fdfc86894db17c6..3eb007494446b4c6739f82cab59b6ec8b0ca241f 100644
+--- a/agent/anthropic_adapter.py
++++ b/agent/anthropic_adapter.py
+@@ -3170,6 +3170,7 @@ def create_anthropic_message(
+     prefer_stream: bool = True,
+     on_stream_event=None,
+     on_response=None,
++    factory_agent=None,
+ ) -> Any:
+     """Create an Anthropic message, aggregating via stream when available.
+ 
+@@ -3194,6 +3195,8 @@ def create_anthropic_message(
+     in particular. Only fires on the streaming path, which is the one the main
+     turn loop takes.
+     """
++    from factory_worker_lifetime import check_agent, checked_model_call
++    check_agent(factory_agent)
+     sanitize_anthropic_kwargs(api_kwargs, log_prefix=log_prefix)
+ 
+     messages_api = getattr(client, "messages", None)
+@@ -3202,7 +3205,7 @@ def create_anthropic_message(
+         stream_kwargs = dict(api_kwargs)
+         stream_kwargs.pop("stream", None)
+         try:
+-            with stream_fn(**stream_kwargs) as stream:
++            with checked_model_call(factory_agent, stream_kwargs, lambda final: stream_fn(**final)) as stream:
+                 if callable(on_response):
+                     try:
+                         on_response(getattr(stream, "response", None))
+@@ -3223,7 +3226,9 @@ def create_anthropic_message(
+                                 "%son_stream_event callback failed",
+                                 log_prefix, exc_info=True,
+                             )
+-                return stream.get_final_message()
++                response = stream.get_final_message()
++                check_agent(factory_agent)
++                return response
+         except Exception as exc:
+             if not _is_stream_unavailable_error(exc):
+                 raise
+@@ -3236,4 +3241,4 @@ def create_anthropic_message(
+ 
+     create_kwargs = dict(api_kwargs)
+     create_kwargs.pop("stream", None)
+-    return messages_api.create(**create_kwargs)
++    return checked_model_call(factory_agent, create_kwargs, lambda final: messages_api.create(**final))
+diff --git a/agent/chat_completion_helpers.py b/agent/chat_completion_helpers.py
+index 4805362731236b7de96bcff7987fe5625beac453..eafc1e95d3f6b53d677c358c439e6e3234e116cc 100644
+--- a/agent/chat_completion_helpers.py
++++ b/agent/chat_completion_helpers.py
+@@ -15,6 +15,9 @@ sites unchanged.  Symbols that tests patch on ``run_agent`` (e.g.
+ 
+ from __future__ import annotations
+ 
++from factory_worker_lifetime import (model_builder, model_request, agent_phase,
++                                     checked_model_call, record_model_payload, check_agent)
++
+ import contextvars
+ import json
+ import logging
+@@ -923,6 +926,7 @@ def _bedrock_reasoning_stale_floor(model_id: object) -> "float | None":
+     return None
+ 
+ 
++@model_request
+ def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
+     """Run one non-streaming LLM request for the active api_mode and return it.
+ 
+@@ -969,7 +973,7 @@ def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
+         api_kwargs.pop("__bedrock_converse__", None)
+         client = _get_bedrock_runtime_client(region)
+         try:
+-            raw_response = client.converse(**api_kwargs)
++            raw_response = checked_model_call(agent, api_kwargs, lambda final: client.converse(**final))
+         except Exception as _bedrock_exc:
+             # Evict the cached client on stale-connection failures
+             # so the outer retry loop builds a fresh client/pool.
+@@ -994,9 +998,9 @@ def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
+         _completions = getattr(getattr(agent.client, "chat", None), "completions", None)
+         if not callable(getattr(_completions, "prepare", None)):
+             api_kwargs.pop("_moa_prepared_request", None)
+-        return agent.client.chat.completions.create(**api_kwargs)
++        return checked_model_call(agent, api_kwargs, lambda final: agent.client.chat.completions.create(**final))
+     request_client = make_client("chat_completion_request")
+-    return request_client.chat.completions.create(**api_kwargs)
++    return checked_model_call(agent, api_kwargs, lambda final: request_client.chat.completions.create(**final))
+ 
+ 
+ def should_use_direct_api_call(agent) -> bool:
+@@ -1105,6 +1109,7 @@ def _inline_nonstream_hard_timeout(stale_timeout: float):
+         return stale_timeout
+ 
+ 
++@model_request
+ def direct_api_call(agent, api_kwargs: dict):
+     """Run a non-streaming LLM call inline on the conversation thread.
+ 
+@@ -1332,6 +1337,7 @@ def direct_api_call(agent, api_kwargs: dict):
+             )
+ 
+ 
++@model_request
+ def interruptible_api_call(agent, api_kwargs: dict):
+     """
+     Run the API call in a background thread so the main conversation loop
+@@ -1346,6 +1352,8 @@ def interruptible_api_call(agent, api_kwargs: dict):
+     the main retry loop can try again with backoff / credential rotation /
+     provider fallback.
+     """
++    from factory_worker_lifetime import check_model_payload
++    check_model_payload(agent, api_kwargs)
+     # Cron and other non-interactive, nested-pool contexts must not spawn the
+     # interrupt worker — it wedges before the socket opens on the 2nd+ call
+     # (#62151). Run inline instead. See should_use_direct_api_call.
+@@ -1822,8 +1830,11 @@ def interruptible_api_call(agent, api_kwargs: dict):
+ 
+ 
+ 
++@model_builder
+ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = None) -> dict:
+     """Build the keyword arguments dict for the active API mode."""
++    from factory_worker_lifetime import check_model_tools
++    check_model_tools(agent, tools_for_api)
+     if tools_for_api is None:
+         tools_for_api = agent.tools
+ 
+@@ -2842,6 +2853,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
+ 
+ 
+ 
++@agent_phase
+ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
+     """Request a summary when max iterations are reached. Returns the final response text."""
+     agent._safe_print(
+@@ -2854,9 +2866,10 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
+     def _managed_summary_call(request, callback, *, retry_count: int):
+         from agent import relay_llm
+ 
++        record_model_payload(agent, request, expected_tools=[])
+         return relay_llm.execute_current(
+             request,
+-            callback,
++            lambda final: checked_model_call(agent, final, callback),
+             name=str(getattr(agent, "provider", "") or "provider"),
+             model_name=str(getattr(agent, "model", "") or ""),
+             metadata={
+@@ -2993,8 +3006,7 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
+             summary_extra_body["tags"] = _portal_tags()
+ 
+         if agent.api_mode == "codex_responses":
+-            codex_kwargs = agent._build_api_kwargs(api_messages)
+-            codex_kwargs.pop("tools", None)
++            codex_kwargs = agent._build_api_kwargs(api_messages, tools_for_api=[])
+             summary_response = agent._run_codex_stream(codex_kwargs)
+             _ct_sum = agent._get_transport()
+             _cnr_sum = _ct_sum.normalize_response(summary_response)
+@@ -3108,8 +3120,10 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
+         else:
+             # Retry summary generation
+             if agent.api_mode == "codex_responses":
+-                codex_kwargs = agent._build_api_kwargs(api_messages)
+-                codex_kwargs.pop("tools", None)
++                # Rebuild the same zero-tool capability envelope on retry.
++                # Building with all tools then popping only `tools` leaves
++                # tool_choice/other capability fields behind and invalidates it.
++                codex_kwargs = agent._build_api_kwargs(api_messages, tools_for_api=[])
+                 retry_response = agent._run_codex_stream(codex_kwargs)
+                 _ct_retry = agent._get_transport()
+                 _cnr_retry = _ct_retry.normalize_response(retry_response)
+@@ -3268,6 +3282,7 @@ def _build_partial_stream_stub(
+     )
+ 
+ 
++@model_request
+ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=None):
+     """Streaming variant of _interruptible_api_call for real-time token delivery.
+ 
+@@ -3284,6 +3299,8 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
+     Falls back to _interruptible_api_call on provider errors indicating
+     streaming is not supported.
+     """
++    from factory_worker_lifetime import check_model_payload
++    check_model_payload(agent, api_kwargs)
+     if agent._interrupt_requested:
+         raise InterruptedError("Agent interrupted before streaming API call")
+ 
+@@ -3404,7 +3421,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
+                     final_kwargs.pop("__bedrock_converse__", None)
+                     client = _get_bedrock_runtime_client(region)
+                     try:
+-                        raw_response = client.converse_stream(**final_kwargs)
++                        raw_response = checked_model_call(agent, final_kwargs, lambda final: client.converse_stream(**final))
+                     except Exception as _bedrock_exc:
+                         # InvokeModel-only policies cannot open a stream. Keep
+                         # the fallback inside the same managed Relay attempt so
+@@ -3423,7 +3440,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
+                                 type(_bedrock_exc).__name__,
+                             )
+                             return normalize_converse_response(
+-                                client.converse(**final_kwargs)
++                                checked_model_call(agent, final_kwargs, lambda final: client.converse(**final))
+                             )
+                         if is_stale_connection_error(_bedrock_exc):
+                             invalidate_runtime_client(region)
+@@ -3923,7 +3940,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
+             attempt_request_client["value"] = request_client
+             last_chunk_time["t"] = time.time()
+             agent._touch_activity("waiting for provider response (streaming)")
+-            return request_client.chat.completions.create(**stream_kwargs)
++            return checked_model_call(agent, stream_kwargs, lambda final: request_client.chat.completions.create(**final))
+ 
+         def _stream_created(raw_stream: Any) -> None:
+             response = getattr(raw_stream, "response", None)
+@@ -4505,9 +4522,11 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
+                 final_kwargs,
+                 log_prefix=getattr(agent, "log_prefix", ""),
+             )
+-            manager = request_client.messages.stream(**final_kwargs)
+-            _stream_context["manager"] = manager
+-            return manager.__enter__()
++            def enter(final):
++                manager = request_client.messages.stream(**final)
++                _stream_context["manager"] = manager
++                return manager.__enter__()
++            return checked_model_call(agent, final_kwargs, enter)
+ 
+         def _anthropic_stream_created(raw_stream: Any) -> None:
+             _stream_context["stream"] = raw_stream
+diff --git a/agent/codex_runtime.py b/agent/codex_runtime.py
+index f01d042b53ff692d37ff4f07b9beba3d79a394ee..6ab997119c8d88e7f59a8ce88cd672b90a4e76c8 100644
+--- a/agent/codex_runtime.py
++++ b/agent/codex_runtime.py
+@@ -16,6 +16,8 @@ compatibility.
+ 
+ from __future__ import annotations
+ 
++from factory_worker_lifetime import model_request, checked_model_call
++
+ import json
+ import logging
+ import time
+@@ -1305,6 +1307,7 @@ def _consume_codex_event_stream(
+     return final
+ 
+ 
++@model_request
+ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta=None):
+     """Execute one streaming Responses API request and return the final response.
+ 
+@@ -1349,7 +1352,7 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
+         def _open_codex_stream(next_api_kwargs: dict[str, Any]):
+             stream_kwargs = dict(next_api_kwargs)
+             stream_kwargs["stream"] = True
+-            return active_client.responses.create(**stream_kwargs)
++            return checked_model_call(agent, stream_kwargs, lambda final: active_client.responses.create(**final))
+ 
+         def _codex_stream_created(_raw_stream: Any) -> None:
+             # Claim the delta sink for THIS physical attempt. A newer attempt
+diff --git a/agent/conversation_loop.py b/agent/conversation_loop.py
+index ab8e60b6d07eaa8d8156832b739b5a3ffc764ef0..815e2a36c611d29610c4b4d09dae8cf3b879bbe2 100644
+--- a/agent/conversation_loop.py
++++ b/agent/conversation_loop.py
+@@ -1742,6 +1742,8 @@ def run_conversation(
+     Returns:
+         Dict: Complete conversation result with final response and message history
+     """
++    from factory_worker_lifetime import check_agent, check_moa_turn
++    check_agent(agent)
+     if moa_config is None:
+         try:
+             from hermes_cli.moa_config import decode_moa_turn
+@@ -1755,6 +1757,10 @@ def run_conversation(
+         except Exception:
+             pass
+ 
++    # Outside the decoder's optional-error handler: refusal must not be swallowed.
++    # A per-turn MoA request can fan out even when the main provider is not MoA.
++    check_moa_turn(agent, moa_config)
++
+     # The gateway caches agents across user turns.  Compression state is
+     # per-turn: carrying a prior in-place boundary forward would make a later
+     # uncompressed result look like a compacted transcript to gateway writers.
+@@ -2272,6 +2278,7 @@ def run_conversation(
+         if effective_system:
+             api_messages = [{"role": "system", "content": effective_system}] + api_messages
+ 
++        check_moa_turn(agent, moa_config)
+         if moa_config:
+             try:
+                 from agent.message_content import flatten_message_text as _flatten_mt
+@@ -2445,6 +2452,7 @@ def run_conversation(
+         # Preparing here makes the pre-API guard measure the exact prompt the
+         # aggregator will receive; ``create()`` consumes this private prepared
+         # request later without running the advisors a second time.
++        check_agent(agent)  # Refuse a protected route drift before MoA prepare/rebase.
+         _moa_prepared_request = None
+         if agent.provider == "moa":
+             _moa_completions = getattr(getattr(agent.client, "chat", None), "completions", None)
+diff --git a/agent/tool_executor.py b/agent/tool_executor.py
+index 90226b02e1bd0e344cc3f18af339beb1fd8a1e6b..c3dcfa0237d85bfc9148c13f56e2afe11deeafee 100644
+--- a/agent/tool_executor.py
++++ b/agent/tool_executor.py
+@@ -12,6 +12,8 @@ extracted functions reach back through the ``run_agent`` module via
+ 
+ from __future__ import annotations
+ 
++from factory_worker_lifetime import tool_entry, abandon_worker
++
+ import concurrent.futures
+ import json
+ from pathlib import Path
+@@ -537,6 +539,7 @@ def _run_tool_activity_heartbeat(
+         pass
+ 
+ 
++@tool_entry
+ def _run_agent_tool_execution_middleware(
+     agent,
+     *,
+@@ -865,6 +868,7 @@ def _run_sequential_tool_execution_middleware(
+                     )
+ 
+         if interrupted:
++            abandon_worker(agent, 'sequential tool interrupted; effects may exist')
+             # Belt-and-braces: interrupt() already fans out to tracked worker
+             # tids, but the worker may have registered after the fan-out ran.
+             for tid in worker_tid:
+@@ -912,6 +916,7 @@ def _run_sequential_tool_execution_middleware(
+ 
+         # Only reachable when a deadline exists (interrupted returns above).
+         assert timeout_s is not None
++        abandon_worker(agent, 'sequential tool deadline exceeded; effects may exist')
+         message = (
+             f"Error executing tool '{function_name}': "
+             f"timed out after {timeout_s:.1f}s"
+@@ -946,6 +951,11 @@ def _run_sequential_tool_execution_middleware(
+             blocked=False,
+             dispatched=True,
+         )
++    except BaseException:
++        if abandon_worker(agent, 'sequential executor exited exceptionally; effects may exist'):
++            timed_out = True
++            future.cancel()
++        raise
+     finally:
+         # Never join a wedged worker. DaemonThreadPoolExecutor also keeps it out
+         # of the stdlib atexit join, matching the concurrent timeout path.
+@@ -1055,6 +1065,8 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
+     and /steer injection — used when this call is one segment of a larger
+     mixed batch and the segmented dispatcher owns the turn-end work.
+     """
++    from factory_worker_lifetime import check_agent
++    protected_worker = check_agent(agent)
+     tool_calls = assistant_message.tool_calls
+     num_tools = len(tool_calls)
+ 
+@@ -1184,8 +1196,9 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
+ 
+     def _abandon_batch() -> None:
+         """Release every gate-parked worker so none dispatches post-abandon."""
+-        batch_abandoned.set()
++        abandon_worker(agent, 'concurrent tool batch abandoned; effects may exist')
+         with start_condition:
++            batch_abandoned.set()
+             start_condition.notify_all()
+ 
+     # The gate bound must sit UNDER the batch deadline, otherwise the deadline
+@@ -1404,15 +1417,18 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
+                 logger.info("tool %s failed (%.2fs): %s", function_name, duration, result[:200])
+             else:
+                 logger.info("tool %s completed (%.2fs, %d chars)", function_name, duration, len(result))
+-            results[index] = (
+-                function_name,
+-                function_args,
+-                result,
+-                duration,
+-                is_error,
+-                blocked,
+-                middleware_trace,
+-            )
++            with start_condition:
++                if batch_abandoned.is_set() and protected_worker is not None:
++                    return
++                results[index] = (
++                    function_name,
++                    function_args,
++                    result,
++                    duration,
++                    is_error,
++                    blocked,
++                    middleware_trace,
++                )
+         finally:
+             # Teardown advance: keep the counter moving for any later-ordered
+             # worker. Never let the abandonment signal escape from here — the
+@@ -1619,6 +1635,10 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
+                             f"concurrent tools running ({_conc_elapsed}s, "
+                             f"{len(not_done)} remaining: {', '.join(_still_running[:3])})"
+                         )
++            except BaseException:
++                if abandon_worker(agent, 'concurrent executor exited exceptionally; effects may exist'):
++                    abandon_executor = True
++                raise
+             finally:
+                 # Belt-and-braces: any exit from the wait loop that abandoned
+                 # the batch must release gate-parked workers, including the
+@@ -1675,7 +1695,11 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
+         elif r is None:
+             # Tool was cancelled (interrupt) or thread didn't return
+             if agent._interrupt_requested:
+-                function_result = f"[Tool execution cancelled — {name} was skipped due to user interrupt]"
++                if protected_worker is not None and batch_abandoned.is_set():
++                    function_result = f"[Tool execution abandoned — {name}; effects may exist, inspect state, do not retry automatically]"
++                    effect_disposition = "unknown"
++                else:
++                    function_result = f"[Tool execution cancelled — {name} was skipped due to user interrupt]"
+                 _emit_terminal_post_tool_call(
+                     agent,
+                     function_name=name,
+@@ -1870,7 +1894,8 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
+ 
+ 
+ 
+-def _append_cancelled_tool_results(messages: list, tool_calls, *, reason: str) -> None:
++def _append_cancelled_tool_results(messages: list, tool_calls, *, reason: str,
++                                   first_effect_unknown: bool = False) -> None:
+     """Append a cancelled ``tool`` result for each call in ``tool_calls``.
+ 
+     Used when a hard interrupt (KeyboardInterrupt / BaseException) aborts the
+@@ -1880,13 +1905,16 @@ def _append_cancelled_tool_results(messages: list, tool_calls, *, reason: str) -
+     cooperative-interrupt skip block and the concurrent path, both of which
+     already emit a result for every call_id.
+     """
+-    for tc in tool_calls:
++    for index, tc in enumerate(tool_calls):
+         name = getattr(getattr(tc, "function", None), "name", "") or "tool"
++        unknown = first_effect_unknown and index == 0
++        content = (
++            f"[Tool execution abandoned — {name}; effects may exist, inspect state, do not retry automatically]"
++            if unknown else f"[Tool execution cancelled — {name} was skipped due to {reason}]"
++        )
+         messages.append(make_tool_result_message(
+-            name,
+-            f"[Tool execution cancelled — {name} was skipped due to {reason}]",
+-            getattr(tc, "id", "") or "",
+-            effect_disposition="none",
++            name, content, getattr(tc, "id", "") or "",
++            effect_disposition="unknown" if unknown else "none",
+         ))
+ 
+ 
+@@ -1897,6 +1925,8 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
+     and /steer injection — used when this call is one segment of a larger
+     mixed batch and the segmented dispatcher owns the turn-end work.
+     """
++    from factory_worker_lifetime import check_agent
++    protected_worker = check_agent(agent)
+     # Resolve the context-scaled tool-output budget once per turn.
+     _tool_budget = _budget_for_agent(agent)
+ 
+@@ -2439,6 +2469,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
+                     messages,
+                     assistant_message.tool_calls[i - 1:],
+                     reason="keyboard interrupt",
++                    first_effect_unknown=protected_worker is not None,
+                 )
+                 raise
+             except Exception as tool_error:
+@@ -2518,6 +2549,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
+                     messages,
+                     assistant_message.tool_calls[i - 1:],
+                     reason="keyboard interrupt",
++                    first_effect_unknown=protected_worker is not None,
+                 )
+                 raise
+             except Exception as tool_error:
+@@ -2746,6 +2778,8 @@ def execute_tool_calls_segmented(agent, assistant_message, messages: list, effec
+     *k+1..n* without executing them while preserving one result per
+     tool_call_id.
+     """
++    from factory_worker_lifetime import check_agent
++    check_agent(agent)
+     from types import SimpleNamespace
+ 
+     if segments is None:
+diff --git a/factory_finalization_core.py b/factory_finalization_core.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..006e1e745dadc573c32fc88fad68eb3d2a297091
+--- /dev/null
++++ b/factory_finalization_core.py
+@@ -0,0 +1,482 @@
++"""One-start finalization for NEW private job databases only.
++
++No daemon, model, shell, task requeue, native migration or historical recovery.
++The caller must fence service admission and supply freshly verified quiescence.
++The journal is captured by SQLite triggers in the SAME commits as native task
++creation and run claims. Live writes require a per-connection function installed
++only by the sealed driver inside the bound service cgroup. Not a same-UID sandbox.
++"""
++import contextlib as fj_contextlib
++import hashlib as fj_hashlib
++import json as fj_jsonlib
++import os as fj_os
++from pathlib import Path as FjPath
++import re as fj_re
++import sqlite3 as fj_sqlite3
++import stat as fj_stat
++import time as fj_time
++
++FJ_PROTOCOL = 'one-start-finalization-v1'
++FJ_TABLE = 'sf_finalization_job'
++FJ_RUNS = 'sf_finalization_runs'
++
++
++class FjRefused(RuntimeError):
++    pass
++
++
++class FjPhaseFinished(FjRefused):
++    pass
++
++
++def fj_need(value, code):
++    if not value:
++        raise FjRefused(code)
++
++
++def fj_bytes(value):
++    return (fj_jsonlib.dumps(value, sort_keys=True, ensure_ascii=False, indent=2)+'\n').encode()
++
++
++def fj_sha(raw):
++    return fj_hashlib.sha256(raw).hexdigest()
++
++
++def fj_pairs(items):
++    out = {}
++    for key, value in items:
++        fj_need(key not in out, 'duplicate_finalization_key')
++        out[key] = value
++    return out
++
++
++def fj_decode(raw):
++    return fj_jsonlib.loads(raw, object_pairs_hook=fj_pairs)
++
++
++def fj_path(path):
++    path = FjPath(path)
++    fj_need(path.is_absolute() and '..' not in path.parts, 'finalization_path_not_absolute')
++    for item in (path, *path.parents):
++        fj_need(not item.is_symlink(), 'finalization_symlink')
++    return path
++
++
++def fj_read(path, limit=1024*1024):
++    path = fj_path(path)
++    fd = fj_os.open(path, fj_os.O_RDONLY | fj_os.O_NOFOLLOW | fj_os.O_CLOEXEC)
++    try:
++        before = fj_os.fstat(fd)
++        fj_need(fj_stat.S_ISREG(before.st_mode) and before.st_nlink == 1
++                and before.st_uid == fj_os.geteuid() and before.st_size <= limit,
++                'finalization_input_not_owned_regular_single_link')
++        chunks = []; size = 0
++        while True:
++            data = fj_os.read(fd, min(65536, limit+1-size))
++            if not data:
++                break
++            chunks.append(data); size += len(data)
++            fj_need(size <= limit, 'finalization_input_oversize')
++        after = fj_os.fstat(fd)
++        identity = lambda s: (s.st_dev, s.st_ino, s.st_size, s.st_mtime_ns, s.st_ctime_ns)
++        fj_need(identity(before) == identity(after) and size == before.st_size,
++                'finalization_input_changed_during_read')
++        return b''.join(chunks)
++    finally:
++        fj_os.close(fd)
++
++
++def fj_db_identity(path):
++    st = fj_path(path).stat()
++    fj_need(fj_stat.S_ISREG(st.st_mode) and st.st_nlink == 1 and st.st_uid == fj_os.geteuid()
++            and fj_stat.S_IMODE(st.st_mode) in (0o600, 0o644), 'finalization_database_identity_unsafe')
++    return {'device': st.st_dev, 'inode': st.st_ino, 'uid': st.st_uid}
++
++
++# Explicit statements, never executescript inside a write transaction (which
++# would implicitly COMMIT). The exact schema is rechecked before any finalization.
++FJ_SCHEMA = (
++    '''CREATE TABLE sf_finalization_job (
++        singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
++        binding TEXT NOT NULL, binding_sha256 TEXT NOT NULL,
++        task_id TEXT, last_run_id INTEGER, generation INTEGER NOT NULL DEFAULT 0,
++        state TEXT NOT NULL CHECK (state IN ('open','closed')),
++        receipt TEXT
++    )''',
++    '''CREATE TABLE sf_finalization_runs (
++        run_id INTEGER PRIMARY KEY, task_id TEXT NOT NULL,
++        profile TEXT, claim_lock TEXT, started_at INTEGER
++    )''',
++    '''CREATE TRIGGER sf_finalization_task_insert BEFORE INSERT ON tasks BEGIN
++        SELECT CASE WHEN sf_one_start_scope() != 'live'
++          OR (SELECT COUNT(*) FROM sf_finalization_job) != 1
++          OR (SELECT state FROM sf_finalization_job) != 'open'
++          OR (SELECT task_id FROM sf_finalization_job) IS NOT NULL
++          THEN RAISE(ABORT, 'one_start_task_insert_refused') END;
++    END''',
++    '''CREATE TRIGGER sf_finalization_task_bind AFTER INSERT ON tasks BEGIN
++        UPDATE sf_finalization_job SET task_id = NEW.id, generation = generation + 1;
++    END''',
++    '''CREATE TRIGGER sf_finalization_task_update BEFORE UPDATE ON tasks BEGIN
++        SELECT CASE WHEN sf_one_start_scope() NOT IN ('live','finalize')
++          OR (SELECT state FROM sf_finalization_job) != 'open'
++          OR OLD.id IS NOT (SELECT task_id FROM sf_finalization_job)
++          OR NEW.id IS NOT OLD.id
++          OR (NEW.current_run_id IS NOT NULL AND NEW.current_run_id IS NOT
++              (SELECT last_run_id FROM sf_finalization_job))
++          THEN RAISE(ABORT, 'one_start_task_update_refused') END;
++    END''',
++    '''CREATE TRIGGER sf_finalization_task_delete BEFORE DELETE ON tasks BEGIN
++        SELECT RAISE(ABORT, 'one_start_task_delete_refused');
++    END''',
++    '''CREATE TRIGGER sf_finalization_run_insert BEFORE INSERT ON task_runs BEGIN
++        SELECT CASE WHEN sf_one_start_scope() != 'live'
++          OR (SELECT state FROM sf_finalization_job) != 'open'
++          OR NEW.task_id IS NOT (SELECT task_id FROM sf_finalization_job)
++          OR EXISTS (SELECT 1 FROM task_runs WHERE ended_at IS NULL)
++          THEN RAISE(ABORT, 'one_start_run_insert_refused') END;
++    END''',
++    '''CREATE TRIGGER sf_finalization_run_bind AFTER INSERT ON task_runs BEGIN
++        INSERT INTO sf_finalization_runs(run_id, task_id, profile, claim_lock, started_at)
++            VALUES (NEW.id, NEW.task_id, NEW.profile, NEW.claim_lock, NEW.started_at);
++        UPDATE sf_finalization_job SET last_run_id = NEW.id, generation = generation + 1;
++    END''',
++    '''CREATE TRIGGER sf_finalization_run_update BEFORE UPDATE ON task_runs BEGIN
++        SELECT CASE WHEN sf_one_start_scope() NOT IN ('live','finalize')
++          OR (SELECT state FROM sf_finalization_job) != 'open'
++          OR NEW.id IS NOT OLD.id OR NEW.task_id IS NOT OLD.task_id
++          OR NEW.profile IS NOT OLD.profile OR NEW.started_at IS NOT OLD.started_at
++          OR (OLD.ended_at IS NOT NULL AND NEW.ended_at IS NOT OLD.ended_at)
++          THEN RAISE(ABORT, 'one_start_run_update_refused') END;
++    END''',
++    '''CREATE TRIGGER sf_finalization_run_delete BEFORE DELETE ON task_runs BEGIN
++        SELECT RAISE(ABORT, 'one_start_run_delete_refused');
++    END''',
++)
++
++
++def fj_schema_map():
++    return {statement.split()[2]: ' '.join(statement.split()) for statement in FJ_SCHEMA}
++
++
++def fj_check_schema(conn):
++    rows = conn.execute("SELECT name,sql FROM sqlite_master WHERE name GLOB 'sf_finalization_*'").fetchall()
++    actual = {row['name']: ' '.join(row['sql'].split()) for row in rows}
++    fj_need(actual == fj_schema_map(), 'finalization_schema_changed')
++
++
++def fj_register(conn, callback):
++    # Deliberately NOT deterministic: cancellation is checked on every statement.
++    conn.create_function('sf_one_start_scope', 0, callback, deterministic=False)
++
++
++def fj_binding_base(spec, descriptor_raw):
++    d = fj_decode(descriptor_raw)
++    job = fj_path(spec['job']); public = fj_path(d['public'])
++    expected_db = job/'task-home/.hermes/kanban/boards'/spec['board']/'kanban.db'
++    fj_need(fj_re.fullmatch(r'sf-job-[0-9a-f]{16}', spec['board']) is not None,
++            'finalization_board_not_private_job')
++    fj_need(fj_re.fullmatch(r'[a-z0-9][a-z0-9-]{0,39}', spec['job_id']) is not None,
++            'finalization_invalid_job_id')
++    fj_need(spec['db'] == str(expected_db) and d['job'] == str(job)
++            and d['job_id'] == spec['job_id'] and d['uid'] == fj_os.geteuid()
++            and d['candidate_manifest'] == spec['manifest']
++            and d['backend'] == 'systemd-user-v1'
++            and spec['public'] == str(public/'source-job')
++            and fj_re.fullmatch(r'[0-9a-f]{32}', d['token']) is not None,
++            'finalization_request_descriptor_mismatch')
++    fj_need(fj_sha(fj_read(job/'task_request.json', 32*1024*1024)) == d['request_sha256']
++            and fj_sha(fj_read(job/'source_job_driver.py', 32*1024*1024)) == d['driver_sha256'],
++            'finalization_driver_or_request_changed')
++    return {'schema': 1, 'protocol': FJ_PROTOCOL, 'job_id': spec['job_id'], 'token': d['token'],
++            'descriptor_sha256': fj_sha(descriptor_raw), 'request_sha256': d['request_sha256'],
++            'driver_sha256': d['driver_sha256'], 'candidate_manifest': spec['manifest'],
++            'board': spec['board'], 'db': str(expected_db), 'job': str(job), 'public': str(public),
++            'uid': d['uid'], 'boot': d['boot'], 'max_runs': 2*spec['loop_limits']['coding_cycles']}
++
++
++def fj_initialize(kb, spec, descriptor_raw):
++    """One admission-only initialization, before any service can start."""
++    binding = fj_binding_base(spec, descriptor_raw)
++    path = fj_path(binding['db'])
++    fj_need(not path.exists(), 'finalization_database_already_exists_no_readmission')
++    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
++    old_umask = fj_os.umask(0o077)
++    try:
++        with kb.connect_closing(path, board=binding['board']) as conn:
++            fj_need(conn.execute('SELECT COUNT(*) FROM tasks').fetchone()[0] == 0
++                    and conn.execute('SELECT COUNT(*) FROM task_runs').fetchone()[0] == 0,
++                    'finalization_requires_empty_new_database')
++            binding['database_identity'] = fj_db_identity(path)
++            with kb.write_txn(conn):
++                for statement in FJ_SCHEMA:
++                    conn.execute(statement)
++                conn.execute('INSERT INTO sf_finalization_job(singleton,binding,binding_sha256,state) VALUES(1,?,?,?)',
++                             (fj_bytes(binding).decode(), fj_sha(fj_bytes(binding)), 'open'))
++            fj_check_schema(conn)
++        return binding
++    finally:
++        fj_os.umask(old_umask)
++
++
++def fj_validate_binding(spec):
++    job = FjPath(spec['job'])
++    descriptor_raw = fj_read(job/'managed_job.json')
++    base = fj_binding_base(spec, descriptor_raw)
++    raw = fj_read(job/'finalization_binding.json')
++    fj_need(raw == fj_read(FjPath(base['public'])/'finalization_binding.json'),
++            'finalization_binding_copies_differ')
++    binding = fj_decode(raw)
++    fj_need(set(binding) == set(base)|{'database_identity'}
++            and all(binding[k] == v for k,v in base.items()), 'finalization_binding_identity_changed')
++    fj_need(binding['database_identity'] == fj_db_identity(binding['db']), 'finalization_database_replaced')
++    return binding
++
++
++def fj_live_scope(binding):
++    """Called by SQLite inside the service, never an authority from a report."""
++    try:
++        job, public = FjPath(binding['job']), FjPath(binding['public'])
++        if (public/'finalization_intent.json').exists() or (public/'stop_requested.json').exists():
++            return 'denied'
++        fj_need(binding['uid'] == fj_os.geteuid()
++                and FjPath('/proc/sys/kernel/random/boot_id').read_text().strip() == binding['boot'],
++                'finalization_live_boot_or_uid')
++        fj_need(fj_sha(fj_read(job/'managed_job.json')) == binding['descriptor_sha256'],
++                'finalization_live_descriptor_changed')
++        release = fj_decode(fj_read(public/'managed_service_release.json'))
++        record = fj_decode(fj_read(public/'service_native.json'))
++        unit = 'sf-job-'+binding['token']+'-native.service'
++        cg = release.get('cgroup')
++        fj_need(release.get('token') == binding['token'] and release.get('job_id') == binding['job_id']
++                and release.get('descriptor_sha256') == binding['descriptor_sha256']
++                and release.get('unit') == unit and record.get('unit') == unit
++                and record.get('token') == binding['token']
++                and record.get('descriptor_sha256') == binding['descriptor_sha256']
++                and record.get('uid') == binding['uid'] and record.get('boot') == binding['boot']
++                and record.get('invocation_id') == release.get('invocation_id')
++                and type(release.get('invocation_id')) is str
++                and fj_re.fullmatch(r'[0-9a-f]{32}', release['invocation_id']) is not None
++                and type(cg) is str and cg.endswith('/'+unit) and record.get('cgroup') == cg,
++                'finalization_live_service_binding')
++        groups = FjPath('/proc/self/cgroup').read_text().splitlines()
++        fj_need(groups == ['0::'+cg], 'finalization_writer_outside_bound_cgroup')
++        fj_need(fj_db_identity(binding['db']) == binding['database_identity'],
++                'finalization_live_database_replaced')
++        return 'live'
++    except Exception:
++        return 'denied'
++
++
++def fj_install_runtime(spec):
++    """Add one connection function; retain the native connector and transactions."""
++    binding = fj_validate_binding(spec)
++    from hermes_cli import kanban_db as kb
++    fj_need(not hasattr(kb, '_sf_finalization_binding'), 'finalization_hook_already_installed')
++    native_connect = kb._sqlite_connect
++    def connect(*args, **kwargs):
++        conn = native_connect(*args, **kwargs)
++        try:
++            names = conn.execute('PRAGMA database_list').fetchall()
++            main = next(row[2] for row in names if row[1] == 'main')
++            if main == binding['db']:
++                fj_register(conn, lambda: fj_live_scope(binding))
++            return conn
++        except BaseException:
++            conn.close()
++            raise
++    kb._sf_finalization_binding = dict(binding)
++    kb._sqlite_connect = connect
++    return binding
++
++
++@fj_contextlib.contextmanager
++def fj_open(binding):
++    """Open an EXISTING bound DB, never kb.connect's repair/init/quarantine path."""
++    path = fj_path(binding['db'])
++    fj_need(fj_db_identity(path) == binding['database_identity'], 'finalization_database_replaced')
++    # Check sidecars as well; no symlink/hardlink escape through SQLite journaling.
++    for suffix in ('-wal','-shm','-journal'):
++        sidecar = fj_path(str(path)+suffix)
++        if sidecar.exists():
++            st = sidecar.stat()
++            fj_need(fj_stat.S_ISREG(st.st_mode) and st.st_uid == binding['uid'] and st.st_nlink == 1,
++                    'finalization_unsafe_database_sidecar')
++    conn = fj_sqlite3.connect(path.as_uri()+'?mode=rw', uri=True, timeout=0.1)
++    conn.row_factory = fj_sqlite3.Row
++    try:
++        conn.execute('PRAGMA foreign_keys=ON')
++        conn.execute('PRAGMA synchronous=FULL')
++        conn.execute('PRAGMA busy_timeout=100')
++        fj_register(conn, lambda: 'finalize')
++        fj_need(fj_db_identity(path) == binding['database_identity'], 'finalization_database_replaced_on_open')
++        fj_check_schema(conn)
++        yield conn
++    finally:
++        if conn.in_transaction:
++            conn.rollback()
++        conn.close()
++
++
++def fj_guard(conn, binding):
++    rows = conn.execute('SELECT * FROM sf_finalization_job').fetchall()
++    fj_need(len(rows) == 1 and rows[0]['singleton'] == 1, 'finalization_guard_cardinality')
++    row = dict(rows[0])
++    fj_need(row['binding'] == fj_bytes(binding).decode()
++            and row['binding_sha256'] == fj_sha(fj_bytes(binding)), 'finalization_guard_binding_changed')
++    return row
++
++
++def fj_snapshot(conn, binding):
++    fj_check_schema(conn)
++    guard = fj_guard(conn, binding)
++    tid = guard['task_id']
++    tasks = conn.execute('SELECT * FROM tasks').fetchall()
++    # This is a one-card database from admission. Never pick a card by status.
++    fj_need(len(tasks) == (0 if tid is None else 1), 'finalization_task_inventory_changed')
++    task = dict(tasks[0]) if tasks else None
++    fj_need(task is None or task['id'] == tid, 'finalization_task_binding_changed')
++    runs = [dict(r) for r in conn.execute('SELECT * FROM task_runs ORDER BY id')]
++    journal = [dict(r) for r in conn.execute('SELECT * FROM sf_finalization_runs ORDER BY run_id')]
++    fj_need(len(runs) == len(journal) <= binding['max_runs'], 'finalization_run_inventory_changed')
++    fj_need(guard['last_run_id'] == (runs[-1]['id'] if runs else None)
++            and guard['generation'] == len(runs)+(1 if task else 0), 'finalization_run_generation_changed')
++    for run, saved in zip(runs, journal):
++        fj_need(run['id'] == saved['run_id'] and run['task_id'] == saved['task_id'] == tid
++                and run['profile'] == saved['profile'] and run['started_at'] == saved['started_at'],
++                'finalization_run_binding_changed')
++        if run['ended_at'] is None:
++            fj_need(run['claim_lock'] == saved['claim_lock'], 'finalization_run_claim_changed')
++    open_runs = [r for r in runs if r['ended_at'] is None]
++    if open_runs:
++        fj_need(len(open_runs) == 1 and task is not None and task['status'] == 'running'
++                and task['current_run_id'] == open_runs[0]['id'] == guard['last_run_id']
++                and task['claim_lock'] == open_runs[0]['claim_lock']
++                and task['assignee'] == open_runs[0]['profile'], 'finalization_active_run_conflict')
++        fj_need(task['worker_pid'] == open_runs[0]['worker_pid'], 'finalization_worker_binding_changed')
++    elif task is not None:
++        fj_need(task['current_run_id'] is None and task['claim_lock'] is None
++                and task['claim_expires'] is None and task['worker_pid'] is None
++                and task['status'] != 'running', 'finalization_unjournaled_active_claim')
++    snapshot = {'generation': guard['generation'], 'task': task, 'runs': runs, 'journal': journal}
++    return snapshot, fj_sha(fj_bytes(snapshot))
++
++
++def fj_validate_intent(binding, intent):
++    expected = fj_sha(fj_bytes({'protocol': FJ_PROTOCOL, 'binding_sha256': fj_sha(fj_bytes(binding))}))
++    fj_need(set(intent) == {'schema','protocol','binding_sha256','operation_id','reason','created_utc'}
++            and intent['schema'] == 1 and intent['protocol'] == FJ_PROTOCOL
++            and intent['binding_sha256'] == fj_sha(fj_bytes(binding))
++            and intent['operation_id'] == expected
++            and intent['reason'] in ('failed','cancelled','monitor_lost','postflight_failed'),
++            'finalization_intent_identity_changed')
++    return expected
++
++
++def fj_validate_quiescence(binding, proof):
++    fj_need(proof.get('schema') == 1 and proof.get('binding_sha256') == fj_sha(fj_bytes(binding))
++            and proof.get('token') == binding['token'] and proof.get('boot') == binding['boot']
++            and proof.get('descriptor_sha256') == binding['descriptor_sha256']
++            and proof.get('admission_fenced') is True and proof.get('start_consumed') is True,
++            'finalization_quiescence_binding_changed')
++    if proof.get('kind') == 'never_launched':
++        fj_need(proof.get('unit_not_found') is True and proof.get('service_record_absent') is True
++                and proof.get('release_artifacts_absent') is True, 'finalization_never_launched_not_proved')
++    else:
++        fj_need(proof.get('kind') == 'bound_service_empty'
++                and type(proof.get('invocation_id')) is str
++                and fj_re.fullmatch(r'[0-9a-f]{32}', proof['invocation_id']) is not None
++                and proof.get('unit') == 'sf-job-'+binding['token']+'-native.service'
++                and type(proof.get('cgroup')) is str and proof['cgroup'].endswith('/'+proof['unit'])
++                and proof.get('cgroup_empty') is True and proof.get('observed_processes_absent') is True
++                and proof.get('diagnostic_absence_only') is False
++                and proof.get('previous_boot_ended') is False
++                and proof.get('manager_terminal') is True,
++                'finalization_service_not_verified_quiescent')
++
++
++def fj_finalize(kb, conn, binding, intent, proof, expected_snapshot_sha):
++    """One atomic closure; DB receipt survives a crash before external reporting."""
++    operation = fj_validate_intent(binding, intent)
++    fj_validate_quiescence(binding, proof)
++    fj_need(fj_db_identity(binding['db']) == binding['database_identity'], 'finalization_database_replaced')
++    with kb.write_txn(conn):
++        fj_check_schema(conn)
++        guard = fj_guard(conn, binding)
++        if guard['state'] == 'closed':
++            receipt = fj_decode(guard['receipt'])
++            fj_need(receipt['operation_id'] == operation and receipt['intent'] == intent
++                    and receipt['binding_sha256'] == fj_sha(fj_bytes(binding))
++                    and receipt['quiescence_sha256'] == fj_sha(fj_bytes(receipt['quiescence'])),
++                    'finalization_closed_operation_conflict')
++            fj_validate_quiescence(binding, receipt['quiescence'])
++            snap, unused = fj_snapshot(conn, binding)
++            fj_need(fj_sha(fj_bytes(snap)) == receipt['final_snapshot_sha256'],
++                    'finalization_closed_snapshot_changed')
++            return receipt
++        snap, actual_sha = fj_snapshot(conn, binding)
++        fj_need(actual_sha == expected_snapshot_sha, 'finalization_compare_and_swap_conflict')
++        task = snap['task']; tid = task['id'] if task else None
++        fj_need(proof['kind'] != 'never_launched' or (task is None and not snap['runs']),
++                'finalization_task_exists_without_service')
++        done = task is not None and task['status'] == 'done'
++        fj_need(task is None or task['status'] in ('ready','running','review','blocked','done'),
++                'finalization_unexpected_native_state')
++        closed_run = None
++        if task is not None and not done:
++            if task['current_run_id'] is not None:
++                own = next(r for r in snap['runs'] if r['id'] == task['current_run_id'])
++                metadata = fj_decode(own['metadata']) if own['metadata'] else {}
++                fj_need(type(metadata) is dict and 'one_start_finalization' not in metadata,
++                        'finalization_run_metadata_conflict')
++                metadata = dict(metadata, one_start_finalization={
++                    'operation_id': operation, 'reason': intent['reason'], 'no_retry': True})
++                closed_run = kb._end_run(conn, tid, outcome='blocked', status='blocked',
++                    error='one_start_'+intent['reason'], summary='One-start job ended; no automatic retry.',
++                    metadata=metadata)
++                fj_need(closed_run == task['current_run_id'], 'finalization_wrong_run_closed')
++            changed = conn.execute('''UPDATE tasks SET status='blocked', block_kind='needs_input',
++                current_run_id=NULL, worker_pid=NULL, claim_lock=NULL, claim_expires=NULL,
++                last_failure_error=? WHERE id=?''', ('one_start_'+intent['reason'], tid))
++            fj_need(changed.rowcount == 1, 'finalization_task_update_lost')
++        receipt = {'schema': 1, 'protocol': FJ_PROTOCOL, 'operation_id': operation,
++            'binding_sha256': fj_sha(fj_bytes(binding)), 'intent': intent,
++            'job_id': binding['job_id'], 'board': binding['board'], 'task_id': tid,
++            'last_run_id': guard['last_run_id'], 'closed_run_id': closed_run,
++            'prior_native_status': task['status'] if task else None,
++            'native_status': 'done' if done else ('blocked' if task else None),
++            'preserved_done': done, 'no_task_created': task is None,
++            'job_outcome': 'cancelled' if intent['reason'] == 'cancelled' else 'failed',
++            'start_consumed': True, 'task_requeued': False, 'inference_retried': False,
++            'quiescence_sha256': fj_sha(fj_bytes(proof)), 'quiescence': proof}
++        if task is not None:
++            # 'blocked' is also the native sticky-block fact, not circuit-breaker
++            # gave_up (which native recompute_ready may automatically promote).
++            kb._append_event(conn, tid, 'one_start_finalized' if done else 'blocked',
++                {'kind': 'needs_input', 'reason': 'one_start_'+intent['reason'],
++                 'operation_id': operation, 'no_retry': True, 'preserved_done': done},
++                run_id=guard['last_run_id'])
++        final, unused = fj_snapshot(conn, binding)
++        receipt['final_snapshot_sha256'] = fj_sha(fj_bytes(final))
++        conn.execute("UPDATE sf_finalization_job SET state='closed',receipt=? WHERE singleton=1 AND state='open'",
++                     (fj_bytes(receipt).decode(),))
++    return receipt
++
++
++def fj_admit_prepared_board(kb, spec):
++    """Replace only the FUTURE controller's old 'board must not exist' check.
++
++    Admission now creates the empty bound DB before launch, so the historical
++    predicate cannot be reused. The legacy and accepted managed drivers keep it.
++    """
++    binding=fj_validate_binding(spec)
++    fj_need(fj_live_scope(binding)=='live','finalization_board_outside_bound_service')
++    fj_need(str(kb.kanban_db_path(board=spec['board']))==binding['db'], 'finalization_board_path_changed')
++    with kb.connect_closing(board=spec['board']) as conn:
++        guard=fj_guard(conn,binding)
++        snapshot,unused=fj_snapshot(conn,binding)
++        fj_need(guard['state']=='open' and snapshot['task'] is None and not snapshot['runs'],
++                'finalization_board_already_consumed')
++    fj_need(not (FjPath(binding['db']).parent/'board.json').exists(), 'finalization_board_metadata_already_exists')
++    kb.create_board(spec['board'])
++    kb.set_current_board(spec['board'])
+diff --git a/factory_model_boundary.py b/factory_model_boundary.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..ea0b8f773b0c8e26b1a5617f964ac7c500973ca8
+--- /dev/null
++++ b/factory_model_boundary.py
+@@ -0,0 +1,233 @@
++"""Semantyczna powierzchnia modelu: ścisły, ograniczony podzbiór czterech formatów.
++
++Nie ufa temu, że builder sam wpisał hash do zbioru. Dekoduje narzędzia z żądania
++wobec definicji zapamiętanych przy starcie. Nie aprobuje arbitralnych rozszerzeń
++providera ani usuwania ograniczeń schematów. Brak wsparcia oznacza odmowę,
++nie automatyczne poluzowanie lub próbę wysłania. To nie walidator całego SDK.
++"""
++from __future__ import annotations
++
++import json
++from typing import Any
++
++
++class ModelBoundaryError(ValueError):
++    """Nieznany format lub powierzchnia wykonawcza oznacza odmowę przed klientem."""
++
++
++# Pola danych/parametrów generacji, nie kanały rozszerzeń wykonawczych. Nieznane
++# top-level keys również odmawiają; extra_body nie może nadpisać pola po kontroli.
++_COMMON = {'stream', 'timeout', 'extra_body'}
++_FIELDS = {
++    'chat_completions': _COMMON | {
++        'model', 'messages', 'tools', 'tool_choice', 'parallel_tool_calls',
++        'max_tokens', 'max_completion_tokens', 'temperature', 'top_p', 'seed',
++        'stop', 'frequency_penalty', 'presence_penalty', 'logprobs', 'top_logprobs',
++        'logit_bias', 'n', 'user', 'store', 'metadata', 'service_tier',
++        'stream_options', 'response_format', 'reasoning_effort',
++        'prompt_cache_key', 'prompt_cache_retention', 'safety_identifier',
++    },
++    'codex_responses': _COMMON | {
++        'model', 'input', 'instructions', 'tools', 'tool_choice',
++        'parallel_tool_calls', 'max_output_tokens', 'temperature', 'top_p',
++        'store', 'metadata', 'service_tier', 'reasoning', 'text', 'include',
++        'truncation', 'prompt_cache_key', 'prompt_cache_retention', 'user',
++        'safety_identifier', 'extra_headers',
++    },
++    'anthropic_messages': _COMMON | {
++        'model', 'messages', 'system', 'tools', 'tool_choice', 'max_tokens',
++        'temperature', 'top_p', 'top_k', 'stop_sequences', 'metadata',
++        'thinking', 'output_config', 'service_tier',
++    },
++    'bedrock_converse': _COMMON | {
++        'modelId', 'messages', 'system', 'toolConfig', 'inferenceConfig',
++        'guardrailConfig', 'requestMetadata', 'performanceConfig',
++        '__bedrock_converse__', '__bedrock_region__',
++    },
++}
++
++
++def is_moa_provider(provider: Any) -> bool:
++    """MoA is a separate fan-out runtime, not an approved provider wrapper.
++
++    Match the native initializer's normalization; never whitelist its private
++    prepared-request payload as if it were a passive SDK data field.
++    """
++    return isinstance(provider, str) and provider.strip().lower() == "moa"
++
++
++def _json(value: Any) -> str:
++    return json.dumps(value, sort_keys=True, separators=(',', ':'), allow_nan=False)
++
++
++def _refuse(reason: str) -> None:
++    raise ModelBoundaryError(reason)
++
++
++def _cache(value: Any) -> None:
++    if (type(value) is not dict or set(value) - {'type', 'ttl'}
++            or value.get('type') != 'ephemeral'
++            or value.get('ttl', '5m') not in {'5m', '1h'}):
++        _refuse('unrecognized tool cache annotation')
++
++
++def _tool(agent: Any, mode: str, value: Any) -> dict:
++    if type(value) is not dict:
++        _refuse('tool is not an object')
++    value = dict(value)
++    if 'cache_control' in value:
++        _cache(value.pop('cache_control'))
++    if mode == 'chat_completions':
++        if set(value) != {'type', 'function'} or value['type'] != 'function':
++            _refuse('non-function or extended chat tool')
++        fn = value['function']
++        if type(fn) is not dict or set(fn) != {'name', 'description', 'parameters'}:
++            _refuse('unrecognized chat function shape')
++        return fn
++    if mode == 'codex_responses':
++        if (set(value) != {'type', 'name', 'description', 'parameters', 'strict'}
++                or value['type'] != 'function' or value['strict'] is not False):
++            _refuse('non-function or extended responses tool')
++        return {k: value[k] for k in ('name', 'description', 'parameters')}
++    if mode == 'anthropic_messages':
++        if set(value) != {'name', 'description', 'input_schema'}:
++            _refuse('non-function or extended messages tool')
++        name = value['name']
++        if getattr(agent, '_is_anthropic_oauth', False):
++            if type(name) is not str or not name.startswith('mcp__'):
++                _refuse('missing approved OAuth name prefix')
++            name = name[len('mcp__'):]
++        return {'name': name, 'description': value['description'], 'parameters': value['input_schema']}
++    if (set(value) != {'toolSpec'} or type(value['toolSpec']) is not dict
++            or set(value['toolSpec']) != {'name', 'description', 'inputSchema'}):
++        _refuse('non-function or extended converse tool')
++    spec = value['toolSpec']
++    if type(spec['inputSchema']) is not dict or set(spec['inputSchema']) != {'json'}:
++        _refuse('unrecognized converse input schema')
++    return {'name': spec['name'], 'description': spec['description'], 'parameters': spec['inputSchema']['json']}
++
++
++def _choice(value: Any, names: set[str], mode: str, agent: Any) -> None:
++    if value is None or (type(value) is str and value in {'auto', 'required', 'none'}):
++        return
++    if type(value) is not dict:
++        _refuse('unrecognized tool choice')
++    name = None
++    if mode == 'chat_completions' and set(value) == {'type', 'function'} and value['type'] == 'function':
++        if type(value['function']) is dict and set(value['function']) == {'name'}:
++            name = value['function']['name']
++    elif mode == 'codex_responses' and set(value) == {'type', 'name'} and value['type'] == 'function':
++        name = value['name']
++    elif mode == 'anthropic_messages':
++        selection = {k: v for k, v in value.items() if k != 'disable_parallel_tool_use'}
++        if 'disable_parallel_tool_use' in value and type(value['disable_parallel_tool_use']) is not bool:
++            _refuse('invalid parallel choice')
++        if selection in ({'type': 'auto'}, {'type': 'any'}, {'type': 'none'}):
++            return
++        if set(selection) == {'type', 'name'} and selection['type'] == 'tool':
++            name = selection['name']
++            if getattr(agent, '_is_anthropic_oauth', False) and type(name) is str and name.startswith('mcp__'):
++                name = name[len('mcp__'):]
++    elif mode == 'bedrock_converse':
++        if value in ({'auto': {}}, {'any': {}}):
++            return
++        if set(value) == {'tool'} and type(value['tool']) is dict and set(value['tool']) == {'name'}:
++            name = value['tool']['name']
++    if type(name) is not str or name not in names:
++        _refuse('choice is outside transmitted capability set')
++
++
++def _codex_headers(agent: Any, payload: dict) -> dict[str, str]:
++    """Only native Codex session/cache headers, never arbitrary SDK headers.
++
++    Both values must match their existing request/session identities. Include
++    these headers in the registered envelope so changing even both sides of a
++    cache-key/header pair after the builder is refused by the final-call gate.
++    No Authorization, Host, beta headers, aliases, routing override or extra_body.
++    Other providers and custom Codex endpoints remain unsupported here.
++    """
++    if 'extra_headers' not in payload:
++        return {}
++    if (getattr(agent, 'provider', None) != 'openai-codex'
++            or getattr(agent, 'base_url', None) not in {
++                'https://chatgpt.com/backend-api/codex',
++                'https://chatgpt.com/backend-api/codex/'}):
++        _refuse('Codex headers require the approved provider and endpoint')
++    headers = payload['extra_headers']
++    if (type(headers) is not dict
++            or any(type(k) is not str for k in headers)
++            or set(headers) != {'session_id', 'x-client-request-id'}):
++        _refuse('unapproved Codex header set')
++    session = getattr(agent, 'session_id', None)
++    cache_key = payload.get('prompt_cache_key')
++    for value, limit in ((session, 256), (cache_key, 64)):
++        if (type(value) is not str or not 0 < len(value) <= limit
++                or any(not 33 <= ord(c) <= 126 for c in value)):
++            _refuse('invalid Codex session or cache identity')
++    expected = {'session_id': session, 'x-client-request-id': cache_key}
++    if (any(type(v) is not str for v in headers.values()) or headers != expected):
++        _refuse('Codex header identity mismatch')
++    return dict(headers)
++
++
++def capabilities(agent: Any, payload: Any, definitions: dict[str, str],
++                 allowed_names: set[str] | None = None) -> dict:
++    """Zwróć kanoniczny opis uprawnień, bez treści rozmowy i tokenów klienta."""
++    if type(payload) is not dict or any(type(k) is not str for k in payload):
++        _refuse('model payload is not a plain dictionary')
++    mode = getattr(agent, 'api_mode', '')
++    if mode not in _FIELDS or set(payload) - _FIELDS[mode]:
++        _refuse('unreviewed request mode or top-level extension')
++    # Rozszerzenia są kanałem nadpisywania SDK. Do zatwierdzenia ich semantyki
++    # dopuszczamy tylko brak/pusty obiekt. Dotyczy też potencjalnie łagodnych opcji.
++    if payload.get('extra_body') not in (None, {}):
++        _refuse('unreviewed extra_body extension')
++    if 'extra_body' in payload and payload['extra_body'] is not None and type(payload['extra_body']) is not dict:
++        _refuse('invalid extra_body type')
++    model = payload.get('modelId' if mode == 'bedrock_converse' else 'model')
++    if type(model) is not str or model != getattr(agent, 'model', None):
++        _refuse('request model differs from active route')
++    headers = _codex_headers(agent, payload) if mode == 'codex_responses' else {}
++    choice = payload.get('tool_choice')
++    tools = payload.get('tools', [])
++    if tools is None:
++        tools = []
++    if mode == 'bedrock_converse':
++        config = payload.get('toolConfig')
++        if config is not None:
++            if type(config) is not dict or set(config) - {'tools', 'toolChoice'}:
++                _refuse('extended converse tool configuration')
++            tools = config.get('tools', [])
++            if tools is None:
++                tools = []
++            choice = config.get('toolChoice')
++    if type(tools) is not list:
++        _refuse('invalid transported tool list')
++    names: set[str] = set()
++    canonical = {}
++    cache_points = 0
++    for value in tools:
++        if mode == 'bedrock_converse' and value == {'cachePoint': {'type': 'default'}}:
++            cache_points += 1
++            if cache_points > 1:
++                _refuse('duplicate converse tool cache annotation')
++            continue
++        fn = _tool(agent, mode, value)
++        name = fn.get('name')
++        if type(name) is not str or name in names or name not in definitions:
++            _refuse('duplicate or unapproved transported tool')
++        expected = json.loads(definitions[name])['function']
++        if _json(fn) != _json(expected):
++            _refuse('transport changed an approved function schema')
++        if allowed_names is not None and name not in allowed_names:
++            _refuse('transport widened the requested tool subset')
++        canonical[name] = fn
++        names.add(name)
++    _choice(choice, names, mode, agent)
++    if 'parallel_tool_calls' in payload and type(payload['parallel_tool_calls']) is not bool:
++        _refuse('invalid parallel_tool_calls')
++    return {'tools': canonical, 'choice': choice,
++            'parallel': payload.get('parallel_tool_calls'),
++            'extra_body': payload.get('extra_body'),
++            'transport_headers': headers,
++            '_route': [mode, getattr(agent, 'provider', ''), model]}
+diff --git a/factory_one_start.py b/factory_one_start.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..8f796881aac9d4e5cdfcbe1bc49a51a947ac8aad
+--- /dev/null
++++ b/factory_one_start.py
+@@ -0,0 +1,54 @@
++"""Funkcja one-start w chronionym workerze prywatnego zadania, przed pierwszym narzędziem.
++
++Wywoływane wyłącznie z bramek startu (factory_worker_start, factory_profile_start)
++po weryfikacji pinów źródeł, tożsamości profilu i konfiguracji. Na tablicy
++`sf-job-*` instalacja jest obowiązkowa, a każdy błąd zatrzymuje start; na innych
++tablicach moduł nic nie robi. Wiązanie, hook połączeń i ocena `live` pochodzą bez
++zmian z przypiętej kopii finalization_core (factory_finalization_core.py).
++Worker poza cgroup związanej usługi albo po żądaniu zatrzymania nie startuje.
++To nie jest sandbox przeciw kodowi tego samego UID.
++"""
++from __future__ import annotations
++
++import os
++import re
++
++_JOB_BOARD = re.compile(r"sf-job-[0-9a-f]{16}")
++_DB_LAYOUT = ("kanban.db", None, "boards", "kanban", ".hermes", "task-home")
++
++
++class OneStartError(RuntimeError):
++    pass
++
++
++def _need(ok: object, code: str) -> None:
++    if not ok:
++        raise OneStartError(code)
++
++
++def install_for_worker() -> dict | None:
++    """Zainstaluj hook one-start dla bazy bieżącego zadania albo zwróć None poza `sf-job-*`."""
++    board = os.environ.get("HERMES_KANBAN_BOARD", "").strip()
++    if not _JOB_BOARD.fullmatch(board):
++        return None
++    import factory_finalization_core as fj
++
++    # fj_path: ścieżka absolutna, bez '..' i bez dowiązań w żadnym składniku.
++    db = fj.fj_path(os.environ.get("HERMES_KANBAN_DB", ""))
++    names = (db.name, *(p.name for p in db.parents[:5]))
++    _need(len(db.parts) > 7 and names == ("kanban.db", board) + _DB_LAYOUT[2:], "one_start_db_layout")
++    job = db.parents[5]
++    spec = fj.fj_decode(fj.fj_read(job / "task_request.json", 32 * 1024 * 1024))
++    _need(type(spec) is dict and spec.get("board") == board and spec.get("db") == str(db)
++          and spec.get("job") == str(job), "one_start_spec_binding")
++    binding = fj.fj_install_runtime(spec)
++    _need(binding.get("db") == str(db) and binding.get("board") == board, "one_start_binding")
++    from hermes_cli import kanban_db as kb
++
++    conn = kb._sqlite_connect(db)
++    try:
++        scope = conn.execute("SELECT sf_one_start_scope()").fetchone()[0]
++    finally:
++        conn.close()
++    _need(scope == "live", "one_start_worker_outside_bound_service")
++    return dict(binding)
+diff --git a/factory_profile_start.py b/factory_profile_start.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..64a77fbd9c5cc85aa861678d9c051d732d920ce5
+--- /dev/null
++++ b/factory_profile_start.py
+@@ -0,0 +1,246 @@
++"""Natywna kontrola STARTU reviewer-gpt/release-manager poza oboma pluginami.
++
++Dowód obu pluginów jest wiązany z agentem po kontroli AFTER. Lifetime sprawdza
++jego zachowanie przed dopuszczeniem operacji i zatwierdzeniem approval.
++Nie zastępuje cache-safe launchera ani kontroli już importowanego kodu.
++"""
++from __future__ import annotations
++import hashlib
++import importlib
++import os
++import sys
++from contextvars import ContextVar
++from types import ModuleType
++from dataclasses import dataclass
++from pathlib import Path
++from typing import Any
++
++GUARD = 'factory-execution-guards'
++READONLY = 'factory-repository-readonly'
++PROFILES = frozenset({'reviewer-gpt', 'release-manager'})
++REPO_TOOLS = frozenset({'factory_repo_map','factory_repo_read','factory_repo_search'})
++MODEL_TOOLS = {'reviewer-gpt': REPO_TOOLS | {'kanban_show','kanban_request_changes','factory_review_approve'},
++               'release-manager': REPO_TOOLS}
++DISABLED = frozenset({'terminal','file','code_execution','web','browser','image_gen','delegation','computer_use','cronjob','skills','vision','todo','memory','session_search','clarify','messaging','tts','moa','bfl','x_search','mcp'})
++READONLY_PINS = {
++    "__init__.py": "45985ac4faa072055a4e03d0ae005bd479fca55a3046de23a399067e7545af71",
++    "kanban_guard.py": "f38cb4038757c822eb18ec03faf0b22d8a5ae9f7fb9346410f0433650000b93d",
++    "plugin.yaml": "b82696753bc88c1bad7eec5266a3b3d4f37152aa703b7fb850b1c08909b1c337",
++    "repo_map.py": "88b7d66c33ce8fb8b80e7e8e6bbf47462abda27246386bc9767ee4d62a74ef3c",
++    "repository_tools.py": "a93794aa9aeb8496ce46537a7907d9b66473ea2961efc49f3cac904502d61a80"
++}
++
++
++def selected_profile() -> str | None:
++    """Rozpoznaj chronione ścieżki stdlibem, przed natywnymi importami profilu."""
++    declared = os.environ.get('HERMES_PROFILE')
++    if declared in PROFILES | {'coder-claude'}:
++        return declared
++    candidates = [os.environ.get('HERMES_HOME', '')]
++    # An in-process gateway/task may scope its home with ContextVar rather than
++    # environment variables. Read only the existing stdlib ContextVar; do NOT
++    # import or call native getters before the selected profile's pin gate.
++    # Already imported interpreter/modules remain an explicit trust boundary.
++    constants = sys.modules.get('hermes_constants')
++    if type(constants) is ModuleType:
++        override = vars(constants).get('_HERMES_HOME_OVERRIDE')
++        if type(override) is ContextVar:
++            scoped = override.get(None)
++            if type(scoped) is str and scoped:
++                candidates.insert(0, scoped)
++    for raw in candidates:
++        if raw:
++            home = Path(raw).expanduser().resolve(strict=False)
++            for profile in PROFILES | {'coder-claude'}:
++                parent = 'factory-profiles' if profile=='release-manager' else 'profiles'
++                if home == (Path.home()/'.hermes'/parent/profile).resolve(strict=False):
++                    return profile
++    return None
++
++
++def _fail(message: str) -> None:
++    from factory_worker_start import WorkerStartError
++    raise WorkerStartError('FACTORY_PROFILE_START_REFUSED: ' + message)
++
++
++def _sources(profile: str) -> Path:
++    from factory_worker_start import _canonical, _check_sources
++    if profile not in PROFILES or os.environ.get('HERMES_PROFILE') != profile:
++        _fail('profile identity mismatch')
++    raw = os.environ.get('HERMES_HOME','')
++    if not raw:
++        _fail('profile home missing')
++    home = _canonical(Path(raw))
++    parent = 'factory-profiles' if profile=='release-manager' else 'profiles'
++    if home != Path.home()/'.hermes'/parent/profile:
++        _fail('profile home identity mismatch')
++    _check_sources(home)  # pełne natywne piny + osiem plików guarda, bez importów Hermesa
++    root = _canonical(home/'plugins'/READONLY)
++    actual = {}
++    for path in root.rglob('*'):
++        if path.is_symlink(): _fail('readonly source symlink')
++        if path.is_file():
++            _canonical(path)
++            actual[path.relative_to(root).as_posix()] = hashlib.sha256(path.read_bytes()).hexdigest()
++    if actual != READONLY_PINS:
++        _fail('readonly source file set/hash mismatch')
++    return home
++
++
++def _identity(profile: str, home: Path) -> None:
++    from hermes_constants import get_hermes_home
++    from hermes_cli.profiles import get_active_profile_name
++    inferred = 'custom' if profile=='release-manager' else profile
++    if os.environ.get('HERMES_PROFILE') != profile or get_hermes_home()!=home or get_active_profile_name()!=inferred:
++        _fail('native profile identity mismatch')
++
++
++def _configuration(profile: str, enabled: Any, disabled: Any) -> None:
++    from hermes_cli.config import load_config_readonly
++    base = {GUARD, READONLY}
++    allowed = [base | {'kanban'}] if profile=='reviewer-gpt' else [base,base | {'kanban'}]
++    if (type(enabled) is not list or any(type(x) is not str for x in enabled)
++            or len(enabled)!=len(set(enabled)) or set(enabled) not in allowed
++            or type(disabled) is not list or any(type(x) is not str for x in disabled)
++            or len(disabled)!=len(DISABLED) or set(disabled)!=DISABLED):
++        _fail('explicit toolsets/disabled boundary mismatch')
++    config = load_config_readonly()
++    plugins = config.get('plugins', {})
++    entries = {GUARD:{'allow_tool_override':True},READONLY:{'allow_tool_override':False}}
++    if (plugins.get('enabled') != [GUARD,READONLY] or plugins.get('disabled',[])!=[]
++            or plugins.get('entries')!=entries
++            or plugins['entries'][GUARD]['allow_tool_override'] is not True
++            or plugins['entries'][READONLY]['allow_tool_override'] is not False):
++        _fail('plugin configuration mismatch')
++    stored = config.get('agent',{}).get('disabled_toolsets')
++    if type(stored) is not list or any(type(x) is not str for x in stored) or len(stored)!=len(DISABLED) or set(stored)!=DISABLED:
++        _fail('stored disabled boundary mismatch')
++    if config.get('mcp_servers',{})!={} or config.get('tools',{}).get('tool_search',{}).get('enabled')!='off':
++        _fail('dynamic capability discovery must be disabled')
++    backend = 'native-openai' if profile=='reviewer-gpt' else 'read-only-release-decision'
++    if config.get('factory',{}).get('execution_backend') != backend:
++        _fail('profile backend configuration mismatch')
++
++
++@dataclass(frozen=True)
++class ProfileStartProof:
++    profile: str
++    home: Path
++    manager: Any
++    loaded: tuple
++    entries: dict
++    metadata: dict
++    enabled: tuple
++    disabled: tuple
++    pid: int
++    registry: Any
++    module: Any
++    readonly_module: Any
++    bindings: tuple
++
++    def verify(self) -> None:
++        from factory_worker_start import _module_source, _entry_metadata
++        from hermes_cli.plugins import get_plugin_manager
++        from tools.registry import registry
++        if (self.pid != os.getpid() or _sources(self.profile)!=self.home
++                or tuple((k, os.environ.get(k)) for k, _ in self.bindings) != self.bindings):
++            _fail('profile/source identity changed')
++        _identity(self.profile,self.home)
++        _configuration(self.profile,list(self.enabled),list(self.disabled))
++        if (get_plugin_manager() is not self.manager or registry is not self.registry
++                or registry.current_scope_key()!=str(self.home) or self.manager.scope_key!=str(self.home)):
++            _fail('manager/registry scope changed')
++        for name, loaded in zip((GUARD,READONLY),self.loaded):
++            if self.manager._plugins.get(name) is not loaded or not loaded.enabled or loaded.error or loaded.module is None:
++                _fail('required plugin unloaded/replaced')
++            _module_source(loaded.module,self.home/'plugins'/name/'__init__.py')
++        guard,readonly = (x.module for x in self.loaded)
++        if guard is not self.module or readonly is not self.readonly_module:
++            _fail('required module generation changed')
++        expected = {'pre_tool_call':[guard.on_pre_tool_call,readonly.on_pre_tool_call],
++                    'post_tool_call':[guard.on_post_tool_call]}
++        for name,callbacks in expected.items():
++            actual=self.manager._hooks.get(name,[])
++            if len(actual)!=len(callbacks) or set(actual)!=set(callbacks):
++                _fail('required hook identity/count mismatch')
++        for name,entry in self.entries.items():
++            if registry.get_entry(name) is not entry or _entry_metadata(entry)!=self.metadata[name]:
++                _fail('registered entry changed: '+name)
++        handlers = {'factory_repo_map':readonly.handle_map,'factory_repo_read':readonly.handle_read,
++                    'factory_repo_search':readonly.handle_search}
++        if self.profile=='reviewer-gpt':
++            from tools import kanban_tools
++            handlers.update(factory_review_approve=guard._handle_review_approve,
++                            kanban_show=kanban_tools._handle_show,
++                            kanban_request_changes=kanban_tools._handle_request_changes)
++        for name,handler in handlers.items():
++            if self.entries[name].handler is not handler:
++                _fail('approved handler identity mismatch: '+name)
++        for entry in registry.get_all_entries():
++            if entry.toolset=='kanban' and entry.name not in MODEL_TOOLS[self.profile]:
++                if entry.handler is not guard._disabled_kanban_handler or entry.check_fn is not guard._never_available:
++                    _fail('scoped Kanban restriction absent: '+entry.name)
++
++
++def before_profile_init(profile: str, enabled: Any, disabled: Any, *, provider: Any = None) -> ProfileStartProof:
++    from factory_worker_start import WorkerStartError, _entry_metadata
++    try:
++        home=_sources(profile)
++        from factory_model_boundary import is_moa_provider
++        if is_moa_provider(provider):
++            _fail('MoA route is unsupported for the protected profile')
++        _identity(profile,home)
++        _configuration(profile,enabled,disabled)
++        # Prywatna tablica zadania: hook one-start przed pierwszym narzędziem.
++        from factory_one_start import install_for_worker
++        install_for_worker()
++        from tools import kanban_tools  # noqa: F401
++        from hermes_cli.plugins import discover_plugins,get_plugin_manager
++        from tools.registry import registry
++        discover_plugins()
++        manager=get_plugin_manager()
++        loaded=tuple(manager._plugins.get(n) for n in (GUARD,READONLY))
++        if any(x is None or not x.enabled or x.error or x.module is None for x in loaded):
++            _fail('required plugins unavailable')
++        entries={n:registry.get_entry(n) for n in MODEL_TOOLS[profile]}
++        if any(e is None for e in entries.values()): _fail('required tool unavailable')
++        binding_names = ('HOME', 'HERMES_HOME', 'HERMES_PROFILE', 'HERMES_KANBAN_TASK',
++                         'HERMES_KANBAN_BOARD', 'HERMES_KANBAN_RUN_ID', 'HERMES_KANBAN_WORKSPACE',
++                         'HERMES_KANBAN_HOME', 'HERMES_KANBAN_CLAIM_LOCK', 'FACTORY_RELEASE_TASK', 'FACTORY_RELEASE_WORKSPACE')
++        proof=ProfileStartProof(profile,home,manager,loaded,entries,
++             {n:_entry_metadata(e) for n,e in entries.items()},tuple(enabled),tuple(disabled),os.getpid(),
++             registry,loaded[0].module,loaded[1].module,
++             tuple((k,os.environ.get(k)) for k in binding_names))
++        proof.verify()
++        return proof
++    except WorkerStartError:
++        raise
++    except Exception as exc:
++        raise WorkerStartError('FACTORY_PROFILE_START_REFUSED: '+type(exc).__name__) from exc
++
++
++def after_profile_init(proof: ProfileStartProof, agent: Any) -> None:
++    """Odmów nowej/utraconej definicji; nie przycinaj nadmiarowej powierzchni."""
++    from factory_worker_start import WorkerStartError, _json
++    try:
++        from tools.registry import registry
++        from tools.schema_sanitizer import sanitize_tool_schemas
++        proof.verify()
++        from factory_model_boundary import is_moa_provider
++        if is_moa_provider(getattr(agent, 'provider', None)):
++            _fail('MoA route is unsupported for the protected profile')
++        expected=MODEL_TOOLS[proof.profile]
++        if type(agent.tools) is not list:
++            _fail('invalid model definitions')
++        names=[t['function']['name'] for t in agent.tools]
++        if len(names)!=len(expected) or set(names)!=expected or agent.valid_tool_names!=expected:
++            _fail('profile model capability surface mismatch')
++        reference=sanitize_tool_schemas(registry.get_definitions(set(expected),quiet=True))
++        index={t['function']['name']:_json(t) for t in reference}
++        if set(index)!=expected or any(index[t['function']['name']]!=_json(t) for t in agent.tools):
++            _fail('profile model schema mismatch')
++        proof.verify()
++    except WorkerStartError:
++        raise
++    except Exception as exc:
++        raise WorkerStartError('FACTORY_PROFILE_START_REFUSED: '+type(exc).__name__) from exc
+diff --git a/factory_worker_lifetime.py b/factory_worker_lifetime.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..02119082813879ba5d536df5629ac9ca76314e90
+--- /dev/null
++++ b/factory_worker_lifetime.py
+@@ -0,0 +1,501 @@
++"""Obowiązkowe związanie coder/reviewer/release z generacją sprawdzoną przy starcie.
++
++Nie jest piaskownicą dla dowolnego kodu Pythona w tym samym interpreterze.
++Blokada discovery obejmuje rzeczywisty handler i obowiązkowe hooki: reload
++z innego wątku czeka na zakończenie operacji, nigdy nie podmienia jej ochrony.
++"""
++from __future__ import annotations
++
++import contextvars
++import copy
++import functools
++import hashlib
++import inspect
++import json
++import os
++import threading
++import weakref
++from dataclasses import dataclass, field
++from typing import Any, Callable
++
++_STATES: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
++_SCOPES: weakref.WeakValueDictionary = weakref.WeakValueDictionary()
++# Utrata ostatniej referencji do agenta nie przywraca opcjonalnej ochrony.
++_PROTECTED_SCOPES: set[str] = set()
++_MAP_LOCK = threading.RLock()
++_CURRENT: contextvars.ContextVar = contextvars.ContextVar('factory_worker_operation', default=None)
++
++
++class WorkerLifetimeError(RuntimeError):
++    """Utracona gotowość oznacza zatrzymanie; wynik operacji wymaga inspekcji."""
++
++
++def _fail(reason: str) -> None:
++    raise WorkerLifetimeError('FACTORY_WORKER_LIFETIME_REFUSED: ' + reason)
++
++
++def _json(value: Any) -> str:
++    return json.dumps(value, sort_keys=True, separators=(',', ':'), allow_nan=False)
++
++
++def _protected() -> bool:
++    from factory_profile_start import selected_profile
++    from hermes_cli.profiles import get_active_profile_name
++    return (selected_profile() is not None
++            or get_active_profile_name() in {'coder-claude', 'reviewer-gpt'})
++
++
++class WorkerLifetime:
++    """Prywatny uchwyt obiektu agenta; konfiguracja nie może odnowić generacji."""
++
++    def __init__(self, agent: Any, proof: Any) -> None:
++        self.agent = weakref.ref(agent)
++        self.proof = proof
++        self.revoked = threading.Event()
++        self.failure_reason = ""
++        # Lock order: discovery -> review intent -> decision.  Revocation takes
++        # ONLY decision, never discovery/intent and never waits on a handler.
++        # Held across the final database COMMIT, not SQL preparation, receipt
++        # construction, filesystem work, executor waits, hooks or network.
++        self.decision_lock = threading.RLock()
++        self.pre = proof.module.on_pre_tool_call
++        self.post = proof.module.on_post_tool_call
++        # Both required plugins run as mandatory hooks. Suppressing the optional
++        # manager observers must NOT drop the readonly plugin's pre-hook.
++        readonly = getattr(proof, 'readonly_module', None)
++        self.extra_pre = () if readonly is None else ((readonly, readonly.on_pre_tool_call),)
++        self.tools = _json(agent.tools)
++        self.definitions = {t['function']['name']: _json(t) for t in agent.tools}
++        self.entries = {n: proof.registry.get_entry(n) for n in self.definitions}
++        self.handlers = {n: e.handler for n, e in self.entries.items()}
++        self.payloads: set[str] = set()
++        self.payload_lock = threading.Lock()
++
++    def revoke(self, reason: str) -> None:
++        """Zachowaj pierwszą odmowę, nawet gdy native executor opakuje wyjątek."""
++        with self.decision_lock:
++            if not self.revoked.is_set():
++                self.failure_reason = reason
++            self.revoked.set()
++
++    def require_active(self) -> None:
++        """Check revocation without waiting for the serialized running handler."""
++        if self.revoked.is_set():
++            _fail('worker generation revoked; ' + self.failure_reason
++                  + '; effects may exist, inspect state, do not retry automatically')
++
++    def verify(self) -> None:
++        """Błąd jest trwały; przywrócenie hooka lub pliku nie odnawia workera."""
++        try:
++            self.require_active()
++            self.proof.verify()
++            agent = self.agent()
++            from factory_model_boundary import is_moa_provider
++            if is_moa_provider(getattr(agent, "provider", None)):
++                _fail("MoA route is unsupported for the protected worker")
++            if (agent is None or agent.valid_tool_names != set(self.definitions)
++                    or _json(agent.tools) != self.tools):
++                _fail('worker tool definitions changed')
++            if (self.proof.module.on_pre_tool_call is not self.pre
++                    or self.proof.module.on_post_tool_call is not self.post):
++                _fail('mandatory callback identity changed')
++            if any(module.on_pre_tool_call is not callback for module, callback in self.extra_pre):
++                _fail('mandatory readonly callback identity changed')
++            for name, entry in self.entries.items():
++                if (self.proof.registry.get_entry(name) is not entry
++                        or entry.handler is not self.handlers[name]
++                        or entry.is_async is not False):
++                    _fail('bound handler identity changed: ' + name)
++        except Exception as exc:
++            self.revoke(str(exc) if isinstance(exc, WorkerLifetimeError) else 'worker proof verification failed')
++            if isinstance(exc, WorkerLifetimeError):
++                raise
++            raise WorkerLifetimeError('FACTORY_WORKER_LIFETIME_REFUSED: ' + str(exc)) from exc
++
++    def verify_tools(self, tools: Any) -> None:
++        """Dopuszczaj tylko niezmienione podzbiory sprawdzonych definicji."""
++        try:
++            if type(tools) is not list:
++                _fail('model capability list is invalid')
++            names = [t['function']['name'] for t in tools]
++            if (len(names) != len(set(names))
++                    or any(self.definitions.get(n) != _json(t) for n, t in zip(names, tools))):
++                _fail('outgoing model capabilities changed')
++        except Exception as exc:
++            self.revoke(str(exc) if isinstance(exc, WorkerLifetimeError) else 'worker proof verification failed')
++            if isinstance(exc, WorkerLifetimeError):
++                raise
++            raise WorkerLifetimeError('FACTORY_WORKER_LIFETIME_REFUSED: model capability shape') from exc
++
++    def envelope(self, payload: Any, allowed_names: set[str] | None = None) -> str:
++        """Semantyka po transformacji, nie sam fakt wywołania buildera."""
++        from factory_model_boundary import capabilities
++        try:
++            value = capabilities(self.agent(), payload, self.definitions, allowed_names)
++            return hashlib.sha256(_json(value).encode()).hexdigest()
++        except Exception as exc:
++            self.revoke('model capability validation failed: ' + str(exc))
++            raise WorkerLifetimeError('FACTORY_WORKER_LIFETIME_REFUSED: ' + str(exc)) from exc
++
++
++def bind_worker(agent: Any, proof: Any) -> None:
++    """Zapisz sprawdzony stan poza modyfikowalnymi polami agenta."""
++    with proof.manager._discovery_lock:
++        proof.verify()
++        state = WorkerLifetime(agent, proof)
++        state.verify()
++        with _MAP_LOCK:
++            if agent in _STATES or str(proof.home) in _SCOPES:
++                _fail('a protected worker already owns this profile generation')
++            _STATES[agent] = state
++            _SCOPES[str(proof.home)] = state
++            _PROTECTED_SCOPES.add(str(proof.home))
++
++
++def state_for(agent: Any) -> WorkerLifetime | None:
++    """Zmiana środowiska nie usuwa przypisania już utworzonego workera."""
++    with _MAP_LOCK:
++        try:
++            state = _STATES.get(agent)
++        except TypeError:
++            state = None
++    if state is None and _protected():
++        _fail('protected agent has no constructor proof')
++    return state
++
++
++def check_agent(agent: Any) -> WorkerLifetime | None:
++    """Krótka kontrola przed wejściem w kolejną fazę, także ścieżkę modelu."""
++    state = state_for(agent)
++    if state is not None:
++        state.require_active()
++        with state.proof.manager._discovery_lock:
++            state.verify()
++    return state
++
++
++def abandon_worker(agent: Any, reason: str) -> bool:
++    """Permanently revoke a bound worker; other profiles retain native behavior.
++
++    A COMMIT already holding the decision lock finishes first.  Otherwise no
++    subsequent protected admission or review COMMIT may win.  Already admitted
++    arbitrary handlers are NOT cancellable/rollbackable by this fence.
++    """
++    with _MAP_LOCK:
++        try:
++            state = _STATES.get(agent)
++        except TypeError:
++            state = None
++    if state is None:
++        return False
++    state.revoke(reason)
++    return True
++
++
++def check_moa_turn(agent: Any, moa_config: Any) -> None:
++    """Refuse opt-in advisor fan-out before turn setup or aggregate callbacks.
++
++    Normal Hermes profiles keep their native MoA behavior. A bound coder's
++    refusal is permanent, as for every unsupported runtime capability; it is
++    not a request retry mechanism and does not undo prior admitted effects.
++    """
++    state = check_agent(agent)
++    if state is not None and moa_config:
++        state.revoke("MoA turn is unsupported for the protected worker")
++        state.require_active()
++
++
++def close_worker(agent: Any) -> None:
++    """Close does not wait for a handler; it is ordered against final COMMIT."""
++    abandon_worker(agent, 'agent closed')
++
++
++@dataclass
++class ToolOperation:
++    """Jedno użycie także po skopiowaniu ContextVar do innego wątku."""
++    state: WorkerLifetime
++    name: str
++    metadata: dict[str, Any]
++    used: bool = False
++    admitted: bool = False
++    finished: bool = False
++    thread_id: int | None = None
++    lock: Any = field(default_factory=threading.Lock)
++
++
++def review_operation(guard: Any) -> ToolOperation:
++    """Require the actual admitted review handler, not a raw adapter call."""
++    op = _CURRENT.get()
++    if (op is None or op.name != 'kanban_request_review' or not op.used
++            or not op.admitted or op.finished
++            or op.thread_id != threading.get_ident()
++            or op.state.proof.module._guard is not guard):
++        _fail('review has no current admitted worker operation')
++    op.state.verify()
++    return op
++
++
++def commit_review(op: ToolOperation, conn: Any, guard: Any) -> None:
++    """Serialize final COMMIT with close/timeout/interrupt, not the whole tool.
++
++    The caller holds discovery and the review-intent commit window. All SQL,
++    receipt writes and revalidation precede this method. There are no user
++    hooks or application callbacks inside the decision critical section.
++    A commit that won cannot be undone by a later close or lost response.
++    """
++    if review_operation(guard) is not op:
++        _fail('review operation changed before commit')
++    with op.state.decision_lock:
++        op.state.require_active()
++        try:
++            conn.execute('COMMIT')
++        except BaseException:
++            # SQLite may have committed before acknowledgement was lost. A
++            # refusal is NOT rollback evidence and the agent must not retry.
++            op.state.revoke('handoff COMMIT failed or acknowledgement lost; outcome unknown')
++            raise
++
++
++
++def approval_operation(callback: Callable) -> ToolOperation:
++    """Require this thread's admitted reviewer approval, not a standalone call.
++
++    Standalone read-only receipt/approval consumers do not use this API. The
++    function identity binds the caller to the actual loaded handoff module.
++    """
++    op = _CURRENT.get()
++    if (op is None or op.name != 'factory_review_approve' or not op.used
++            or not op.admitted or op.finished or op.thread_id != threading.get_ident()
++            or getattr(op.state.proof, 'profile', None) != 'reviewer-gpt'
++            or op.state.proof.module._handoff.guarded_reviewer_complete is not callback):
++        _fail('approval has no current admitted reviewer operation')
++    op.state.verify()
++    return op
++
++
++def commit_approval(op: ToolOperation, conn: Any, callback: Callable) -> None:
++    """Order the final approval COMMIT with close/timeout, not earlier SQL.
++
++    No arbitrary hooks, provider calls, or filesystem preparation under the
++    decision lock. A later close cannot undo an already successful COMMIT.
++    """
++    if approval_operation(callback) is not op:
++        _fail('approval operation changed before commit')
++    with op.state.decision_lock:
++        op.state.require_active()
++        try:
++            conn.execute('COMMIT')
++        except BaseException:
++            op.state.revoke('approval COMMIT failed or acknowledgement lost; outcome unknown')
++            raise
++
++
++def tool_entry(function: Callable) -> Callable:
++    """Otocz helper invoke oraz wspólny middleware sekwencyjny/współbieżny."""
++    signature = inspect.signature(function)
++
++    @functools.wraps(function)
++    def wrapped(agent: Any, *args: Any, **kwargs: Any) -> Any:
++        state = check_agent(agent)
++        if state is None:
++            return function(agent, *args, **kwargs)
++        bound = signature.bind(agent, *args, **kwargs).arguments
++        name = bound['function_name']
++        if name not in state.definitions:
++            state.revoke('tool outside protected capability set')
++            _fail('tool outside protected capability set: ' + str(name))
++        current = _CURRENT.get()
++        if current is not None:
++            if current.state is not state or current.name != name:
++                state.revoke('nested tool changed worker or capability')
++                _fail('nested tool changed worker or capability')
++            return function(agent, *args, **kwargs)
++        metadata = {
++            'task_id': bound.get('effective_task_id') or '',
++            'session_id': getattr(agent, 'session_id', '') or '',
++            'tool_call_id': bound.get('tool_call_id') or '',
++            'turn_id': getattr(agent, '_current_turn_id', '') or '',
++            'api_request_id': getattr(agent, '_current_api_request_id', '') or '',
++        }
++        token = _CURRENT.set(ToolOperation(state, name, metadata))
++        try:
++            result = function(agent, *args, **kwargs)
++            check_agent(agent)
++            return result
++        except BaseException:
++            state.revoke('tool execution exited exceptionally; effects may exist')
++            raise
++        finally:
++            _CURRENT.reset(token)
++    return wrapped
++
++
++def suppress_optional_guard_hooks(manager: Any, hook_name: str) -> bool:
++    """Guard pracuje obowiązkowo przy handlerze, nie drugi raz jako obserwator."""
++    if hook_name not in ('pre_tool_call', 'post_tool_call'):
++        return False
++    with _MAP_LOCK:
++        return manager.scope_key in _PROTECTED_SCOPES
++
++
++def guarded_registry_dispatch(registry: Any, name: str, args: Any,
++                              scope: str | None, kwargs: dict) -> tuple[bool, Any]:
++    """Autoryzacja finalnych argumentów i wywołanie przypiętego handlera.
++
++    Kolejność blokad: discovery managera, krótkie odczyty registry, potem
++    istniejąca blokada zamiaru/transakcji wewnątrz pluginu. Nie blokujemy
++    całego executora, który mógłby oczekiwać własnego wątku roboczego.
++    """
++    op = _CURRENT.get()
++    if op is None:
++        effective_scope = scope if scope is not None else registry.current_scope_key()
++        with _MAP_LOCK:
++            bound_scope = effective_scope in _PROTECTED_SCOPES
++        if _protected() or bound_scope:
++            _fail('registry call has no mandatory agent operation')
++        return False, None
++    state = op.state
++    try:
++        with state.proof.manager._discovery_lock:
++            state.verify()
++            if (registry is not state.proof.registry or name != op.name
++                    or scope not in (None, str(state.proof.home)) or type(args) is not dict
++                    or (kwargs.get('task_id') or '') != op.metadata['task_id']):
++                _fail('registry operation identity changed')
++            with op.lock:
++                if op.used:
++                    _fail('tool operation replay')
++                op.used = True
++            frozen = _json(args)
++            for callback in (state.pre, *(callback for _, callback in state.extra_pre)):
++                observed = json.loads(frozen)
++                directive = callback(tool_name=name, args=observed, **op.metadata)
++                state.verify()
++                if _json(observed) != frozen:
++                    _fail('mandatory pre-hook changed arguments without authorization')
++                if directive is not None:
++                    if (type(directive) is not dict or directive.get('action') != 'block'
++                            or not isinstance(directive.get('message'), str) or not directive['message']):
++                        _fail('unsupported mandatory guard directive; no interactive approval')
++                    return True, json.dumps({'error': directive['message']}, ensure_ascii=False)
++            # Funkcja i flagi pochodzą ze snapshotu, nie z kolejnego lookupu
++            # podatnego na równoległą podmianę wpisu w rejestrze.
++            # Admission is ordered with revocation. Release before calling an
++            # arbitrary handler: it may hang. Once admitted, effects are unknown
++            # on abandon; this is NOT a promise to kill a Python thread.
++            with state.decision_lock:
++                state.require_active()
++                op.admitted = True
++                op.thread_id = threading.get_ident()
++            result = registry._dispatch_handler(name, json.loads(frozen),
++                                               state.handlers[name], False, kwargs)
++            state.verify()
++            from model_tools import _tool_result_observer_fields
++            status, error_type, error_message = _tool_result_observer_fields(name, result)
++            state.post(tool_name=name, args=json.loads(frozen), result=result,
++                       status=status, error_type=error_type, error_message=error_message,
++                       **op.metadata)
++            state.verify()
++            return True, result
++    except BaseException as exc:
++        state.revoke(str(exc) if isinstance(exc, WorkerLifetimeError) else 'mandatory dispatch failed; effects may exist')
++        if isinstance(exc, WorkerLifetimeError) or not isinstance(exc, Exception):
++            raise
++        raise WorkerLifetimeError('FACTORY_WORKER_LIFETIME_REFUSED: mandatory dispatch failed; '
++                                  'effects may exist, inspect state, do not retry automatically') from exc
++    finally:
++        op.finished = True
++
++
++def check_model_tools(agent: Any, tools: Any = None) -> None:
++    """Sprawdź pełny obiekt przed budową, także jawnie przekazaną listę tools."""
++    state = check_agent(agent)
++    if state is not None:
++        state.verify_tools(agent.tools if tools is None else tools)
++
++
++def record_model_payload(agent: Any, payload: Any, *, expected_tools: Any = None) -> Any:
++    """Zachowaj tylko skrót powierzchni narzędzi po natywnej konwersji."""
++    state = check_agent(agent)
++    if state is not None:
++        allowed = None
++        if expected_tools is not None:
++            state.verify_tools(expected_tools)
++            allowed = {t['function']['name'] for t in expected_tools}
++        digest = state.envelope(payload, allowed)
++        with state.payload_lock:
++            if len(state.payloads) >= 256 and digest not in state.payloads:
++                state.revoke('model capability cache exhausted')
++                _fail('model capability cache exhausted')
++            state.payloads.add(digest)
++    return payload
++
++
++def check_model_payload(agent: Any, payload: Any) -> None:
++    """Hook/odświeżenie nie może dodać narzędzi po sprawdzonej konwersji."""
++    state = check_agent(agent)
++    if state is not None:
++        with state.payload_lock:
++            known = state.envelope(payload) in state.payloads
++        if not known:
++            state.revoke('model payload capabilities were not built by this worker')
++            _fail('model payload capabilities were not built by this worker')
++
++
++def model_builder(function: Callable) -> Callable:
++    """Zwiąż także bezpośrednie wywołanie natywnego buildera poza forwarderem."""
++    @functools.wraps(function)
++    def wrapped(agent: Any, api_messages: list, tools_for_api: Any = None) -> dict:
++        state = check_agent(agent)
++        if state is None:
++            return function(agent, api_messages, tools_for_api=tools_for_api)
++        tools = copy.deepcopy(agent.tools if tools_for_api is None else tools_for_api)
++        state.verify_tools(tools)
++        result = function(agent, api_messages, tools_for_api=tools)
++        return record_model_payload(agent, result, expected_tools=tools)
++    return wrapped
++
++
++def model_request(function: Callable) -> Callable:
++    """Sprawdź wejście i powrót; cofnięcie nie odwołuje wysłanego żądania.
++
++    Nie utrzymuj discovery przez sieć ani oczekiwanie na inny wątek.
++    Po utracie generacji wynik nie wraca jako gotowa odpowiedź agenta.
++    """
++    @functools.wraps(function)
++    def wrapped(agent: Any, api_kwargs: dict, *args: Any, **kwargs: Any) -> Any:
++        state = check_agent(agent)
++        if state is None:
++            return function(agent, api_kwargs, *args, **kwargs)
++        snapshot = copy.deepcopy(api_kwargs)
++        check_model_payload(agent, snapshot)
++        try:
++            return function(agent, snapshot, *args, **kwargs)
++        finally:
++            check_agent(agent)
++    return wrapped
++
++
++def agent_phase(function: Callable) -> Callable:
++    """Wejście pomocnicze także odmawia normalnego wyniku po unieważnieniu."""
++    @functools.wraps(function)
++    def wrapped(agent: Any, *args: Any, **kwargs: Any) -> Any:
++        check_agent(agent)
++        try:
++            return function(agent, *args, **kwargs)
++        finally:
++            check_agent(agent)
++    return wrapped
++
++
++def checked_model_call(agent: Any, payload: dict, callback: Callable) -> Any:
++    """Końcowy słownik po middleware i sanitizerze, bez blokady nad siecią."""
++    state = check_agent(agent)
++    if state is None:
++        return callback(payload)
++    final = copy.deepcopy(payload)
++    check_model_payload(agent, final)
++    try:
++        return callback(final)
++    finally:
++        check_agent(agent)
+diff --git a/factory_worker_start.py b/factory_worker_start.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..dbcee21cf56fd4ada51d635b34f53c45e2737781
+--- /dev/null
++++ b/factory_worker_start.py
+@@ -0,0 +1,350 @@
++"""Obowiązkowa granica startu coder-claude, wykonywana poza ładowanym pluginem.
++
++Kandydat integracji z przypiętym run_agent.py; nie jest samodzielnym instalatorem.
++Nie nadaje uprawnień recenzji. Na tablicy prywatnego zadania (sf-job-*) instaluje
++hook one-start (factory_one_start) i sprawdza go jednym połączeniem; poza nią
++bazy zadań nie otwiera.
++"""
++from __future__ import annotations
++
++import copy
++import hashlib
++import importlib
++import json
++import os
++import stat
++import sys
++from dataclasses import dataclass
++from pathlib import Path
++from types import ModuleType
++from typing import Any
++
++PROFILE = "coder-claude"
++PLUGIN = "factory-execution-guards"
++TOOLSETS = frozenset({"terminal", "file", "kanban", PLUGIN})
++MODEL_TOOLS = frozenset({
++    "terminal", "read_file", "search_files", "kanban_show", "kanban_comment",
++    "kanban_heartbeat", "kanban_request_review", "kanban_block",
++})
++# Nie przyjmujemy nieznanego rozszerzenia katalogu po zmianie wersji Hermesa.
++RAW_TOOLS = MODEL_TOOLS | frozenset({
++    "process", "patch", "write_file", "kanban_complete", "kanban_create",
++    "kanban_link", "kanban_request_changes", "kanban_attach", "kanban_attach_url",
++    "kanban_attachments",
++})
++# Ten plik jest generowany razem z lokalnym kandydatem, nie z mutable profile config.
++SOURCE_PINS: dict[str, dict[str, str]] = {
++    "plugin": {
++        "__init__.py": "f684143323345acb7ef5e315d2dd423dc4e6f0d76e6aed58e02e10d86b98aa27",
++        "guard.py": "20f3631f01d5fb0e2f933e9569a49253f7748b9092e4252d69a2ece127060197",
++        "handoff.py": "b0d65969f0c502139fe4d8c3fbec9121d73caedd39ed5805679ef9074a65ea93",
++        "plugin.yaml": "49525d9203b2793ddf920932304ae56524ea8dddf0943e919436864de5bd16eb",
++        "review_intent.py": "c53e8bb17c7e2ace531b52f14311ae4000ef5d04db3cc529c0bd65bda47a9287",
++        "review_registration.py": "3edb0fc832a1928a5f882e19c3be489723bf5fc2a901b993c99a0e4bee2b568a",
++        "review_transaction.py": "9749e781670f9ff9aa9423d193da1be15f132dac4c6d74d3b531b7850800276e",
++        "supervisor.py": "3c3de6531fc9007cad95dc734eddcde1f7cf6cd6b202fce0a03bdb02469928ed"
++    },
++    "native": {
++        "factory_one_start.py": "87b450e97bde40c5b2333d65b1117a1427ab7c986d7e2b3edaf7b016c63a9062",
++        "factory_finalization_core.py": "971b733b925f59fbef76e4d618d11cf4d1509f976b778f1797cb54d31a830533",
++        "run_agent.py": "945f36b2ca37b13bc423acd297910de473b123ca2015bed585273ec28fe2c6c9",
++        "tools/registry.py": "9c27d7a0bb5e73cfdff9caacaf3b2aa3dfd62804adf2b1ae365553931f50a985",
++        "hermes_cli/plugins.py": "a1ae9a9d92fe9d713b8d6fde6d44d2ce4828cea99a90265d569a5b286884c383",
++        "hermes_cli/profiles.py": "db1b0ae8657d1731597d33e63502482246b0fd7d7df37b5af13f2d13a65e5ec0",
++        "hermes_constants.py": "58b8d5f17bc6d23dc192990bb71cb92725ed37b6c99a4a5b4cc97ac807846d56",
++        "registration_lifecycle.py": "42c7a95159a02cd5dd252a5f5d43e81d083656b3498b4b95bc09b078e3fbdee0",
++        "model_tools.py": "32a106d66835dc9f88f15624076086a53cbd4bb7ed80889228d0e53f62d4cfac",
++        "tools/schema_sanitizer.py": "62a584bc68ecfd05df1c199980007bcc687fea0e549c18542b9d82de419f329e",
++        "tools/terminal_tool.py": "59a0f637caec97c0a87aed5c667267c537d8747dcab91b408850e34c9eeba64a",
++        "tools/file_tools.py": "18b40343d3fd890692762e8a434fa7e2e96b953766108a797b4af2caef01dd19",
++        "tools/kanban_tools.py": "6066ca6acdbdc6b48258a2a31df0e4942eca883f076c9f56a10fe78370566260",
++        "hermes_cli/kanban_db.py": "1f825422dd7d6cb36bca65676d2225ac55abc6dbb832b9ba0f4aa25b00d5f022",
++        "hermes_cli/sqlite_util.py": "55f41975ed3af6b15c3ca2e2a9dc782b7b99477dd36bfe48d11f462743e56438",
++        "agent/agent_init.py": "0c51a03ef3f0bbc2b3400dbb21568fc05ad5dde305cf7ead5771f01999f5e983",
++        "factory_worker_lifetime.py": "825b631914a0c1a38ae735f3b69ccdc079693977e051f1634e6f55a2c1dc0b9a",
++        "agent/agent_runtime_helpers.py": "6ed3d3fb3666a481f6dea2fde47abb1c93c16d5ab329746fef6e44f27cd0399a",
++        "agent/tool_executor.py": "8bfc17d18e8cd14dcfe20cbb2c699279e902fb1111f40465ab2889c2f8763ca8",
++        "agent/chat_completion_helpers.py": "3e51828008bf8a74d489597438558c8e75952247baa79dbf42d584df1e91bd16",
++        "agent/conversation_loop.py": "b7fc051f8c1fa165d52b33e1946fb39f1b4c289e0f1da11f38ca3e8c82cc54b7",
++        "hermes_cli/lifecycle.py": "e820ed8114d7062d53223113cc053c737d4ced6b624ce1fbe88f79ad8b2a26bd",
++        "hermes_cli/config.py": "b4846228f7767d0fc3b4793da2e96d5d12c27089695574b0d7acf18624e49920",
++        "factory_model_boundary.py": "cdfa6fdf59293126416e172b8b224e9b76a2b376c18c8df8e35dae5efcbf3b25",
++        "agent/codex_runtime.py": "863041b47f046af78c76bab6bee9e89113ab1e114a4e6ab98b484a13b7f2926f",
++        "agent/anthropic_adapter.py": "10a47719f8b54f4fe3bd81eebba3ddc70d08106745148a5bea1992c2d8f6462d",
++        "factory_profile_start.py": "70b792781c5d36404d31141a2992af98926ba64c76789b1eb9269a460ee56fc3"
++    }
++}
++_HANDLERS = {
++    "terminal": ("tools.terminal_tool", "_handle_terminal", "check_terminal_requirements"),
++    "read_file": ("tools.file_tools", "_handle_read_file", "_check_file_reqs"),
++    "search_files": ("tools.file_tools", "_handle_search_files", "_check_file_reqs"),
++    "kanban_show": ("tools.kanban_tools", "_handle_show", "_check_kanban_mode"),
++    "kanban_comment": ("tools.kanban_tools", "_handle_comment", "_check_kanban_mode"),
++    "kanban_heartbeat": ("tools.kanban_tools", "_handle_heartbeat", "_check_kanban_mode"),
++    "kanban_block": ("tools.kanban_tools", "_handle_block", "_check_kanban_mode"),
++}
++
++
++class WorkerStartError(RuntimeError):
++    """Brak dowodu gotowości zamyka start, zamiast pozostawiać niechroniony agent."""
++
++
++def _fail(message: str) -> None:
++    raise WorkerStartError("FACTORY_WORKER_START_REFUSED: " + message)
++
++
++def _canonical(path: Path) -> Path:
++    resolved = path.resolve(strict=True)
++    if not path.is_absolute() or str(path) != str(resolved):
++        _fail("noncanonical source/profile path")
++    current = path
++    while current != current.parent:
++        if current.is_symlink():
++            _fail("source/profile symlink")
++        current = current.parent
++    return path
++
++
++_BYTECODE_PREFIX: tuple[int, int, str] | None = None
++
++
++def _check_bytecode_cache() -> None:
++    # G3: -B/PYTHONDONTWRITEBYTECODE zabrania zapisu, nie odczytu. Wymagamy prywatnego, pustego prefiksu cache
++    # utworzonego dla tego uruchomienia: CPython czyta wtedy .pyc wyłącznie spod prefiksu, więc żaden istniejący
++    # .pyc (drzewo runtime, site-packages, stdlib) nie jest wykonywany — każdy moduł kompiluje się ze źródła.
++    # Brak prefiksu, prefiks odziedziczony/współdzielony, niepusty lub nieprywatny = odmowa.
++    if not sys.dont_write_bytecode:
++        _fail("bytecode writes enabled")
++    prefix = sys.pycache_prefix
++    if prefix is None or os.environ.get("PYTHONPYCACHEPREFIX") != prefix:
++        _fail("private bytecode cache prefix required")
++    path = Path(prefix)
++    try:
++        st = path.lstat()
++    except OSError:
++        _fail("private bytecode cache prefix missing")
++    if (not path.is_absolute() or stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode)
++            or st.st_uid != os.geteuid() or stat.S_IMODE(st.st_mode) != 0o700):
++        _fail("bytecode cache prefix not private")
++    global _BYTECODE_PREFIX
++    identity = (st.st_dev, st.st_ino, str(path))
++    if _BYTECODE_PREFIX is None:
++        # Pierwsze sprawdzenie (start procesu, przed kodem narzędzi): prefiks musi być pusty.
++        if any(path.iterdir()):
++            _fail("bytecode cache prefix not empty")
++        _BYTECODE_PREFIX = identity
++    elif _BYTECODE_PREFIX != identity:
++        # Później: ten sam prywatny katalog. Zawartość może pochodzić wyłącznie z kompilacji tego procesu
++        # ze źródeł (np. natywny linter py_compile ignoruje PYTHONDONTWRITEBYTECODE).
++        _fail("bytecode cache prefix changed")
++
++
++def _check_sources(home: Path) -> None:
++    _check_bytecode_cache()
++    plugin_root = _canonical(home / "plugins" / PLUGIN)
++    actual = set()
++    for path in plugin_root.rglob("*"):
++        if path.is_symlink():
++            _fail("plugin source symlink")
++        if path.is_file():
++            relative = path.relative_to(plugin_root).as_posix()
++            # Cache wewnętrzny jest niedozwolonym dodatkowym plikiem pluginu.
++            actual.add(relative)
++    if actual != set(SOURCE_PINS["plugin"]):
++        _fail("plugin file set changed")
++    native_root = _canonical(Path(__file__).resolve().parent)
++    for root, pins in ((plugin_root, SOURCE_PINS["plugin"]),
++                       (native_root, SOURCE_PINS["native"])):
++        for name, expected in pins.items():
++            path = _canonical(root / name)
++            if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != expected:
++                _fail("source pin mismatch: " + name)
++
++
++def _source_home() -> Path:
++    """Ustal ścieżkę przed importem któregokolwiek z kontrolowanych modułów."""
++    if os.environ.get("HERMES_PROFILE") != PROFILE:
++        _fail("profile identity mismatch")
++    raw = os.environ.get("HERMES_HOME", "")
++    if not raw:
++        _fail("profile home missing")
++    home = _canonical(Path(raw))
++    if home != Path.home() / ".hermes" / "profiles" / PROFILE:
++        _fail("profile identity mismatch: profile home mismatch")
++    return home
++
++
++def _identity() -> Path:
++    from hermes_cli.profiles import get_active_profile_name
++    from hermes_constants import get_hermes_home
++    if get_active_profile_name() != PROFILE or os.environ.get("HERMES_PROFILE") != PROFILE:
++        _fail("profile identity mismatch")
++    home = _canonical(Path(os.environ["HERMES_HOME"]))
++    if home != get_hermes_home() or home != Path.home() / ".hermes" / "profiles" / PROFILE:
++        _fail("profile identity mismatch: profile home mismatch")
++    return home
++
++
++def _configuration(enabled: Any, disabled: Any) -> None:
++    from hermes_cli.config import load_config_readonly
++    if (type(enabled) is not list or any(type(x) is not str for x in enabled)
++            or len(enabled) != len(TOOLSETS) or set(enabled) != TOOLSETS
++            or disabled not in (None, [])):
++        _fail("explicit worker toolset selection mismatch")
++    config = load_config_readonly()
++    if not isinstance(config, dict):
++        _fail("profile config unavailable")
++    plugins = config.get("plugins", {})
++    if (plugins.get("enabled") != [PLUGIN] or plugins.get("disabled", []) != []
++            or plugins.get("entries") != {PLUGIN: {"allow_tool_override": True}}
++            or plugins["entries"][PLUGIN].get("allow_tool_override") is not True):
++        _fail("plugin configuration mismatch")
++    if (config.get("mcp_servers", {}) != {}
++            or config.get("tools", {}).get("tool_search", {}).get("enabled") != "off"):
++        _fail("dynamic capability discovery must be disabled")
++    if (config.get("factory", {}).get("execution_backend") != "claude-code"
++            or config.get("factory", {}).get("claude_model_class") != "sonnet"):
++        _fail("coder backend configuration mismatch")
++
++
++def _module_source(module: ModuleType, expected: Path) -> None:
++    if (not isinstance(module, ModuleType)
++            or Path(getattr(module, "__file__", "")) != expected
++            or getattr(module, "__spec__", None) is None
++            or Path(module.__spec__.origin or "") != expected):
++        _fail("loaded module origin mismatch")
++
++
++def _json(value: Any) -> str:
++    return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
++
++
++@dataclass(frozen=True)
++class WorkerStartProof:
++    """Krótkotrwały uchwyt TEGO procesu, nie deklaracja w środowisku ani pliku."""
++    home: Path
++    manager: Any
++    loaded: Any
++    module: ModuleType
++    registry: Any
++    native_entries: dict[str, Any]
++    entry_metadata: dict[str, str]
++    enabled: tuple[str, ...]
++    disabled: tuple[str, ...]
++    pid: int
++
++    def verify(self) -> None:
++        """Ponownie sprawdź moduł, hooki, ledger oraz rzeczywiste aktywne wpisy."""
++        from hermes_cli.plugins import get_plugin_manager
++        from tools.registry import registry
++        if (self.pid != os.getpid() or _identity() != self.home
++                or get_plugin_manager() is not self.manager or registry is not self.registry
++                or registry.current_scope_key() != str(self.home)
++                or self.manager.scope_key != str(self.home)):
++            _fail("worker/profile/registry identity changed")
++        _check_sources(self.home)
++        _configuration(list(self.enabled), list(self.disabled))
++        loaded = self.manager._plugins.get(PLUGIN)
++        if (loaded is not self.loaded or not loaded.enabled or loaded.error is not None
++                or loaded.module is not self.module):
++            _fail("plugin unavailable or replaced")
++        _module_source(self.module, self.home / "plugins" / PLUGIN / "__init__.py")
++        for hook_name, function in (("pre_tool_call", self.module.on_pre_tool_call),
++                                    ("post_tool_call", self.module.on_post_tool_call)):
++            if self.manager._hooks.get(hook_name) != [function]:
++                _fail("required hook identity/count changed: " + hook_name)
++            owned = [r for r in self.manager._ownership_ledger.get(PLUGIN, [])
++                     if r.kind == "hook" and r.key == hook_name and r.active]
++            if len(owned) != 1:
++                _fail("hook lifecycle ownership changed")
++        registration = importlib.import_module(self.module.__name__ + ".review_registration")
++        registration.verify_active_registration()
++        for name, entry in self.native_entries.items():
++            if (registry.snapshot_registration(name) is not entry
++                    or registry.snapshot_registration(name, scope=str(self.home)) is not None
++                    or registry.get_entry(name) is not entry
++                    or _entry_metadata(entry) != self.entry_metadata[name]):
++                _fail("native tool identity changed: " + name)
++            module_name, handler_name, check_name = _HANDLERS[name]
++            native = importlib.import_module(module_name)
++            _module_source(native, Path(__file__).parent / (module_name.replace(".", "/") + ".py"))
++            if entry.handler is not getattr(native, handler_name) or entry.check_fn is not getattr(native, check_name):
++                _fail("native handler/check identity changed: " + name)
++
++
++def _entry_metadata(entry: Any) -> str:
++    return _json({k: getattr(entry, k) for k in (
++        "name", "toolset", "schema", "requires_env", "is_async", "description", "emoji",
++        "max_result_size_chars", "dynamic_schema_overrides")})
++
++
++def before_agent_init(enabled: Any, disabled: Any, *, provider: Any = None) -> WorkerStartProof:
++    """Odmów PRZED konstruktorem providerów także wtedy, gdy plugin nie istnieje."""
++    try:
++        home = _source_home()
++        _check_sources(home)
++        from factory_model_boundary import is_moa_provider
++        if is_moa_provider(provider):
++            _fail("MoA is unsupported for coder-claude; no advisor/facade work is authorized")
++        if _identity() != home:
++            _fail("profile identity changed during source verification")
++        _configuration(enabled, disabled)
++        # Prywatna tablica zadania: hook one-start przed pierwszym narzędziem.
++        from factory_one_start import install_for_worker
++        install_for_worker()
++        # Jawny import bazowych tools poprzedza discovery. Loader może pominąć
++        # plugin z błędem; wynik weryfikujemy niezależnie, nie ufamy brakowi wyjątku.
++        from tools import terminal_tool, file_tools, kanban_tools  # noqa: F401
++        from hermes_cli.plugins import discover_plugins, get_plugin_manager
++        from tools.registry import registry
++        discover_plugins()
++        manager = get_plugin_manager()
++        loaded = manager._plugins.get(PLUGIN)
++        if loaded is None or loaded.module is None or not loaded.enabled or loaded.error:
++            _fail("mandatory execution guard did not load")
++        entries = {name: registry.snapshot_registration(name) for name in _HANDLERS}
++        if any(entry is None for entry in entries.values()):
++            _fail("required native tool missing")
++        proof = WorkerStartProof(home, manager, loaded, loaded.module, registry, entries,
++                                 {n: _entry_metadata(e) for n, e in entries.items()},
++                                 tuple(enabled), tuple(disabled or ()), os.getpid())
++        proof.verify()
++        return proof
++    except WorkerStartError:
++        raise
++    except Exception as exc:
++        raise WorkerStartError("FACTORY_WORKER_START_REFUSED: " + type(exc).__name__) from exc
++
++
++def after_agent_init(proof: WorkerStartProof, agent: Any) -> None:
++    """Zbuduj modelowi dokładnie osiem dozwolonych narzędzi z realnego katalogu.
++
++    To jawne zawężenie uprawnień, nie ponowne nadpisywanie natywnego rejestru.
++    Każda nowa/utracona nazwa w surowym katalogu zatrzymuje start do recenzji.
++    """
++    try:
++        proof.verify()
++        from factory_model_boundary import is_moa_provider
++        if is_moa_provider(getattr(agent, "provider", None)):
++            _fail("MoA resolved during initialization; protected worker cannot be bound")
++        tools = agent.tools
++        if type(tools) is not list:
++            _fail("model definitions are not a list")
++        names = [item["function"]["name"] for item in tools]
++        if len(names) != len(set(names)) or set(names) != RAW_TOOLS:
++            _fail("raw native capability surface changed")
++        if agent.valid_tool_names != RAW_TOOLS:
++            _fail("agent names/definitions disagree")
++        from tools.schema_sanitizer import sanitize_tool_schemas
++        reference = sanitize_tool_schemas(proof.registry.get_definitions(set(RAW_TOOLS), quiet=True))
++        index = {item["function"]["name"]: item for item in reference}
++        if set(index) != RAW_TOOLS or any(_json(item) != _json(index[item["function"]["name"]]) for item in tools):
++            _fail("model/native schema mismatch")
++        selected = [copy.deepcopy(item) for item in tools if item["function"]["name"] in MODEL_TOOLS]
++        proof.verify()
++        agent.tools = selected
++        agent.valid_tool_names = set(MODEL_TOOLS)
++    except WorkerStartError:
++        raise
++    except Exception as exc:
++        raise WorkerStartError("FACTORY_WORKER_START_REFUSED: " + type(exc).__name__) from exc
+diff --git a/hermes_cli/kanban_db.py b/hermes_cli/kanban_db.py
+index 79398b7d6881a4ae6a341fade10ab7b6e7a1b184..87a2d90cf4f3ec2ec7c5c66f341b0fab6608d836 100644
+--- a/hermes_cli/kanban_db.py
++++ b/hermes_cli/kanban_db.py
+@@ -9343,6 +9343,81 @@ def _record_spawn_failure(
+     )
+ 
+ 
++def _bind_factory_coder_run(conn: sqlite3.Connection, claimed: Task, workspace: str) -> None:
++    """Bind a factory coder's current native claim to its resolved worktree.
++
++    Called by ready dispatch BEFORE spawning. This is control-plane bookkeeping,
++    not Claude execution evidence or permission to approve a review. The product
++    guard still checks repository/body, live PID, scope, evidence and receipts.
++    Do not repair conflicting metadata or bind a replacement run. Failure aborts
++    dispatch before spawn; it must not flow into the old task-id-only spawn-error
++    handler, which could otherwise mutate a successor claim.
++    """
++    def refuse(reason: str) -> None:
++        raise RuntimeError("FACTORY_DISPATCH_BINDING_REFUSED: " + reason)
++
++    if claimed.assignee != "coder-claude":
++        return
++    run_id, claim = claimed.current_run_id, claimed.claim_lock
++    if type(run_id) is not int or run_id <= 0 or not isinstance(claim, str) or not claim:
++        refuse("missing original run/claim identity")
++    try:
++        canonical = Path(workspace).resolve(strict=True)
++    except (OSError, RuntimeError, TypeError, ValueError):
++        refuse("resolved worktree unavailable")
++    if not isinstance(workspace, str) or not canonical.is_dir() or str(canonical) != workspace:
++        refuse("noncanonical worktree")
++
++    def unique_pairs(items):
++        value = {}
++        for key, item in items:
++            if key in value:
++                refuse("duplicate metadata key")
++            value[key] = item
++        return value
++
++    with write_txn(conn):
++        task = conn.execute("SELECT * FROM tasks WHERE id = ?", (claimed.id,)).fetchone()
++        run = conn.execute("SELECT * FROM task_runs WHERE id = ?", (run_id,)).fetchone()
++        if (task is None or run is None or task["status"] != "running"
++                or task["assignee"] != "coder-claude" or task["current_run_id"] != run_id
++                or task["claim_lock"] != claim or run["claim_lock"] != claim
++                or run["task_id"] != claimed.id or run["profile"] != "coder-claude"
++                or run["status"] != "running" or run["ended_at"] is not None
++                or run["outcome"] is not None or task["worker_pid"] is not None
++                or run["worker_pid"] is not None):
++            refuse("claim/run changed or already spawned")
++        if task["workspace_kind"] != "worktree" or task["workspace_path"] != workspace:
++            refuse("resolved workspace differs from task")
++        raw = run["metadata"]
++        if raw is None:
++            metadata = {}
++        else:
++            if not isinstance(raw, str) or len(raw.encode("utf-8")) > 65536:
++                refuse("invalid metadata size/type")
++            try:
++                metadata = json.loads(raw, object_pairs_hook=unique_pairs,
++                    parse_constant=lambda _: refuse("nonfinite metadata"))
++            except (ValueError, TypeError, RecursionError):
++                refuse("invalid metadata JSON")
++            if not isinstance(metadata, dict):
++                refuse("metadata must be an object")
++        if "task_id" in metadata and metadata["task_id"] != claimed.id:
++            refuse("metadata names another task")
++        for key in ("workspace", "workspace_path"):
++            if key in metadata and metadata[key] != workspace:
++                refuse("metadata names another worktree")
++        # A duplicate pre-spawn delivery does not add another event or rewrite
++        # session metadata. Post-spawn calls are still refused above.
++        if metadata.get("task_id") == claimed.id and metadata.get("workspace_path") == workspace:
++            return
++        metadata.update(task_id=claimed.id, workspace_path=workspace)
++        encoded = json.dumps(metadata, ensure_ascii=True, allow_nan=False, sort_keys=True)
++        conn.execute("UPDATE task_runs SET metadata = ? WHERE id = ?", (encoded, run_id))
++        _append_event(conn, claimed.id, "factory_coder_bound",
++                      {"workspace_path": workspace}, run_id=run_id)
++
++
+ def _set_worker_pid(conn: sqlite3.Connection, task_id: str, pid: int) -> None:
+     """Record the spawned child's pid + emit a ``spawned`` event.
+ 
+@@ -10249,6 +10324,10 @@ def _dispatch_once_locked(
+         if claimed.workspace_kind == "worktree":
+             set_branch_name(conn, claimed.id, resolved_branch_name or (claimed.branch_name or "").strip() or f"wt/{claimed.id}")
+         _maybe_emit_scratch_tip(conn, claimed.id, claimed.workspace_kind)
++        # The guard consumes this binding; ordinary native claims have no
++        # metadata. Refuse stale/conflicting factory state BEFORE any child is
++        # created, outside the generic task-id-only spawn-failure path below.
++        _bind_factory_coder_run(conn, claimed, str(workspace))
+         _spawn = spawn_fn if spawn_fn is not None else _default_spawn
+         try:
+             # Back-compat: older spawn_fn signatures accept only
+diff --git a/hermes_cli/plugins.py b/hermes_cli/plugins.py
+index 9ef8e47d06901b978be25b16a2c7a2b6500f3f63..78442a3536d34fe1b20ccfb1c975e4c48a136a01 100644
+--- a/hermes_cli/plugins.py
++++ b/hermes_cli/plugins.py
+@@ -5091,6 +5091,9 @@ class PluginManager:
+         are reused.  All injected context is ephemeral — never
+         persisted to session DB.
+         """
++        from factory_worker_lifetime import suppress_optional_guard_hooks
++        if suppress_optional_guard_hooks(self, hook_name):
++            return []
+         # Most legacy observer hooks carry the shared telemetry marker. Gateway
+         # platform events define event-local additive envelopes instead: injecting
+         # a bus-wide version here would turn unrelated adapter payloads into one
+diff --git a/pyproject.toml b/pyproject.toml
+index e897064d278dcc58322e164c48586d658e807eef..23f304ca93d6e448f47369795f5993a4104b0323 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -38,7 +38,7 @@ dependencies = [
+   # user picks that backend. Smaller `dependencies` = smaller blast
+   # radius for the next supply-chain attack.
+   "openai==2.24.0",
+-  "certifi==2026.5.20",
++  "certifi==2026.10.18",  # factory override (G6): GHSA-6q48-6c7w-9gw2, PYSEC-2026-4320
+   "python-dotenv==1.2.2",
+   "fire==0.7.1",
+   "httpx[socks]==0.28.1",
+@@ -78,10 +78,12 @@ dependencies = [
+   # it out of the lazy-install path that exists only for the heavy matrix deps.
+   "Markdown==3.10.2",
+   # Skills Hub (GitHub App JWT auth — optional, only needed for bot identity)
+-  "PyJWT[crypto]==2.13.0",  # PYSEC-2026-175/177/178/179
++  "PyJWT[crypto]==2.15.0",  # PYSEC-2026-175/177/178/179; factory override (G6): CRITICAL/HIGH fixed in 2.15.0
+   # urllib3 2.7.0 fixes GHSA-mf9v-mfxr-j63j (decompression-bomb bypass)
+   # and GHSA-qccp-gfcp-xxvc (header leak across origins).
+-  "urllib3>=2.7.0,<3",
++  "urllib3>=2.8.0,<3",  # factory override (G6): GHSA-8988-9cw3-xx77 et al., fixed in 2.8.0
++  # factory override (G6): transitive anyio CRITICAL (GHSA-5p39-cfhj-2xmp et al.) fixed in 4.14.2
++  "anyio>=4.14.2,<5",
+   # PyJWT[crypto] pulls cryptography in transitively. Pin it here as well, so
+   # that the WeCom and Weixin crypto paths cannot fall below the patched
+   # version. 50.0.0 is the floor: it fixes CVE-2026-69247, a Bleichenbacher
+@@ -131,7 +133,7 @@ dependencies = [
+   # libs required for the codecs we use, so it's safe to ship in the base
+   # install rather than gating it behind an extra + a mid-session lazy install
+   # (which deadlocked the CLI under prompt_toolkit — see #40490).
+-  "Pillow==12.3.0",
++  "Pillow==13.0.0",  # factory override (G6): CRITICAL/HIGH fixed in 13.0.0
+   # Windows log rotation. Stdlib ``RotatingFileHandler.doRollover()`` uses
+   # ``os.rename()`` which fails with ``PermissionError [WinError 32]`` on
+   # Windows whenever any other process holds an append-mode handle on
+@@ -421,6 +423,12 @@ exclude-newer-package = { vercel = false, nemo-relay = false, huggingface_hub =
+ # sealed venv is missing hermes_constants, run_agent, etc.
+ py-modules = [
+   "run_agent",
++  "factory_worker_start",
++  "factory_worker_lifetime",
++  "factory_model_boundary",
++    "factory_profile_start",
++  "factory_one_start",
++  "factory_finalization_core",
+   "registration_lifecycle",
+   "model_tools",
+   "toolsets",
+diff --git a/run_agent.py b/run_agent.py
+index b4308f27a6c003d963d7d4130c51bb74c1d32792..4e025f905ba23992227a3627a8174e60c919b8ad 100644
+--- a/run_agent.py
++++ b/run_agent.py
+@@ -513,6 +513,19 @@ class AIAgent:
+         requested_provider: str = None,
+     ):
+         """Forwarder — see ``agent.agent_init.init_agent``."""
++        # Obowiązkowy start profilu jest poza pluginem: brak/import failure
++        # guarda musi przerwać również konstrukcję, która nie załaduje hooków.
++        from factory_profile_start import selected_profile
++        _factory_selected = selected_profile()
++        _factory_start = None
++        _factory_profile_start = None
++        if _factory_selected == "coder-claude":
++            from factory_worker_start import before_agent_init, after_agent_init
++            _factory_start = before_agent_init(enabled_toolsets, disabled_toolsets, provider=provider)
++        elif _factory_selected in {"reviewer-gpt", "release-manager"}:
++            from factory_profile_start import before_profile_init, after_profile_init
++            _factory_profile_start = before_profile_init(
++                _factory_selected, enabled_toolsets, disabled_toolsets, provider=provider)
+         if tool_delay is not None:
+             warnings.warn(
+                 "tool_delay is deprecated and ignored; sequential tool calls "
+@@ -600,6 +613,14 @@ class AIAgent:
+             checkpoint_max_file_size_mb=checkpoint_max_file_size_mb,
+             pass_session_id=pass_session_id,
+         )
++        if _factory_start is not None:
++            after_agent_init(_factory_start, self)
++            from factory_worker_lifetime import bind_worker
++            bind_worker(self, _factory_start)
++        if _factory_profile_start is not None:
++            after_profile_init(_factory_profile_start, self)
++            from factory_worker_lifetime import bind_worker
++            bind_worker(self, _factory_profile_start)
+ 
+     def _get_session_db_for_recall(self):
+         """Return a SessionDB for recall, lazily creating it if an entrypoint forgot.
+@@ -3204,6 +3225,8 @@ class AIAgent:
+             if session_has_running_agent:
+                 running_agent.interrupt(new_message.text)
+         """
++        from factory_worker_lifetime import abandon_worker
++        abandon_worker(self, 'agent interrupted; effects may exist')
+         # A hard stop and redirect share one lock so /stop cannot race with an
+         # accepted correction and accidentally turn itself into a retry.
+         def _admit_hard_cancel() -> None:
+@@ -4477,6 +4500,8 @@ class AIAgent:
+         Safe to call multiple times (idempotent).  Each cleanup step is
+         independently guarded so a failure in one does not prevent the rest.
+         """
++        from factory_worker_lifetime import close_worker
++        close_worker(self)
+         # AIAgent.close() is the hard owner boundary. Gateway cleanup may
+         # call shutdown_memory_provider() first; its idempotence prevents
+         # duplicate extraction while direct callers cannot skip provider close.
+@@ -6453,6 +6478,7 @@ class AIAgent:
+         return create_anthropic_message(
+             client or self._anthropic_client,
+             api_kwargs,
++            factory_agent=self,
+             log_prefix=getattr(self, "log_prefix", ""),
+             prefer_stream=not bool(getattr(self, "_disable_streaming", False)),
+             # Rate-limit + credits state live in response headers, which the
+@@ -6489,8 +6515,11 @@ class AIAgent:
+ 
+     def _interruptible_api_call(self, api_kwargs: dict):
+         """Forwarder — see ``agent.chat_completion_helpers.interruptible_api_call``."""
++        from factory_worker_lifetime import check_model_payload
++        check_model_payload(self, api_kwargs)
+         from agent.chat_completion_helpers import interruptible_api_call
+-        return interruptible_api_call(self, api_kwargs)
++        from factory_worker_lifetime import model_request
++        return model_request(interruptible_api_call)(self, api_kwargs)
+ 
+     # ── Unified streaming API call ─────────────────────────────────────────
+ 
+@@ -6981,8 +7010,11 @@ class AIAgent:
+         self, api_kwargs: dict, *, on_first_delta: callable = None
+     ):
+         """Forwarder — see ``agent.chat_completion_helpers.interruptible_streaming_api_call``."""
++        from factory_worker_lifetime import check_model_payload
++        check_model_payload(self, api_kwargs)
+         from agent.chat_completion_helpers import interruptible_streaming_api_call
+-        return interruptible_streaming_api_call(self, api_kwargs, on_first_delta=on_first_delta)
++        from factory_worker_lifetime import model_request
++        return model_request(interruptible_streaming_api_call)(self, api_kwargs, on_first_delta=on_first_delta)
+ 
+     def _try_activate_fallback(self, reason: "FailoverReason | None" = None) -> bool:
+         """Forwarder — see ``agent.chat_completion_helpers.try_activate_fallback``."""
+@@ -7544,8 +7576,10 @@ class AIAgent:
+ 
+     def _build_api_kwargs(self, api_messages: list, tools_for_api: Optional[list] = None) -> dict:
+         """Forwarder — see ``agent.chat_completion_helpers.build_api_kwargs``."""
++        from factory_worker_lifetime import check_model_tools, record_model_payload
++        check_model_tools(self, tools_for_api)
+         from agent.chat_completion_helpers import build_api_kwargs
+-        return build_api_kwargs(self, api_messages, tools_for_api=tools_for_api)
++        return record_model_payload(self, build_api_kwargs(self, api_messages, tools_for_api=tools_for_api))
+ 
+     def _supports_reasoning_extra_body(self) -> bool:
+         """Return True when reasoning extra_body is safe to send for this route/model.
+@@ -8253,6 +8287,8 @@ class AIAgent:
+                      tool_request_middleware_trace: Optional[list[dict[str, Any]]] = None,
+                      skip_tool_execution_middleware: bool = False) -> str:
+         """Forwarder — see ``agent.agent_runtime_helpers.invoke_tool``."""
++        from factory_worker_lifetime import check_agent
++        check_agent(self)
+         from agent.agent_runtime_helpers import invoke_tool
+         return invoke_tool(
+             self,
+@@ -8350,6 +8386,8 @@ class AIAgent:
+         moa_config: Optional[dict[str, Any]] = None,
+     ) -> Dict[str, Any]:
+         """Forwarder — see ``agent.conversation_loop.run_conversation``."""
++        from factory_worker_lifetime import check_agent
++        check_agent(self)
+         from agent.aux_accounting import (
+             reset_accounting_context,
+             set_accounting_context,
+diff --git a/tools/registry.py b/tools/registry.py
+index 081040911499f8bb7e5a947e9c85b5e459fd3dd0..3f4aee75f1cba40fbb5ce41ad38500adda5bdbe3 100644
+--- a/tools/registry.py
++++ b/tools/registry.py
+@@ -1115,15 +1115,24 @@ class ToolRegistry:
+         * All exceptions are caught and returned as ``{"error": "..."}``
+           for consistent error format.
+         """
++        from factory_worker_lifetime import guarded_registry_dispatch
++        guarded, result = guarded_registry_dispatch(self, name, args, scope, kwargs)
++        if guarded:
++            return result
+         entry = self.get_entry(name, scope=scope)
+         if not entry:
+             return tool_error(f"Unknown tool: {name}")
++        return self._dispatch_handler(name, args, entry.handler, entry.is_async, kwargs)
++
++    def _dispatch_handler(self, name: str, args: dict, handler: Callable,
++                          is_async: bool, kwargs: dict) -> str | dict:
++        """Wykonaj wybraną funkcję bez ponownego lookupu modyfikowalnego wpisu."""
+         try:
+-            if entry.is_async:
++            if is_async:
+                 from model_tools import _run_async
+-                result = _run_async(entry.handler(args, **kwargs))
++                result = _run_async(handler(args, **kwargs))
+             else:
+-                result = entry.handler(args, **kwargs)
++                result = handler(args, **kwargs)
+             return self._normalize_handler_result(name, result)
+         except Exception as e:
+             # exc_info already renders the exception, so keep the message copy bounded.

@@ -9,13 +9,13 @@
   ],
   "install_root": "~/.hermes/skills",
   "skills": {
-    "sha-integrity-check": {"source":"custom","path":"skills/custom/sha-integrity-check","profiles":["repository-analyst","coder","critic","auditor-gpt","auditor-grok","auditor-ox","release-manager"],"sha_sensitive":true},
-    "workspace-integrity": {"source":"custom","path":"skills/custom/workspace-integrity","profiles":["coder"],"sha_sensitive":true},
-    "evidence-ledger": {"source":"custom","path":"skills/custom/evidence-ledger","profiles":["repository-analyst","coder","critic","auditor-gpt","auditor-grok","auditor-ox","release-manager"],"sha_sensitive":true},
+    "sha-integrity-check": {"source":"custom","path":"skills/custom/sha-integrity-check","profiles":["repository-analyst","coder","coder-claude","reviewer-gpt","reviewer-claude","architect-claude-opus","critic","auditor-gpt","auditor-grok","release-manager"],"sha_sensitive":true},
+    "workspace-integrity": {"source":"custom","path":"skills/custom/workspace-integrity","profiles":["coder","coder-claude"],"sha_sensitive":true},
+    "evidence-ledger": {"source":"custom","path":"skills/custom/evidence-ledger","profiles":["repository-analyst","coder","coder-claude","reviewer-gpt","reviewer-claude","architect-claude-opus","critic","auditor-gpt","auditor-grok","release-manager"],"sha_sensitive":true},
     "ci-failure-recovery": {"source":"custom","path":"skills/custom/ci-failure-recovery","profiles":["coder"],"sha_sensitive":false},
     "pr-merge-gate": {"source":"custom","path":"skills/custom/pr-merge-gate","profiles":["release-manager"],"sha_sensitive":true},
     "task-skill-router": {"source":"custom","path":"skills/custom/task-skill-router","profiles":["task-decomposer"],"sha_sensitive":false},
-    "factory-tdd-workflow": {"source":"custom","path":"skills/custom/factory-tdd-workflow","profiles":["coder"],"sha_sensitive":true},
+    "factory-tdd-workflow": {"source":"custom","path":"skills/custom/factory-tdd-workflow","profiles":["coder","coder-claude"],"sha_sensitive":true},
     "factory-ai-code-review": {"source":"custom","path":"skills/custom/factory-ai-code-review","profiles":["quick-reviewer","critic"],"sha_sensitive":true},
     "factory-repo-map": {
       "source":"custom-multifile",
@@ -43,25 +43,8 @@
     "tdd-workflow": {"repository":"mohitagw15856/pm-claude-skills","commit":"aa71bee8d20b7febdfd49f3aa96f26f316344628","path":"skills/tdd-workflow/SKILL.md","local_path":"skills/upstream/tdd-workflow/SKILL.md","sha256":"55ddcbf38feff891b811e5b7027c0b5efebc65831bc5f7d599c62cbd19561e1a","installable":false,"adapter":"factory-tdd-workflow"},
     "ai-code-review": {"repository":"mohitagw15856/pm-claude-skills","commit":"aa71bee8d20b7febdfd49f3aa96f26f316344628","path":"skills/ai-code-review/SKILL.md","local_path":"skills/upstream/ai-code-review/SKILL.md","sha256":"2bb60f6f1ef619a6b48390b320cbf30a85fb233686d2a64c8e4b90e8d521a7ba","installable":false,"adapter":"factory-ai-code-review"},
     "repo-map": {
-      "repository":"mohitagw15856/pm-claude-skills",
-      "commit":"aa71bee8d20b7febdfd49f3aa96f26f316344628",
-      "path":"skills/repo-map",
-      "local_path":"skills/upstream/repo-map",
-      "installable":false,
-      "vetted":false,
-      "review_status":"replaced-by-factory-fork",
-      "files": {
-        "SKILL.md":"9d6923145b22099e604b2ea3888e6f59d215cf98c8c87e00f41c98f5db01c7e0",
-        "scripts/repo_map.py":"bf4ccffe145eb9361f60c32aa74c13294a58890e5a2918572dacb3f9f153962d"
-      },
-      "adapter":"factory-repo-map"
+      "repository":"mohitagw15856/pm-claude-skills","commit":"aa71bee8d20b7febdfd49f3aa96f26f316344628","path":"skills/repo-map","local_path":"skills/upstream/repo-map","installable":false,"vetted":false,"review_status":"replaced-by-factory-fork","files":{"SKILL.md":"9d6923145b22099e604b2ea3888e6f59d215cf98c8c87e00f41c98f5db01c7e0","scripts/repo_map.py":"bf4ccffe145eb9361f60c32aa74c13294a58890e5a2918572dacb3f9f153962d"},"adapter":"factory-repo-map"
     }
   },
-  "upstream_policy": {
-    "enabled": true,
-    "mode": "vendored-only",
-    "network_install": false,
-    "repository_allowlist": ["mohitagw15856/pm-claude-skills"],
-    "required_fields_when_enabled": ["repository","commit","path","sha256","vetted"]
-  }
+  "upstream_policy": {"enabled":true,"mode":"vendored-only","network_install":false,"repository_allowlist":["mohitagw15856/pm-claude-skills"],"required_fields_when_enabled":["repository","commit","path","sha256","vetted"]}
 }

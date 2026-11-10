@@ -16,8 +16,14 @@ hermes -p "${DISPATCHER_PROFILE}" config set kanban.auto_subscribe_on_create tru
 hermes -p "${DISPATCHER_PROFILE}" config set kanban.orchestrator_profile orchestrator
 hermes -p "${DISPATCHER_PROFILE}" config set kanban.default_assignee routing-sink
 
+# Review musi najpierw przejść provenance-bound validate-routed-handoff. Hermes 0.20.4
+# domyślnie auto-claimuje status=review, więc wyłączamy globalny review lane i po
+# udanym gate uruchamiamy wyłącznie wskazaną kartę przez runtime-controller dispatch-review.
+hermes -p "${DISPATCHER_PROFILE}" config set kanban.review_dispatch false
+
 echo "Kanban Software Factory configured on profile: ${DISPATCHER_PROFILE}"
 echo "auto_decompose=false"
 echo "auto_subscribe_on_create=true"
 echo "orchestrator_profile=orchestrator"
 echo "default_assignee=routing-sink"
+echo "review_dispatch=false (targeted review dispatch after routed-handoff gate)"

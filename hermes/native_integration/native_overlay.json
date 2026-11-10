@@ -1,0 +1,77 @@
+{
+  "base_head": "0a0497060ad4bf1ccd7f6846b0c4d4b03f8476f1",
+  "base_tree": "d630de83c47d73912e9648552ec9dd5452fb83cf",
+  "source_only": true,
+  "installable": false,
+  "patch_sha256": "c5a5aa5461fe67b0194df2cae73779e3cbde415e3293b3f6b6f3b39e9f602e03",
+  "files": {
+    "agent/agent_runtime_helpers.py": {
+      "sha256": "6ed3d3fb3666a481f6dea2fde47abb1c93c16d5ab329746fef6e44f27cd0399a",
+      "mode": "0o644"
+    },
+    "agent/anthropic_adapter.py": {
+      "sha256": "10a47719f8b54f4fe3bd81eebba3ddc70d08106745148a5bea1992c2d8f6462d",
+      "mode": "0o644"
+    },
+    "agent/chat_completion_helpers.py": {
+      "sha256": "3e51828008bf8a74d489597438558c8e75952247baa79dbf42d584df1e91bd16",
+      "mode": "0o644"
+    },
+    "agent/codex_runtime.py": {
+      "sha256": "863041b47f046af78c76bab6bee9e89113ab1e114a4e6ab98b484a13b7f2926f",
+      "mode": "0o644"
+    },
+    "agent/conversation_loop.py": {
+      "sha256": "b7fc051f8c1fa165d52b33e1946fb39f1b4c289e0f1da11f38ca3e8c82cc54b7",
+      "mode": "0o644"
+    },
+    "agent/tool_executor.py": {
+      "sha256": "8bfc17d18e8cd14dcfe20cbb2c699279e902fb1111f40465ab2889c2f8763ca8",
+      "mode": "0o644"
+    },
+    "factory_finalization_core.py": {
+      "sha256": "971b733b925f59fbef76e4d618d11cf4d1509f976b778f1797cb54d31a830533",
+      "mode": "0o644"
+    },
+    "factory_model_boundary.py": {
+      "sha256": "cdfa6fdf59293126416e172b8b224e9b76a2b376c18c8df8e35dae5efcbf3b25",
+      "mode": "0o644"
+    },
+    "factory_one_start.py": {
+      "sha256": "87b450e97bde40c5b2333d65b1117a1427ab7c986d7e2b3edaf7b016c63a9062",
+      "mode": "0o644"
+    },
+    "factory_profile_start.py": {
+      "sha256": "70b792781c5d36404d31141a2992af98926ba64c76789b1eb9269a460ee56fc3",
+      "mode": "0o644"
+    },
+    "factory_worker_lifetime.py": {
+      "sha256": "825b631914a0c1a38ae735f3b69ccdc079693977e051f1634e6f55a2c1dc0b9a",
+      "mode": "0o644"
+    },
+    "factory_worker_start.py": {
+      "sha256": "a2f470735278661bf156cebf9a78270e9821189e7b98a1040cff540d38937cd1",
+      "mode": "0o644"
+    },
+    "hermes_cli/kanban_db.py": {
+      "sha256": "1f825422dd7d6cb36bca65676d2225ac55abc6dbb832b9ba0f4aa25b00d5f022",
+      "mode": "0o644"
+    },
+    "hermes_cli/plugins.py": {
+      "sha256": "a1ae9a9d92fe9d713b8d6fde6d44d2ce4828cea99a90265d569a5b286884c383",
+      "mode": "0o644"
+    },
+    "pyproject.toml": {
+      "sha256": "123d7a407d788eb1fc84c9187913f48157ca73d8db9cac3f409e1a1b885f62f9",
+      "mode": "0o644"
+    },
+    "run_agent.py": {
+      "sha256": "945f36b2ca37b13bc423acd297910de473b123ca2015bed585273ec28fe2c6c9",
+      "mode": "0o644"
+    },
+    "tools/registry.py": {
+      "sha256": "9c27d7a0bb5e73cfdff9caacaf3b2aa3dfd62804adf2b1ae365553931f50a985",
+      "mode": "0o644"
+    }
+  }
+}

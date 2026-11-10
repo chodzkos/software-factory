@@ -30,3 +30,9 @@ Repo ma docelowo zawierać:
 
 Bootstrap v1.0 standardu po niezależnym review GPT × Grok.
 Profile Hermesa i automatyzacja Kanban będą dodawane w kolejnych PR-ach.
+
+### Druga recenzja kandydata 0.13.0
+
+Aktualne rozstrzygnięcia MoA, `extra_body`, retry Responses i ograniczeń
+tożsamości źródeł: [REVIEW_ROUND2_013](hermes/native_integration/REVIEW_ROUND2_013.md).
+Kandydat pozostaje nieinstalowalny; żadna poprawka źródeł nie zatwierdza providera.
