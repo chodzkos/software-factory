@@ -187,6 +187,25 @@ Wymagane przez istniejące kontrole startu — ich brak kończy się odmową PRZ
 - gateway nie może przetrwać zakończenia implementera bez nadzoru: martwy proces reviewera po targetowanym dispatchu
   zostawia run `running`; taką kartę zamyka się `block`, nie ponownym review (routed handoff wymaga ostatniego runu implementera).
 
+## Zmiana modelu lub kandydata
+
+Obowiązkowa kolejność, bez pomijania i przestawiania kroków:
+
+1. kandydat następcy (nowe dokładne źródła i manifest);
+2. niezależna recenzja dokładnych bajtów kandydata;
+3. hosted CI na tych samych bajtach;
+4. bootstrap staging `FACTORY_HOME` (`.factory-local/factory-home-staging`);
+5. live handoff G10 na staging;
+6. bootstrap produkcyjnego `FACTORY_HOME` z tego samego zaakceptowanego manifestu;
+7. opcjonalnie G10 na produkcji.
+
+Zasady dla każdego home:
+
+- poświadczenia providerów nigdy nie są kopiowane między home; każdy home ma własne logowania dodawane przez `hermes auth add`;
+- nigdy nie używaj `hermes model`, bo przepisuje `config.yaml`;
+- Claude Code uruchamiany z innym `HOME` startuje wyłącznie z `DISABLE_AUTOUPDATER=1`;
+- zmiana przypiętej pary provider/model profilu jest sama zmianą kandydata i przechodzi cały powyższy proces; nigdy nie edytuj jej bezpośrednio w żadnym factory home.
+
 ## Założenia procesu
 
 - `PRIMARY_PROFILE` może sterować zwykłymi primary-GPT rolami, ale nie security reviewerem;
