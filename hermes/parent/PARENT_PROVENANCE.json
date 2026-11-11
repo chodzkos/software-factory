@@ -1,0 +1,153 @@
+{
+ "accepted_in": "activation review 4 (runs/sf-runner/activation-review-01-d4264681): wip/SOURCE_UNION.json plus wip/new_parent/tests/SOURCE_DELTA.json; WIP suite 162/162 on CPython 3.11.16",
+ "changes": {
+  "repository_task_contract.py": "CANDIDATE constant replaced by bind_candidate()/bound_candidate() and a PEP 562 module __getattr__; unbound reads refuse (candidate_unbound). A file inside the candidate cannot contain the digest of the manifest that covers it."
+ },
+ "files": {
+  "finalization_core.py": {
+   "accepted_path": "wip/source_union/routing/src/finalization_core.py",
+   "accepted_sha256": "971b733b925f59fbef76e4d618d11cf4d1509f976b778f1797cb54d31a830533",
+   "changed": false,
+   "repository_sha256": "971b733b925f59fbef76e4d618d11cf4d1509f976b778f1797cb54d31a830533"
+  },
+  "linux_memfd_seals.py": {
+   "accepted_path": "wip/source_union/routing/src/linux_memfd_seals.py",
+   "accepted_sha256": "98d0ac817a54548e8695aace988642254a81bebb1c16c376d28be75cdf2354fa",
+   "changed": false,
+   "repository_sha256": "98d0ac817a54548e8695aace988642254a81bebb1c16c376d28be75cdf2354fa"
+  },
+  "repository_execution_admission.py": {
+   "accepted_path": "wip/source_union/routing/src/repository_execution_admission.py",
+   "accepted_sha256": "8d4e30d52f2de776d52e35740632d4d17a24d0c01d6c8448cc9cd45fa399dce5",
+   "changed": false,
+   "repository_sha256": "8d4e30d52f2de776d52e35740632d4d17a24d0c01d6c8448cc9cd45fa399dce5"
+  },
+  "repository_execution_admission_v3.py": {
+   "accepted_path": "wip/source_union/routing/src/repository_execution_admission_v3.py",
+   "accepted_sha256": "08b3ae7da66b522d445d1dabdcb41e4bf58ef90da77c05f3ff4a68d676087ee7",
+   "changed": false,
+   "repository_sha256": "08b3ae7da66b522d445d1dabdcb41e4bf58ef90da77c05f3ff4a68d676087ee7"
+  },
+  "repository_execution_io.py": {
+   "accepted_path": "wip/source_union/routing/src/repository_execution_io.py",
+   "accepted_sha256": "2a639ed66ec70e3f37d12508f0a5869d7cee10fbe194c6be5e4eceeb728f5e0c",
+   "changed": false,
+   "repository_sha256": "2a639ed66ec70e3f37d12508f0a5869d7cee10fbe194c6be5e4eceeb728f5e0c"
+  },
+  "repository_execution_launcher_v3.py": {
+   "accepted_path": "wip/source_union/routing/src/repository_execution_launcher_v3.py",
+   "accepted_sha256": "3a25c8584b4773c0c402afb5402e746c01d4df3326e772f012b0004def64252a",
+   "changed": false,
+   "repository_sha256": "3a25c8584b4773c0c402afb5402e746c01d4df3326e772f012b0004def64252a"
+  },
+  "repository_execution_service.py": {
+   "accepted_path": "wip/source_union/routing/src/repository_execution_service.py",
+   "accepted_sha256": "41f9f41c0fd1d5dadc4fd13c8be233682cd5140d1dfe36b6eebd2105a7b9442d",
+   "changed": false,
+   "repository_sha256": "41f9f41c0fd1d5dadc4fd13c8be233682cd5140d1dfe36b6eebd2105a7b9442d"
+  },
+  "repository_execution_transport.py": {
+   "accepted_path": "wip/source_union/routing/src/repository_execution_transport.py",
+   "accepted_sha256": "6f59781f8b383315aa667c1241bca873e8660c60f37b041ce175d0c2affc6bff",
+   "changed": false,
+   "repository_sha256": "6f59781f8b383315aa667c1241bca873e8660c60f37b041ce175d0c2affc6bff"
+  },
+  "repository_isolation_plan.py": {
+   "accepted_path": "wip/source_union/routing/src/repository_isolation_plan.py",
+   "accepted_sha256": "e9d0961c79166a799f118f7640366368685fca9771ad8ed55822e2d0648b4c95",
+   "changed": false,
+   "repository_sha256": "e9d0961c79166a799f118f7640366368685fca9771ad8ed55822e2d0648b4c95"
+  },
+  "repository_native_adapter.py": {
+   "accepted_path": "wip/source_union/routing/src/repository_native_adapter.py",
+   "accepted_sha256": "f619f6a95c75441f5790dff1e72196ffed8600c2e198a5d9b4c02463089dd31b",
+   "changed": false,
+   "repository_sha256": "f619f6a95c75441f5790dff1e72196ffed8600c2e198a5d9b4c02463089dd31b"
+  },
+  "repository_native_adapter_v3.py": {
+   "accepted_path": "wip/source_union/routing/src/repository_native_adapter_v3.py",
+   "accepted_sha256": "7cf197835ff7eb3ea82dcf842ec29b3e3bcf24254422d07c3feee93d363c6657",
+   "changed": false,
+   "repository_sha256": "7cf197835ff7eb3ea82dcf842ec29b3e3bcf24254422d07c3feee93d363c6657"
+  },
+  "repository_native_control_v3.py": {
+   "accepted_path": "wip/source_union/routing/controller/repository_native_control_v3.py",
+   "accepted_sha256": "27d605c4e7554a040e6455813bfbb7594f4e873764022d3818f98b00d8250080",
+   "changed": false,
+   "repository_sha256": "27d605c4e7554a040e6455813bfbb7594f4e873764022d3818f98b00d8250080"
+  },
+  "repository_parent_exec_gate_v1.py": {
+   "accepted_path": "wip/new_parent/src/repository_parent_exec_gate_v1.py",
+   "accepted_sha256": "f396093aeae3136bfeb3e94d5d4c6a3fbdbdbe53478f85dd2eb0f021ea3feb4f",
+   "changed": false,
+   "repository_sha256": "f396093aeae3136bfeb3e94d5d4c6a3fbdbdbe53478f85dd2eb0f021ea3feb4f"
+  },
+  "repository_parent_launch_bootstrap_v1.py": {
+   "accepted_path": "wip/new_parent/src/repository_parent_launch_bootstrap_v1.py",
+   "accepted_sha256": "a10ecb79607fd84be1c6a08bca65ec05780417f3930cbc6c23fc682e9a995179",
+   "changed": false,
+   "repository_sha256": "a10ecb79607fd84be1c6a08bca65ec05780417f3930cbc6c23fc682e9a995179"
+  },
+  "repository_parent_native_launch_v1.py": {
+   "accepted_path": "wip/new_parent/src/repository_parent_native_launch_v1.py",
+   "accepted_sha256": "301d1a65acd1a5eaaf5d08f322cc2f9c7edf0f51304c031151a74cf5eea5f7e1",
+   "changed": false,
+   "repository_sha256": "301d1a65acd1a5eaaf5d08f322cc2f9c7edf0f51304c031151a74cf5eea5f7e1"
+  },
+  "repository_parent_native_spawn_v1.py": {
+   "accepted_path": "wip/new_parent/src/repository_parent_native_spawn_v1.py",
+   "accepted_sha256": "b7da82f4362d04a336b5042dd0c7225b1edd87da0b74056ed998d56ec770ef20",
+   "changed": false,
+   "repository_sha256": "b7da82f4362d04a336b5042dd0c7225b1edd87da0b74056ed998d56ec770ef20"
+  },
+  "repository_parent_process_owner_v1.py": {
+   "accepted_path": "wip/new_parent/src/repository_parent_process_owner_v1.py",
+   "accepted_sha256": "842685a2dd12579105a6846aa2e58828fda1347772ff83fe7e61df5dea36b140",
+   "changed": false,
+   "repository_sha256": "842685a2dd12579105a6846aa2e58828fda1347772ff83fe7e61df5dea36b140"
+  },
+  "repository_parent_result_v1.py": {
+   "accepted_path": "wip/source_union/parent_result/repository_parent_result_v1.py",
+   "accepted_sha256": "2e0892ba3443258cbd179fe8e19340f7127502be7278af452ba17d14c9e44bb8",
+   "changed": false,
+   "repository_sha256": "2e0892ba3443258cbd179fe8e19340f7127502be7278af452ba17d14c9e44bb8"
+  },
+  "repository_parent_workers_v1.py": {
+   "accepted_path": "wip/source_union/workers/repository_parent_workers_v1.py",
+   "accepted_sha256": "7b2201f563aa90a4e225c209b3a0f2dfaa97f4a464ba4f750e03e0ec6e03d018",
+   "changed": false,
+   "repository_sha256": "7b2201f563aa90a4e225c209b3a0f2dfaa97f4a464ba4f750e03e0ec6e03d018"
+  },
+  "repository_routing_v3.py": {
+   "accepted_path": "wip/source_union/routing/src/repository_routing_v3.py",
+   "accepted_sha256": "2186634ae5ec9b0d59c821739a21c86145db1db7ab76e8cf1c67df4ce5d419d3",
+   "changed": false,
+   "repository_sha256": "2186634ae5ec9b0d59c821739a21c86145db1db7ab76e8cf1c67df4ce5d419d3"
+  },
+  "repository_task_contract.py": {
+   "accepted_path": "wip/source_union/routing/src/repository_task_contract.py",
+   "accepted_sha256": "d545031b7e800ae89bc5e43be49764a5bd7223c470f204e1de311e1ae3a0f088",
+   "changed": true,
+   "repository_sha256": "e982bc7cdb6919b0a99864b65e2f9a369294022bd2b39512988105184bfdca46"
+  },
+  "repository_worktree_v2.py": {
+   "accepted_path": "wip/source_union/routing/src/repository_worktree_v2.py",
+   "accepted_sha256": "5c30116843e28d9ddbf839f8c901db15a795a3f3919530aa77c6ce783b456b3b",
+   "changed": false,
+   "repository_sha256": "5c30116843e28d9ddbf839f8c901db15a795a3f3919530aa77c6ce783b456b3b"
+  }
+ },
+ "identical_elsewhere_in_repository": {
+  "finalization_core.py": "hermes/native_integration/factory_finalization_core.py"
+ },
+ "schema": "sf-parent-provenance/v1",
+ "source_delta_sha256": "1fc991cbd2b69527de4a32ea471daa37a2ff36578251c90e8d9c1169701447b2",
+ "source_union_files": 863,
+ "source_union_sha256": "6f4cde1a55120949cb06c31be8538a37031c8ee0014761229d9bf6daba06cfcb",
+ "status": {
+  "installed": false,
+  "live_executed": false,
+  "parent_implemented": false,
+  "source_only": true
+ }
+}

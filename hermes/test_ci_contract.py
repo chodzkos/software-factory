@@ -56,14 +56,15 @@ class CandidateCIContractTests(unittest.TestCase):
         self.assertEqual(config["native_head"], "0a0497060ad4bf1ccd7f6846b0c4d4b03f8476f1")
         gates = {g["name"]: g for g in config["gates"]}
         self.assertEqual(len(gates), len(config["gates"]))
-        self.assertEqual(set(gates), {"main", "start", "lifetime", "transaction_registration", "native_registry_plugins", "review_revisions", "review_round2", "profile_lifetime", "codex_transport", "dispatch_binding"})
+        self.assertEqual(set(gates), {"main", "start", "lifetime", "transaction_registration", "native_registry_plugins", "review_revisions", "review_round2", "profile_lifetime", "codex_transport", "dispatch_binding", "parent_sources"})
         for name, directory in (("main", "hermes"), ("start", "hermes/tests_worker_start"),
-                                ("lifetime", "hermes/tests_worker_lifetime"), ("transaction_registration", "hermes/tests_native_handoff"), ("review_revisions", "hermes/tests_review_revisions"), ("review_round2", "hermes/tests_review_round2"), ("profile_lifetime", "hermes/tests_profile_lifetime"), ("codex_transport", "hermes/tests_codex_transport"), ("dispatch_binding", "hermes/tests_dispatch_binding")):
+                                ("lifetime", "hermes/tests_worker_lifetime"), ("transaction_registration", "hermes/tests_native_handoff"), ("review_revisions", "hermes/tests_review_revisions"), ("review_round2", "hermes/tests_review_round2"), ("profile_lifetime", "hermes/tests_profile_lifetime"), ("codex_transport", "hermes/tests_codex_transport"), ("dispatch_binding", "hermes/tests_dispatch_binding"), ("parent_sources", "hermes/tests_parent")):
             self.assertEqual(gates[name]["directory"], directory)
             self.assertEqual(gates[name]["pattern"], "test*.py")
             self.assertGreater(gates[name]["expected_tests"], 0)
         self.assertEqual(gates["native_registry_plugins"]["paths"], ["tests/tools/test_registry.py", "tests/hermes_cli/test_plugins.py"])
         self.assertEqual(gates["lifetime"]["expected_tests"], 73)
+        self.assertEqual(gates["parent_sources"]["expected_tests"], 16)
 
     def test_native_distribution_declares_mandatory_boundary_modules(self):
         import os
