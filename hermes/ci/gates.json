@@ -73,6 +73,13 @@
       "directory": "hermes/tests_dispatch_binding",
       "pattern": "test*.py",
       "expected_tests": 25
+    },
+    {
+      "name": "parent_sources",
+      "kind": "unittest",
+      "directory": "hermes/tests_parent",
+      "pattern": "test*.py",
+      "expected_tests": 16
     }
   ]
 }
