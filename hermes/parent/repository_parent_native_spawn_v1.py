@@ -34,7 +34,12 @@ from repository_parent_native_launch_v1 import LaunchPins, build_native_plan, ch
 import repository_parent_launch_bootstrap_v1 as bootstrap
 import kanban_review_dispatch as dispatch
 
-VERSION='0.2.0-WIP'
+VERSION='0.3.0-WIP'
+# Native code that reaps every child of its process (waitpid(-1)): reap_worker_zombies via
+# dispatch_once/run_daemon (CLI, gateway watcher, dashboard). The parent must be the single
+# owner of its children's exits, so none of these may be loaded in a parent process.
+GLOBAL_REAPER_MODULES=('gateway/kanban_watchers.py','gateway/run.py','hermes_cli/kanban.py',
+    'plugins/kanban/dashboard/plugin_api.py')
 GATE_SHA256='f396093aeae3136bfeb3e94d5d4c6a3fbdbdbe53478f85dd2eb0f021ea3feb4f'
 DISPATCH_SHA256='0b18ad437bd0f2018e93fe851dc57f56e2ebdc69a4ff6afeb204bfa299a5e79e'
 # Accepted UAPI adapter: checked against Python exports, no local ABI literals.
@@ -59,6 +64,17 @@ class _DispatchAbort(BaseException):
     """
     def __init__(self,primary):self.primary=primary
 
+def global_reaper_modules():
+    """Names of loaded modules that run a process-wide reaper; empty in a valid parent."""
+    found=[]
+    for name,module in list(sys.modules.items()):
+        path=getattr(module,'__file__',None)
+        if type(path) is str and path.replace(os.sep,'/').endswith(GLOBAL_REAPER_MODULES):found.append(name)
+    return sorted(found)
+
+def require_single_reaper():
+    e.need(not global_reaper_modules(),'spawn_global_reaper_in_process')
+
 @dataclasses.dataclass(frozen=True)
 class NativeSpawnedWorker:
     task_id:str
@@ -76,6 +92,7 @@ class ParentNativeSpawner:
     def __init__(self,control: nc.NativeRepositoryControl,*,coder_pins:LaunchPins,reviewer_pins:LaunchPins):
         e.need(type(control) is nc.NativeRepositoryControl,'spawn_control_type')
         e.need(type(coder_pins) is LaunchPins and type(reviewer_pins) is LaunchPins,'spawn_pins_type')
+        require_single_reaper()
         self.control=control;self.ctx=control.verify();self.pid=os.getpid()
         self.request_sha256=e.sha(e.read(control.job/'task_request.json'))
         self.kb=control.kb;self.owner=owner.ParentProcessOwner()
@@ -93,6 +110,7 @@ class ParentNativeSpawner:
 
     def _parent(self):
         e.need(os.getpid()==self.pid,'spawn_wrong_parent')
+        require_single_reaper()
         ctx=self.control.verify()
         e.need(e.sha(e.read(self.control.job/'task_request.json'))==self.request_sha256,'spawn_request_drift')
         e.need(all(getattr(self.kb,k) is f for k,f in self._native_functions.items()) and
@@ -101,6 +119,15 @@ class ParentNativeSpawner:
 
     def _fault(self,attempt,primary):
         if attempt.failed:return
+        if attempt.released:
+            # The worker already runs and is owned by this registry: an error in the caller
+            # (e.g. an interrupt after release) is recorded, but never marks the attempt failed
+            # or requests finalization of a live run; observe/reap stay available.
+            try:e.new_json(attempt.path/'POST_RELEASE_ERROR.json',dict(schema='sf-parent-post-release-error/v1',
+                task_id=attempt.identity.task_id,run_id=attempt.identity.run_id,pid=attempt.process.pid,
+                primary_error_type=type(primary).__name__,**FLAGS))
+            except BaseException:pass
+            return
         attempt.failed=True;secondary=[];requested=False
         # Never exec a still-gated child after failure. EOF lets the inert gate
         # terminate; this is neither wait(), a signal, nor verified cleanup.
@@ -265,7 +292,6 @@ class ParentNativeSpawner:
             e.need(not a.failed and not a.released and a.owned is not None,'spawn_release_not_ready')
             try:
                 ctx=self._parent();parent=self.control.launcher.parent_service(ctx)
-                self.kb._fire_worker_spawned_hook(conn,claimed,workspace,pid,board=board)
                 e.need(not conn.in_transaction,'spawn_caller_transaction')
                 with parent.fence(),self.control.connection() as own,self.control.adapter.locked(own) as fresh:
                     self._row(own,fresh,a.identity,pid=pid)
@@ -277,8 +303,16 @@ class ParentNativeSpawner:
                     os.close(a.gatefd);a.gatefd=None;a.token=None;a.released=True
                     result=NativeSpawnedWorker(claimed.id,claimed.current_run_id,pid)
                     self.tokens[(claimed.id,claimed.current_run_id)]=result
-                return result
             except BaseException as primary:self._fault(a,primary);raise
+            # Observers run only once the gate has released the real worker, so the PID they
+            # see is the worker's. The worker already runs and is owned: an observer failure is
+            # recorded, never turned into a fault that would request finalization of a live run.
+            try:self.kb._fire_worker_spawned_hook(conn,claimed,workspace,pid,board=board)
+            except Exception as x:
+                try:e.new_json(a.path/'SPAWNED_HOOK_FAILED.json',dict(schema='sf-parent-spawned-hook/v1',
+                    task_id=claimed.id,run_id=claimed.current_run_id,pid=pid,error_type=type(x).__name__,**FLAGS))
+                except Exception:pass
+            return result
 
     def spawn_coder(self,run_id):
         """Consume an already authentically claimed coder run, not create one."""

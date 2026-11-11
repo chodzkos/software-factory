@@ -79,7 +79,7 @@
       "kind": "unittest",
       "directory": "hermes/tests_parent",
       "pattern": "test*.py",
-      "expected_tests": 16
+      "expected_tests": 28
     }
   ]
 }

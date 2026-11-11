@@ -1,6 +1,7 @@
 {
  "accepted_in": "activation review 4 (runs/sf-runner/activation-review-01-d4264681): wip/SOURCE_UNION.json plus wip/new_parent/tests/SOURCE_DELTA.json; WIP suite 162/162 on CPython 3.11.16",
  "changes": {
+  "repository_parent_native_spawn_v1.py": "Parent fixes after import (PR 2): _fire_worker_spawned_hook runs only after the exec gate released the worker (observers see the worker PID; an observer exception is recorded in SPAWNED_HOOK_FAILED.json, not a fault); constructor and every _parent() check refuse (spawn_global_reaper_in_process) when a native module that reaps all children (GLOBAL_REAPER_MODULES) is loaded in the process. VERSION 0.3.0-WIP. Detection, not modification of native code. After release, a caller error (e.g. an interrupt) is recorded in POST_RELEASE_ERROR.json; the attempt is not marked failed and no finalization intent is requested for the live, owned worker.",
   "repository_task_contract.py": "CANDIDATE constant replaced by bind_candidate()/bound_candidate() and a PEP 562 module __getattr__; unbound reads refuse (candidate_unbound). A file inside the candidate cannot contain the digest of the manifest that covers it."
  },
  "files": {
@@ -97,8 +98,8 @@
   "repository_parent_native_spawn_v1.py": {
    "accepted_path": "wip/new_parent/src/repository_parent_native_spawn_v1.py",
    "accepted_sha256": "b7da82f4362d04a336b5042dd0c7225b1edd87da0b74056ed998d56ec770ef20",
-   "changed": false,
-   "repository_sha256": "b7da82f4362d04a336b5042dd0c7225b1edd87da0b74056ed998d56ec770ef20"
+   "changed": true,
+   "repository_sha256": "157820ba757f7b17421e393002b8684290dbeed100ad0fe85868cfaf9d1c37a6"
   },
   "repository_parent_process_owner_v1.py": {
    "accepted_path": "wip/new_parent/src/repository_parent_process_owner_v1.py",
