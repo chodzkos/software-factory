@@ -64,7 +64,7 @@ class CandidateCIContractTests(unittest.TestCase):
             self.assertGreater(gates[name]["expected_tests"], 0)
         self.assertEqual(gates["native_registry_plugins"]["paths"], ["tests/tools/test_registry.py", "tests/hermes_cli/test_plugins.py"])
         self.assertEqual(gates["lifetime"]["expected_tests"], 73)
-        self.assertEqual(gates["parent_sources"]["expected_tests"], 16)
+        self.assertEqual(gates["parent_sources"]["expected_tests"], 28)
 
     def test_native_distribution_declares_mandatory_boundary_modules(self):
         import os

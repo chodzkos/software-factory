@@ -65,7 +65,7 @@ class ProvenanceChecks(unittest.TestCase):
 
     def test_only_documented_change(self):
         changed = sorted(n for n, r in self.doc['files'].items() if r['changed'])
-        self.assertEqual(changed, ['repository_task_contract.py'])
+        self.assertEqual(changed, ['repository_parent_native_spawn_v1.py', 'repository_task_contract.py'])
         self.assertEqual(sorted(self.doc['changes']), changed)
         for name, row in self.doc['files'].items():
             self.assertEqual(row['changed'], row['accepted_sha256'] != row['repository_sha256'])
