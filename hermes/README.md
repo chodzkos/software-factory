@@ -2,6 +2,8 @@
 
 > **Wersja 0.13.0 — status produkcyjny `reviewed-ready`, zakres `factory-home-only`.** Manifest guards: `activation_status=reviewed-ready`, `install_scope=factory-home-only` — instalacja wyłącznie do oznaczonego, prywatnego `FACTORY_HOME` (nigdy do `~/.hermes` konta logowania); instalator wymusza ten zakres niezależnie od statusu. Podstawa statusu: niezależne recenzje dokładnych bajtów 4–7, hosted CI, live G9–G11 (handoff coder-claude -> reviewer-gpt, przypięte modele, `fj_live_scope`) i mechaniczne sondy negatywne G10b w prawdziwym `FACTORY_HOME`.
 
+Plik `hermes/native_integration/native_overlay.json` ma stałe wartości `source_only: true` oraz `installable: false`, ponieważ opisuje źródła overlay stosowane do dedykowanego natywnego runtime. Wartości te są wymagane przez `hermes/ci/verify_native_overlay.py` i `hermes/install_native_runtime.py`. Nie są one statusem wdrożenia i nie przeczą `activation_status=reviewed-ready` z manifestu guards (`hermes/plugins/manifest.json`), który dotyczy pluginów fabryki.
+
 Ta sekcja opisuje konfigurację profili Hermesa dla Software Factory. Kanoniczne zasady pozostają w `standards/SOFTWARE_DEVELOPMENT_STANDARD.md`, `workflows/KANBAN_CONTRACT.md` i `workflows/MODEL_ROUTING_POLICY.md`.
 
 ## Polityka modeli
