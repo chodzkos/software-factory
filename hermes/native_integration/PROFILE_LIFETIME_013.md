@@ -87,6 +87,10 @@ refusal before normalization, retaining native-complete-not-called checks.
 
 ## Still open
 
+This list records the state at the time of this note, during candidate 0.13
+review. Current gate status is maintained outside this note, in the owner gate
+status record.
+
 Independent review of these exact new bytes; full native dependency audit;
 cache-safe launcher and executed-bytecode identity; native auxiliary / retry /
 fallback / SDK paths and selected provider; actual dispatcher and Claude;

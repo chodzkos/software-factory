@@ -129,6 +129,10 @@ six collections and assertions are retained, except that the CI inventory test
 now requires the additional collection. Source/plugin/transaction protections
 are not relaxed. General-profile policy tests are distinct from protected tests.
 
+This list records the state at the time of this note, during candidate 0.13
+review. Current gate status is maintained outside this note, in the owner gate
+status record.
+
 Still open: independent review of these exact new bytes; full reviewer/release
 lifetime and approval-COMMIT/close ordering; trusted cache-safe import chain;
 real SDK serialization and full provider/retry/auxiliary/dispatcher/Claude paths;
