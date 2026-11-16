@@ -176,6 +176,18 @@ class SingleReaperChecks(unittest.TestCase):
             with self.subTest(path=path), self.fake(path):
                 self.assertEqual(spawnmod.global_reaper_modules(), [])
 
+    def test_sourceless_reaper_modules_are_detected(self):
+        for entry in spawnmod.GLOBAL_REAPER_MODULES:
+            with self.subTest(entry=entry), self.fake('/native/' + entry[:-3] + '.pyc'):
+                self.assertEqual(spawnmod.global_reaper_modules(), ['sf_fake_reaper'])
+                with self.assertRaisesRegex(e.ExecutionRefused, 'spawn_global_reaper_in_process'):
+                    spawnmod.require_single_reaper()
+
+    def test_similar_pyc_paths_are_not_reapers(self):
+        for path in ('/native/gateway/kanban_watchers_test.pyc', '/native/hermes_cli/kanban_db.pyc'):
+            with self.subTest(path=path), self.fake(path):
+                self.assertEqual(spawnmod.global_reaper_modules(), [])
+
     def test_known_reaper_inventory(self):
         self.assertEqual(spawnmod.GLOBAL_REAPER_MODULES, ('gateway/kanban_watchers.py', 'gateway/run.py',
                                                          'hermes_cli/kanban.py', 'plugins/kanban/dashboard/plugin_api.py'))
