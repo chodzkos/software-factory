@@ -67,9 +67,10 @@ class _DispatchAbort(BaseException):
 def global_reaper_modules():
     """Names of loaded modules that run a process-wide reaper; empty in a valid parent."""
     found=[]
+    suffixes=GLOBAL_REAPER_MODULES+tuple(m[:-3]+'.pyc' for m in GLOBAL_REAPER_MODULES)
     for name,module in list(sys.modules.items()):
         path=getattr(module,'__file__',None)
-        if type(path) is str and path.replace(os.sep,'/').endswith(GLOBAL_REAPER_MODULES):found.append(name)
+        if type(path) is str and path.replace(os.sep,'/').endswith(suffixes):found.append(name)
     return sorted(found)
 
 def require_single_reaper():
